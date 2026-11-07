@@ -7,7 +7,7 @@
   "server": "server.mjs",
   "ui": "ui",
   "nav": {
-    "label": "LLM API",
+    "label": "Auto sort",
     "icon": {
       "path": "M5 8h14v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z M12 8V5 M12 3a1 1 0 1 0 0 .01 M9 12.5h.01 M15 12.5h.01 M9.5 16h5 M2.5 12v3 M21.5 12v3"
     }

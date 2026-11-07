@@ -155,6 +155,28 @@ in Settings → Auto sort. To keep it out of the database and its backups, set
 4. Reminders for a bill that's already listed (same vendor and invoice number, or same amount and
    due date) are skipped.
 
+### Statements in email
+
+With **Statements in email: Stage transactions for review** (Settings → Auto sort; off by
+default), bank and card statements that arrive by email are staged on the Statements tab like an
+upload. Nothing is posted until you approve it:
+
+1. **Reading:** a CSV, OFX, QFX or QBO attachment is read directly. A PDF statement is read by
+   Ledger's AI (only when that's Claude, which reads PDFs). Its transactions come back signed from
+   the account's side: purchases and withdrawals negative, deposits and card payments positive.
+2. **Account:** the account the statement is for comes from your earlier choice for that sender
+   and account number (the last 4 digits from the OFX or the email). Otherwise it's the AI's guess
+   for a PDF. Otherwise the statement shows **Choose account**, and the dashboard asks you to pick
+   one. Your choice (and whether to flip signs, for card CSVs that show purchases as positive) is
+   remembered, so next month's statement from that sender goes there by itself.
+3. **Review and post:** suggestions are made for each transaction as usual, including bill and
+   transfer matching. Post rows individually or a selection with **Post selected**. While nothing
+   is posted you can still change the statement's account.
+
+A statement email is handled as a statement, not also as a bill, so a card statement's amount due
+isn't counted twice. If a statement can't be read (a PDF without Claude, or no attachment), the
+dashboard says so and you can upload it from your bank instead.
+
 **Sort now** (Bills tab) does immediately what otherwise happens on the schedule: it reads new
 bills from email (when email is set up), then matches bills and receipts, and transfers between
 your accounts, to the statement transactions waiting to be posted, and says what it found.
@@ -187,6 +209,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `GET` | `/statements`, `/statements/:id` | list; one statement with its transactions |
 | `POST` | `/statements/:id/categorize` | `{all?: true}` asks the model again (only unposted rows) |
 | `POST` | `/statements/:id/post` | `{ids?: [...]}` posts rows that have an account |
+| `POST` | `/statements/:id/account` | `{account_code, flip_signs?}`: choose or change the statement's account while nothing is posted (remembered for email senders) |
 | `DELETE` | `/statements/:id` | discards unposted rows |
 | `PATCH` | `/transactions/:id` | `{account_code?, status?: "new"\|"skipped"}` |
 | `POST` | `/transactions/bulk` | the same for `{ids: [...]}` |
@@ -238,6 +261,7 @@ lib/parse.mjs          CSV / OFX parsing, amounts, dates, payee keys
 lib/categorize.mjs     prompt, schema, rules, batching
 lib/bill-routes.mjs    mailbox checks and schedule, bill routes, matching bills to transactions
 lib/bills.mjs          bill extraction prompt, duplicates, match scoring, the Gmail search
+lib/email-statements.mjs  statements in email: attachments, account hints, PDF statements, card signs
 lib/imap.mjs           minimal read-only IMAP client (other providers; Gmail goes through ctx.gmail)
 lib/mime.mjs           email (MIME) parser
 lib/dashboard.mjs      notifications and to-dos on Ledger's dashboard
@@ -260,6 +284,10 @@ credit, point Ledger's AI (Settings → AI, Server URL) at a local stub that ans
 Messages API.
 
 ## Changes
+
+- **0.2.0:** **Statements in email** option: bank and card statements found by the email check (CSV, OFX,
+  QFX, QBO attachments, or PDFs read by Claude) are staged for review and posted only with your
+  approval; their account is remembered per sender and account number. Migration 005.
 
 - **0.1.3:** **Sort now** button on the Bills tab; the page no longer repeats the module's name as a
   heading (Ledger shows it); messages name the module's Settings tab by its current name.

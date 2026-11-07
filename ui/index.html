@@ -120,7 +120,18 @@
 			<button class="btn danger" id="discard" title="Remove the transactions that aren't posted">Discard unposted</button>
 		</div>
 		<p class="muted small" id="d-info"></p>
+		<div id="d-account" class="panel hidden" style="margin: 0.5rem 0">
+			<p class="small" id="d-account-text" style="margin-top:0"></p>
+			<div class="row">
+				<label class="inline">Account <select id="d-account-select"></select></label>
+				<label class="inline"><input type="checkbox" id="d-account-flip"> Purchases show as positive amounts (flip signs)</label>
+				<button class="btn primary" id="d-account-save">Use this account</button>
+				<button class="btn hidden" id="d-account-cancel">Cancel</button>
+			</div>
+			<p class="muted small" id="d-account-note"></p>
+		</div>
 		<p class="err" id="d-error"></p>
+		<p class="small hidden" id="d-change-wrap"><a href="#" id="d-change">Change the statement's account</a></p>
 		<div class="panel row" style="margin: 0.5rem 0">
 			<label class="inline">Show
 				<select id="filter">
@@ -393,6 +404,7 @@
 		categorizing: ["warn", "Categorising…"],
 		ready: ["good", "Ready"],
 		error: ["bad", "Error"],
+		needs_account: ["warn", "Choose account"],
 	};
 	const statusPill = (s) => {
 		const [cls, text] = STATUS[s] || ["plain", s];
@@ -406,8 +418,8 @@
 		$("statements").tBodies[0].replaceChildren(
 			...data.map((s) =>
 				el("tr", { class: "clickable", onclick: () => openStatement(s.id) },
-					el("td", { class: "wide" }, s.filename),
-					el("td", {}, accountLabel(s.account_code)),
+					el("td", { class: "wide" }, s.filename, s.source === "email" ? el("span", { class: "pill plain", style: "margin-left:6px", title: s.mail_subject }, "from email") : null),
+					el("td", {}, s.account_code ? accountLabel(s.account_code) : el("span", { class: "muted" }, "choose")),
 					el("td", {}, s.first_date ? `${s.first_date} – ${s.last_date}` : "—"),
 					el("td", {}, statusPill(s.status)),
 					el("td", { class: "num" }, `${s.posted} / ${s.total}`),
@@ -455,17 +467,58 @@
 		);
 	}
 
+	// Choosing (or changing) the account of a statement: needed for statements from email whose account isn't
+	// known; allowed for any statement with nothing posted yet. Remembered per sender for email statements.
+	let changingAccount = false;
+	function renderAccountPanel(s) {
+		const needs = s.status === "needs_account";
+		const canChange = s.posted === 0 && !["queued", "categorizing"].includes(s.status);
+		$("d-change-wrap").classList.toggle("hidden", needs || !canChange || changingAccount);
+		const show = needs || (changingAccount && canChange);
+		$("d-account").classList.toggle("hidden", !show);
+		if (!show) return;
+		$("d-account-text").textContent = needs
+			? `This statement came by email${s.mail_subject ? ` (“${s.mail_subject}”${s.mail_from ? ` from ${s.mail_from}` : ""})` : ""}, and its account isn't known yet. Which account is it for?`
+			: "Move this statement's transactions to another account. Suggestions are made again.";
+		const sel = $("d-account-select");
+		const bankish = accounts.filter((a) => a.type === "asset" || a.type === "liability");
+		sel.replaceChildren(el("option", { value: "" }, "Choose…"), ...bankish.map((a) => el("option", { value: a.code }, `${a.code} · ${a.name} (${a.type}, ${a.currency})`)));
+		sel.value = needs ? "" : s.account_code;
+		const syncFlip = () => {
+			const a = accounts.find((x) => x.code === sel.value);
+			$("d-account-flip").checked = !!(current.flip_hint && a?.type === "liability");
+		};
+		sel.onchange = syncFlip;
+		syncFlip();
+		$("d-account-cancel").classList.toggle("hidden", needs);
+		$("d-account-note").textContent = s.source === "email" ? "Next time a statement comes from this sender for this account number, it goes to this account by itself." : "";
+	}
+	$("d-change").onclick = (e) => { e.preventDefault(); changingAccount = true; renderDetail(); };
+	$("d-account-cancel").onclick = () => { changingAccount = false; renderDetail(); };
+	$("d-account-save").onclick = async () => {
+		const code = $("d-account-select").value;
+		if (!code) return toast("Choose an account.");
+		try {
+			const r = await api(`/statements/${current.statement.id}/account`, { method: "POST", body: JSON.stringify({ account_code: code, flip_signs: $("d-account-flip").checked }) });
+			changingAccount = false;
+			if (r.removed) { toast(`All its transactions were already uploaded for ${code}; the statement was removed.`); closeDetail(); return loadStatements(); }
+			toast(`Statement set to ${accountLabel(code)}${r.duplicates ? `; ${r.duplicates} already-uploaded transactions dropped` : ""}. Suggestions are on their way.`);
+			await refresh();
+		} catch (e) { fail(e); }
+	};
+
 	function renderDetail() {
 		const { statement: s, transactions } = current;
 		const stmtAccount = accounts.find((a) => a.code === s.account_code);
-		$("d-title").textContent = `${s.filename} → ${accountLabel(s.account_code)}`;
+		$("d-title").textContent = s.account_code ? `${s.filename} → ${accountLabel(s.account_code)}` : `${s.filename} (account not chosen)`;
 		$("d-status").replaceChildren(statusPill(s.status));
 		const review = transactions.filter(isReview).length;
 		$("d-info").textContent =
 			`${s.total} transactions${s.first_date ? `, ${s.first_date} to ${s.last_date}` : ""} · ${s.posted} posted · ${s.skipped} skipped · ${review} need review` +
 			(s.duplicates ? ` · ${s.duplicates} skipped at upload as already seen` : "");
 		$("d-error").textContent = s.error || "";
-		const busy = ["queued", "categorizing"].includes(s.status);
+		renderAccountPanel(s);
+		const busy = ["queued", "categorizing", "needs_account"].includes(s.status);
 		$("rerun").disabled = busy;
 
 		const candidates = accounts.filter((a) => a.code !== s.account_code && (!stmtAccount || a.currency === stmtAccount.currency));
@@ -633,7 +686,7 @@
 		if (st.error) return `Last check ${when} failed: ${st.error}`;
 		const r = st.result || {};
 		const n = (k, one, many) => `${k || 0} ${k === 1 ? one : many}`;
-		return `Last check ${when}: ${n(r.bills, "bill", "bills")}, ${n(r.receipts, "receipt", "receipts")} from ${n(r.looked_at, "new email", "new emails")}` + (r.remaining ? ` (${r.remaining} more next time)` : "");
+		return `Last check ${when}: ${n(r.bills, "bill", "bills")}, ${n(r.receipts, "receipt", "receipts")}${r.statements ? `, ${n(r.statements, "statement", "statements")}` : ""} from ${n(r.looked_at, "new email", "new emails")}` + (r.remaining ? ` (${r.remaining} more next time)` : "");
 	}
 
 	async function loadBills() {
@@ -678,7 +731,7 @@
 			const parts = [];
 			if (m.skipped) parts.push(`Email not read: ${m.skipped}.`);
 			else if (m.error) parts.push(`Email check failed: ${m.error}.`);
-			else parts.push(`Email: ${m.bills || 0} new bill${m.bills === 1 ? "" : "s"}, ${m.receipts || 0} receipt${m.receipts === 1 ? "" : "s"} from ${m.looked_at || 0} new message${m.looked_at === 1 ? "" : "s"}.`);
+			else parts.push(`Email: ${m.bills || 0} new bill${m.bills === 1 ? "" : "s"}, ${m.receipts || 0} receipt${m.receipts === 1 ? "" : "s"}${m.statements ? `, ${m.statements} statement${m.statements === 1 ? "" : "s"} staged (Statements tab)` : ""} from ${m.looked_at || 0} new message${m.looked_at === 1 ? "" : "s"}.`);
 			parts.push(`${r.bill_matches} payment${r.bill_matches === 1 ? "" : "s"} matched to bills, ${r.transfer_links} transfer${r.transfer_links === 1 ? "" : "s"} linked.`);
 			toast(parts.join("\n"), !!m.error);
 			await loadBills();
@@ -885,7 +938,7 @@
 		else if (mail.source === "gmail") mailText = statusLine(true, `Reads ${mail.gmail.account || "Ledger's Gmail account"} with the search “${mail.gmail_query}”, ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
 		else mailText = statusLine(true, `Reads ${mail.imap.user} on ${mail.imap.host} (${mail.imap.folder}), ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
 		$("st-mail").replaceChildren(...mailText, mail.ready ? el("div", { class: "muted small", style: "margin-top:4px" }, mailStatusText(mail)) : "");
-		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${mail.ap_account || "none (bills are only tracked)"}.`;
+		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${mail.ap_account || "none (bills are only tracked)"} · statements in email: ${mail.email_statements === "review" ? "staged for review" : "ignored"}.`;
 		$("st-version").textContent = `Module ${st.version} on Ledger ${st.ledger}.`;
 	}
 	$("st-test").onclick = async () => {

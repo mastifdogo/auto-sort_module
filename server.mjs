@@ -1,8 +1,11 @@
 // LLM API (module id "categorizer"): Ledger loads this file at startup and calls register(ctx).
-// The module API is described in Ledger's docs/MODULES.md.
+// The module API is described in Ledger's docs/MODULE_LLM_CONTEXT.md. AI goes
+// through Ledger's provider (ctx.llm, Settings → AI) and Gmail through
+// Ledger's account (ctx.gmail, Settings → Gmail); options are the manifest's
+// settings form (ctx.settings, Settings → LLM API).
 //
 // Flow: upload a statement -> transactions are staged in this module's tables
-// -> a background job asks the LLM for an account per transaction -> you
+// -> a background job asks the AI for an account per transaction -> you
 // review on the module's page -> posting creates one journal entry per
 // transaction through ctx.ledger.createJournalEntry and teaches a payee rule.
 //
@@ -16,12 +19,11 @@ import { registerBills } from "./lib/bill-routes.mjs";
 import { dashboard } from "./lib/dashboard.mjs";
 import { registerTransfers } from "./lib/transfer-sync.mjs";
 import { candidateAccounts, examplesFromEntries, suggest } from "./lib/categorize.mjs";
-import { DEFAULTS, LlmError, PROVIDERS, completeJson } from "./lib/llm.mjs";
 import { ParseError, parseAmount, parseDate, parseStatement, payeeKey } from "./lib/parse.mjs";
 
-const EFFORTS = ["low", "medium", "high"];
-const SETTING_KEYS = ["provider", "model", "base_url", "api_key", "effort", "batch_size", "review_threshold"];
 const MAX_CONTENT_CHARS = 1_000_000;
+/** Settings this module kept in its own table before Ledger 0.10.0 (copied to ctx.settings once, then deleted). */
+const OLD_SETTINGS = ["batch_size", "review_threshold", "ap_account", "mail_interval", "mail_keywords", "mail_lookback_days", "gmail_query", "imap_host", "imap_port", "imap_user", "imap_password", "imap_folder", "mail_source"];
 
 /** @param {import("../../backend/src/module-host.ts").ModuleContext} ctx */
 export default async function register(ctx) {
@@ -34,27 +36,53 @@ export default async function register(ctx) {
 	// Settings
 	// -----------------------------------------------------------------------
 
+	/** The options that matter for categorising, from Settings → LLM API. */
 	async function readSettings() {
-		const { rows } = await q(`SELECT key, value FROM ${T("settings")}`);
-		const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-		const provider = PROVIDERS.includes(s.provider) ? s.provider : "anthropic";
-		const envKey = process.env.CATEGORIZER_API_KEY || (provider === "anthropic" ? process.env.ANTHROPIC_API_KEY : "") || "";
+		const v = await ctx.settings.get();
+		const t = Number(v.review_threshold);
+		const b = Number(v.batch_size);
 		return {
-			provider,
-			model: s.model || DEFAULTS[provider].model,
-			base_url: s.base_url || DEFAULTS[provider].base_url,
-			api_key: envKey || s.api_key || "",
-			api_key_from_env: envKey !== "",
-			effort: EFFORTS.includes(s.effort) ? s.effort : "low",
-			batch_size: Number(s.batch_size) || 40,
-			review_threshold: s.review_threshold === undefined ? 0.75 : Number(s.review_threshold),
+			review_threshold: Number.isFinite(t) ? Math.min(Math.max(t, 0), 1) : 0.75,
+			batch_size: Number.isFinite(b) ? Math.min(Math.max(Math.round(b), 1), 200) : 40,
 		};
 	}
 
-	const publicSettings = (s) => {
-		const { api_key, ...rest } = s;
-		return { ...rest, api_key_set: api_key !== "", providers: PROVIDERS, defaults: DEFAULTS };
-	};
+	/** Ledger's AI for this module: a JSON call, and whether the provider reads PDFs. */
+	async function ai() {
+		const st = await ctx.llm.status();
+		return { llm: (req) => ctx.llm.json(req), readsPdf: st.readsPdf === true, status: st };
+	}
+
+	/**
+	 * Before Ledger 0.10.0 this module kept its options (and its own AI key and
+	 * mail credentials) in mod_categorizer.settings. Copy the options that still
+	 * exist to Settings → LLM API once, and delete everything else there, keys included.
+	 */
+	async function migrateOldSettings() {
+		const { rows } = await q(`SELECT key, value FROM ${T("settings")} WHERE key <> 'mail_state'`);
+		if (rows.length === 0) return;
+		const old = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+		const numbers = ["batch_size", "review_threshold", "mail_interval", "mail_lookback_days", "imap_port"];
+		const values = {};
+		for (const k of OLD_SETTINGS) {
+			if (old[k] === undefined) continue;
+			if (k === "mail_keywords") values[k] = old[k].split(",").map((x) => x.trim()).filter(Boolean).join(", ");
+			else if (numbers.includes(k)) values[k] = Number(old[k]);
+			else values[k] = old[k];
+		}
+		// The Apps Script bridge is gone: a mailbox that used it now reads through Ledger's Gmail.
+		if (old.mail_source === "gmail" || old.gmail_url) values.mail_source = "gmail";
+		else if (old.imap_host) values.mail_source = "imap";
+		for (const [k, v] of Object.entries(values)) {
+			try {
+				await ctx.settings.set({ [k]: v });
+			} catch (err) {
+				ctx.log.warn("old setting not copied", { key: k, err: String(err?.message || err) });
+			}
+		}
+		await q(`DELETE FROM ${T("settings")} WHERE key <> 'mail_state'`);
+		ctx.log.info("settings moved to Settings → LLM API", { copied: Object.keys(values).join(","), removed: rows.length });
+	}
 
 	// -----------------------------------------------------------------------
 	// Accounts and examples
@@ -127,6 +155,7 @@ export default async function register(ctx) {
 			// Payments of known bills don't need the model.
 			await bills.autoMatch();
 			const cfg = await readSettings();
+			const { llm } = await ai();
 			const { account, accounts } = await statementAccount(rows[0].account_code);
 			const candidates = candidateAccounts(accounts, account);
 			const rules = await loadRules();
@@ -140,7 +169,7 @@ export default async function register(ctx) {
 			);
 			const started = Date.now();
 			const out = await suggest({
-				cfg,
+				llm,
 				statementAccount: account,
 				candidates,
 				examples,
@@ -165,7 +194,7 @@ export default async function register(ctx) {
 			await syncStatementNotice(id);
 			ctx.log.info("statement categorized", { statement: String(id), transactions: txs.length, failed: failed.length, ms: Date.now() - started });
 		} catch (err) {
-			const msg = err instanceof ctx.HttpError || err instanceof LlmError || err instanceof Error ? err.message : String(err);
+			const msg = err instanceof Error ? err.message : String(err);
 			await q(`UPDATE ${T("statements")} SET status = 'error', error = $2 WHERE id = $1`, [id, msg]);
 			await syncStatementNotice(id);
 			throw err;
@@ -178,8 +207,10 @@ export default async function register(ctx) {
 			if (rowCount > 0) enqueue(sid);
 		}
 	};
-	const bills = registerBills(ctx, { q, T, bad, readSettings, requeue });
+	const bills = registerBills(ctx, { q, T, bad, ai, requeue });
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
+
+	await migrateOldSettings().catch((err) => ctx.log.error("moving old settings failed", { err: String(err?.message || err) }));
 
 	// Resume work interrupted by a restart (not awaited: register must finish quickly).
 	const { rows: unfinished } = await q(`SELECT id FROM ${T("statements")} WHERE status IN ('queued', 'categorizing') ORDER BY id`);
@@ -193,68 +224,10 @@ export default async function register(ctx) {
 	// Routes: settings
 	// -----------------------------------------------------------------------
 
-	ctx.route("GET", "/settings", async () => publicSettings(await readSettings()));
-
-	ctx.route("PUT", "/settings", async (req) => {
-		const b = req.body ?? {};
-		const set = {};
-		if (b.provider !== undefined) {
-			if (!PROVIDERS.includes(b.provider)) throw bad(`provider must be one of ${PROVIDERS.join(", ")}`);
-			set.provider = b.provider;
-		}
-		for (const k of ["model", "base_url"]) {
-			if (b[k] !== undefined) {
-				if (typeof b[k] !== "string" || b[k].length > 300) throw bad(`${k} must be a string`);
-				set[k] = b[k].trim();
-			}
-		}
-		if (set.base_url && !/^https?:\/\/[^\s]+$/.test(set.base_url)) throw bad("base_url must start with http:// or https://");
-		if (b.effort !== undefined) {
-			if (!EFFORTS.includes(b.effort)) throw bad(`effort must be one of ${EFFORTS.join(", ")}`);
-			set.effort = b.effort;
-		}
-		if (b.batch_size !== undefined) {
-			const n = Number(b.batch_size);
-			if (!Number.isInteger(n) || n < 1 || n > 200) throw bad("batch_size must be 1-200");
-			set.batch_size = String(n);
-		}
-		if (b.review_threshold !== undefined) {
-			const n = Number(b.review_threshold);
-			if (!(n >= 0 && n <= 1)) throw bad("review_threshold must be between 0 and 1");
-			set.review_threshold = String(n);
-		}
-		if (b.api_key !== undefined) {
-			if (b.api_key !== null && (typeof b.api_key !== "string" || b.api_key.length > 500)) throw bad("api_key must be a string or null");
-			set.api_key = b.api_key === null ? "" : b.api_key.trim();
-		}
-		for (const [key, value] of Object.entries(set)) {
-			if (!SETTING_KEYS.includes(key)) continue;
-			if (value === "") await q(`DELETE FROM ${T("settings")} WHERE key = $1`, [key]);
-			else await q(`INSERT INTO ${T("settings")} (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [key, value]);
-		}
-		// Switching provider resets model and URL to that provider's defaults unless given.
-		if (set.provider) {
-			const reset = ["model", "base_url"].filter((k) => b[k] === undefined);
-			if (reset.length > 0) await q(`DELETE FROM ${T("settings")} WHERE key = ANY($1::text[])`, [reset]);
-		}
-		ctx.log.info("settings changed", { by: req.user.username, keys: Object.keys(set).join(",") });
-		return publicSettings(await readSettings());
-	});
-
-	ctx.route("POST", "/settings/test", async () => {
-		const cfg = await readSettings();
-		const started = Date.now();
-		try {
-			const r = await completeJson(cfg, {
-				system: "You check that a connection works.",
-				prompt: 'Answer with {"ok": true}.',
-				schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false },
-				maxTokens: 2000,
-			});
-			return { ok: r.data?.ok === true, model: r.model, ms: Date.now() - started };
-		} catch (err) {
-			return { ok: false, error: err.message, ms: Date.now() - started };
-		}
+	// GET /status: whether Ledger's AI and Gmail are available to this module, for the page.
+	ctx.route("GET", "/status", async (req) => {
+		const [llm, gmail, cfg] = await Promise.all([ctx.llm.status(), ctx.gmail.status(), readSettings()]);
+		return { llm, gmail, settings: cfg, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version };
 	});
 
 	// -----------------------------------------------------------------------
@@ -549,10 +522,11 @@ export default async function register(ctx) {
 			return { id: i, date, description: t.description.slice(0, 500), memo: typeof t.memo === "string" ? t.memo.slice(0, 500) : "", amount_cents: amount };
 		});
 		const cfg = await readSettings();
+		const { llm } = await ai();
 		const candidates = candidateAccounts(accounts, account);
 		const rules = await loadRules();
 		const out = await suggest({
-			cfg,
+			llm,
 			statementAccount: account,
 			candidates,
 			examples: await examplesFor(account, candidates, rules),
@@ -566,6 +540,44 @@ export default async function register(ctx) {
 				return { index: t.id, account_code: s.code, confidence: s.confidence, reason: s.reason, source: s.source, needs_review: s.code === null || s.confidence < cfg.review_threshold };
 			}),
 		};
+	});
+
+	// -----------------------------------------------------------------------
+	// Ledger's search bar: bills, statements and transactions
+	// -----------------------------------------------------------------------
+
+	const like = (s) => `%${s.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
+	const money = (cents, cur) => `${(Number(cents) / 100).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur ?? ""}`.trim();
+	ctx.search.provide(async (query, { limit }) => {
+		const term = String(query ?? "").trim();
+		if (term.length < 2) return [];
+		const n = Math.min(limit, 20);
+		const [b, st, tx] = await Promise.all([
+			q(
+				`SELECT id, vendor, invoice_number, due_date::text AS due_date, amount_cents, currency, status FROM ${T("bills")}
+				  WHERE vendor ILIKE $1 OR invoice_number ILIKE $1 OR mail_subject ILIKE $1 ORDER BY id DESC LIMIT $2`,
+				[like(term), n],
+			),
+			q(`SELECT id, filename, account_code FROM ${T("statements")} WHERE filename ILIKE $1 ORDER BY id DESC LIMIT $2`, [like(term), n]),
+			q(
+				`SELECT t.id, t.statement_id, t.tx_date::text AS date, t.description, t.amount_cents, t.account_code, t.status FROM ${T("transactions")} t
+				  WHERE t.description ILIKE $1 OR t.memo ILIKE $1 ORDER BY t.tx_date DESC LIMIT $2`,
+				[like(term), n],
+			),
+		]);
+		return [
+			...b.rows.map((r) => ({
+				title: `Bill: ${r.vendor || "unknown vendor"}${r.invoice_number ? ` #${r.invoice_number}` : ""}`,
+				subtitle: [r.amount_cents === null ? "" : money(r.amount_cents, r.currency), r.due_date ? `due ${r.due_date}` : "", r.status].filter(Boolean).join(" · "),
+				href: `/apps/${ctx.id}?bill=${r.id}`,
+			})),
+			...st.rows.map((r) => ({ title: `Statement: ${r.filename}`, subtitle: `account ${r.account_code}`, href: `/apps/${ctx.id}?statement=${r.id}` })),
+			...tx.rows.map((r) => ({
+				title: r.description,
+				subtitle: `${r.date} · ${money(r.amount_cents)} · account ${r.account_code} · ${r.status === "new" ? "to post" : r.status}`,
+				href: `/apps/${ctx.id}?statement=${r.statement_id}`,
+			})),
+		].slice(0, limit);
 	});
 
 	ctx.log.info("LLM API module ready", { resumed: unfinished.length });

@@ -96,7 +96,7 @@
 	<button data-tab="bills">Bills</button>
 	<button data-tab="upload">Upload</button>
 	<button data-tab="rules">Learned rules</button>
-	<button data-tab="settings">Settings</button>
+	<button data-tab="settings">Status</button>
 </nav>
 
 <!-- Statements list + review -->
@@ -172,7 +172,7 @@
 		<label class="btn" style="display:inline-block; font-weight:normal">Upload bill (PDF or .eml)<input type="file" id="b-file" accept=".pdf,.eml,application/pdf,message/rfc822" class="hidden"></label>
 		<button class="btn" id="b-add">Add by hand</button>
 	</div>
-	<p class="muted small">Bills are read from your mailbox on a schedule (set it up under Settings → Email). Approve a bill once its details are right. When a statement contains its payment, the transaction is matched to the bill automatically, and posting it marks the bill paid.</p>
+	<p class="muted small">Bills are read from your mailbox on a schedule (choose Gmail or IMAP under Settings → LLM API in Ledger; Gmail must be allowed under Settings → Gmail). Approve a bill once its details are right. When a statement contains its payment, the transaction is matched to the bill automatically, and posting it marks the bill paid.</p>
 	<div class="table-wrap">
 		<table id="bills" class="stack">
 			<thead><tr><th>Due</th><th>Vendor</th><th>Invoice</th><th class="num">Amount</th><th>Account</th><th>Status</th><th>Payment</th></tr></thead>
@@ -256,93 +256,22 @@
 	</div>
 </section>
 
-<!-- Settings -->
+<!-- Status: Ledger's AI and Gmail, and where the options are -->
 <section id="tab-settings" class="hidden">
-	<form id="settings" class="panel">
-		<div class="grid">
-			<label>Provider
-				<select id="s-provider">
-					<option value="anthropic">Claude (Anthropic API)</option>
-					<option value="ollama">Ollama (local model)</option>
-					<option value="openai">OpenAI-compatible server (LM Studio, llama.cpp, vLLM…)</option>
-				</select>
-			</label>
-			<label>Model <input id="s-model" autocomplete="off"></label>
-			<label>Server URL <input id="s-url" autocomplete="off"></label>
-			<label>API key <input id="s-key" type="password" autocomplete="new-password"></label>
-			<label id="s-effort-wrap">Effort (Claude)
-				<select id="s-effort"><option>low</option><option>medium</option><option>high</option></select>
-			</label>
-			<label>Transactions per request <input id="s-batch" type="number" min="1" max="200"></label>
-			<label>Needs review below confidence <input id="s-threshold" type="number" min="0" max="1" step="0.05"></label>
-		</div>
-		<p class="muted small" id="s-key-note"></p>
-		<p class="muted small" id="s-privacy"></p>
+	<div class="panel">
+		<h2 style="margin-top:0">AI</h2>
+		<p id="st-ai" class="small"></p>
+		<h2>Email for bills</h2>
+		<p id="st-mail" class="small"></p>
 		<div class="row">
-			<button class="btn primary">Save</button>
-			<button class="btn" type="button" id="s-test">Test connection</button>
-			<button class="btn danger" type="button" id="s-clear-key">Remove stored key</button>
-			<span id="s-msg" class="muted"></span>
+			<button class="btn" type="button" id="st-test">Test email connection</button>
+			<span id="st-msg" class="muted small"></span>
 		</div>
-	</form>
-
-	<h2>Email (bills)</h2>
-	<form id="mail" class="panel">
-		<div class="grid">
-			<label>Read mail from
-				<select id="m-source">
-					<option value="gmail">Gmail (no IMAP needed)</option>
-					<option value="imap">Another provider (IMAP)</option>
-				</select>
-			</label>
-		</div>
-		<div id="m-gmail" class="hidden" style="margin-top:0.75rem">
-			<p class="small">Gmail is read through a small script that runs in <strong>your own Google account</strong> (Google Apps Script). It only reads: it never changes, moves or deletes mail. Set up once:</p>
-			<ol class="small">
-				<li><button class="btn" type="button" id="m-show-script">Show the script</button> and copy it.</li>
-				<li>Open <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com → New project</a>, replace all the code with the script, and save.</li>
-				<li><em>Deploy → New deployment → Web app</em>. Set <em>Execute as: Me</em> and <em>Who has access: Anyone</em>, deploy, and allow access when Google asks.</li>
-				<li>Paste the <em>Web app URL</em> (ends in <code>/exec</code>) below, save, and press <em>Test connection</em>.</li>
-			</ol>
-			<div id="m-script-wrap" class="hidden">
-				<textarea id="m-script" rows="10" readonly style="font: 12px ui-monospace, monospace"></textarea>
-				<div class="row" style="margin: 0.4rem 0 0.75rem">
-					<button class="btn" type="button" id="m-copy-script">Copy</button>
-					<button class="btn danger" type="button" id="m-renew">Create a new token</button>
-					<span class="muted small">The script contains a secret token; anyone with the web app URL and the token can read the matching emails.</span>
-				</div>
-			</div>
-			<div class="grid">
-				<label>Web app URL <input id="m-gurl" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec"></label>
-				<label>Gmail search (optional) <input id="m-gquery" autocomplete="off" placeholder="e.g. label:bills"></label>
-			</div>
-			<p class="muted small" id="m-gquery-note"></p>
-		</div>
-		<div id="m-imap" class="grid" style="margin-top:0.75rem">
-			<label>IMAP server <input id="m-host" placeholder="imap.fastmail.com" autocomplete="off"></label>
-			<label>Port <input id="m-port" type="number" min="1" max="65535" placeholder="993"></label>
-			<label>User name <input id="m-user" autocomplete="off" placeholder="you@example.com"></label>
-			<label>Password <input id="m-pass" type="password" autocomplete="new-password"></label>
-			<label>Folder <input id="m-folder" placeholder="INBOX"></label>
-		</div>
-		<div class="grid" style="margin-top:0.75rem">
-			<label>Check every (minutes, 0 = off) <input id="m-interval" type="number" min="0" max="10080"></label>
-			<label>First check looks back (days) <input id="m-lookback" type="number" min="1" max="365"></label>
-			<label>Accounts payable account <select id="m-ap"></select></label>
-		</div>
-		<label style="margin-top:0.75rem">Only send emails containing one of these words to the model (comma-separated; empty = every email)
-			<textarea id="m-keywords" rows="2"></textarea>
-		</label>
-		<p class="muted small imap-only" id="m-pass-note"></p>
-		<p class="muted small imap-only">iCloud and Fastmail need an <em>app password</em>; Outlook.com and Microsoft 365 need IMAP enabled. The mailbox is opened read-only, so nothing is marked as read or moved. A dedicated folder (e.g. a filter that files bills) keeps unrelated mail away from the model.</p>
-		<p class="muted small">With an accounts payable account, approving a bill posts it there (debit the bill's account, credit payables) and its payment from the bank clears it. Without one, bills are only tracked and the payment is booked straight to the bill's account.</p>
-		<div class="row">
-			<button class="btn primary">Save</button>
-			<button class="btn" type="button" id="m-test">Test connection</button>
-			<button class="btn danger imap-only" type="button" id="m-clear-pass">Remove stored password</button>
-			<span id="m-msg" class="muted"></span>
-		</div>
-	</form>
+		<h2>Options</h2>
+		<p class="small">Review threshold, batch size, where bills come from, the Gmail search, keywords and the accounts payable account are set under <strong>Settings → LLM API</strong> in Ledger.</p>
+		<p id="st-options" class="muted small"></p>
+		<p id="st-version" class="muted small"></p>
+	</div>
 </section>
 
 <div id="toast"></div>
@@ -390,7 +319,7 @@
 		if (name === "bills") loadBills().catch(fail);
 		if (name === "review") loadStatements().catch(fail);
 		if (name === "rules") loadRules().catch(fail);
-		if (name === "settings") { loadSettings().catch(fail); loadMail().catch(fail); }
+		if (name === "settings") loadStatus().catch(fail);
 		if (name === "upload") loadUploadAccounts().catch(fail);
 	}
 	document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => { closeDetail(); showTab(b.dataset.tab); }));
@@ -689,83 +618,17 @@
 		);
 	}
 
-	// ---------------------------------------------------------------- settings
-	let settings = null;
-	function renderSettings() {
-		const s = settings;
-		$("s-provider").value = s.provider;
-		$("s-model").value = s.model;
-		$("s-model").placeholder = s.defaults[s.provider].model || "model name";
-		$("s-url").value = s.base_url;
-		$("s-url").placeholder = s.defaults[s.provider].base_url;
-		$("s-effort").value = s.effort;
-		$("s-effort-wrap").classList.toggle("hidden", s.provider !== "anthropic");
-		$("s-batch").value = s.batch_size;
-		$("s-threshold").value = s.review_threshold;
-		$("s-key").value = "";
-		$("s-key").disabled = s.api_key_from_env;
-		$("s-key").placeholder = s.api_key_from_env ? "set in ledger.env" : s.api_key_set ? "•••••••• (stored; type to replace)" : s.provider === "anthropic" ? "sk-ant-…" : "optional";
-		$("s-clear-key").classList.toggle("hidden", !s.api_key_set || s.api_key_from_env);
-		$("s-key-note").textContent = s.api_key_from_env
-			? "The API key comes from CATEGORIZER_API_KEY / ANTHROPIC_API_KEY in /etc/ledger/ledger.env."
-			: "A key saved here is stored in the Ledger database (and its backups). To keep it out of the database, put CATEGORIZER_API_KEY=… in /etc/ledger/ledger.env and restart Ledger instead.";
-		$("s-privacy").textContent = s.provider === "anthropic"
-			? "Privacy: each transaction's date, description, memo and amount, your account names, and recent entry descriptions for the statement account are sent to the Anthropic API."
-			: "Privacy: transaction details are sent to the server above. With a model running on your own network, nothing leaves it.";
-	}
-	async function loadSettings() {
-		settings = await api("/settings");
-		renderSettings();
-	}
-	$("s-provider").onchange = () => {
-		const p = $("s-provider").value;
-		$("s-model").value = settings.defaults[p].model;
-		$("s-url").value = settings.defaults[p].base_url;
-		$("s-model").placeholder = settings.defaults[p].model || "model name";
-		$("s-effort-wrap").classList.toggle("hidden", p !== "anthropic");
-	};
-	$("settings").onsubmit = async (e) => {
-		e.preventDefault();
-		const body = {
-			provider: $("s-provider").value,
-			model: $("s-model").value,
-			base_url: $("s-url").value,
-			effort: $("s-effort").value,
-			batch_size: Number($("s-batch").value),
-			review_threshold: Number($("s-threshold").value),
-		};
-		if ($("s-key").value.trim() !== "") body.api_key = $("s-key").value.trim();
-		try {
-			settings = await api("/settings", { method: "PUT", body: JSON.stringify(body) });
-			renderSettings();
-			toast("Settings saved.");
-		} catch (err) { fail(err); }
-	};
-	$("s-clear-key").onclick = async () => {
-		try {
-			settings = await api("/settings", { method: "PUT", body: JSON.stringify({ api_key: null }) });
-			renderSettings();
-			toast("Stored key removed.");
-		} catch (err) { fail(err); }
-	};
-	$("s-test").onclick = async () => {
-		$("s-msg").textContent = "Testing…";
-		try {
-			const r = await api("/settings/test", { method: "POST" });
-			$("s-msg").textContent = r.ok ? `Works: ${r.model} answered in ${(r.ms / 1000).toFixed(1)} s.` : `Failed: ${r.error || "unexpected answer"}`;
-		} catch (err) { $("s-msg").textContent = ""; fail(err); }
-	};
-
 	// ---------------------------------------------------------------- bills
 	const BILL_STATUS = { new: ["warn", "Needs review"], open: ["plain", "Approved"], paid: ["good", "Paid"], ignored: ["plain", "Ignored"] };
 	let billsList = [];
 	let currentBill = null;
 
 	function mailStatusText(m) {
-		if (!m.configured) return "Email not set up";
+		if (m.source === "off") return "Reading email is off";
+		if (!m.ready) return "Email not set up";
 		const st = m.state || {};
 		if (m.running) return "Checking email…";
-		if (!st.last_check_at) return m.mail_interval > 0 ? `Checks every ${m.mail_interval} min` : "Scheduled checks off";
+		if (!st.last_check_at) return m.interval > 0 ? `Checks every ${m.interval} min` : "Scheduled checks off";
 		const when = new Date(st.last_check_at).toLocaleString();
 		if (st.error) return `Last check ${when} failed: ${st.error}`;
 		const r = st.result || {};
@@ -774,7 +637,7 @@
 
 	async function loadBills() {
 		if (accounts.length === 0) await loadAccounts();
-		const [list, mail] = await Promise.all([api(`/bills?status=${encodeURIComponent($("b-filter").value)}`), api("/mail/settings")]);
+		const [list, mail] = await Promise.all([api(`/bills?status=${encodeURIComponent($("b-filter").value)}`), api("/mail/status")]);
 		billsList = list.data;
 		$("b-mail-status").textContent = mailStatusText(mail);
 		const body = $("bills").tBodies[0];
@@ -878,7 +741,7 @@
 		$("bd-reopen").classList.toggle("hidden", !["ignored", "paid"].includes(b.status) || !!b.paid_entry_id);
 		$("bd-ignore").classList.toggle("hidden", !open || locked);
 		$("bd-delete").classList.toggle("hidden", locked || b.status === "paid");
-		$("bd-ap-note").textContent = b.status === "new" && b.kind === "bill" ? "Approving posts this bill to accounts payable if one is set under Settings → Email." : "";
+		$("bd-ap-note").textContent = b.status === "new" && b.kind === "bill" ? "Approving posts this bill to accounts payable if one is set under Settings → LLM API." : "";
 
 		const pay = $("bd-payments");
 		if (payments.length === 0) pay.replaceChildren(el("p", { class: "muted small" }, b.status === "paid" ? "Marked paid by hand." : "No matching bank transaction yet. It's matched when a statement with the payment is uploaded."));
@@ -983,95 +846,51 @@
 	$("bd-ignore").onclick = () => billAction("save", { status: "ignored" });
 	$("bd-delete").onclick = () => confirm("Delete this bill?") && billAction("delete");
 
-	// ---------------------------------------------------------------- email settings
-	let mailCfg = null;
-	async function loadMail() {
-		if (accounts.length === 0) await loadAccounts();
-		mailCfg = await api("/mail/settings");
-		const m = mailCfg;
-		$("m-source").value = m.mail_source;
-		showSource();
-		$("m-gurl").value = m.gmail_url;
-		$("m-gquery").value = m.gmail_query;
-		$("m-gquery-note").textContent = `Gmail search used: ${m.effective_gmail_query}. Leave the search empty to use the keywords below; a label (a Gmail filter that labels bills) works best.`;
-		$("m-host").value = m.imap_host;
-		$("m-port").value = m.imap_port;
-		$("m-user").value = m.imap_user;
-		$("m-pass").value = "";
-		$("m-pass").disabled = m.imap_password_from_env;
-		$("m-pass").placeholder = m.imap_password_from_env ? "set in ledger.env" : m.imap_password_set ? "•••••••• (stored; type to replace)" : "app password";
-		$("m-clear-pass").classList.toggle("hidden", !m.imap_password_set || m.imap_password_from_env || m.mail_source !== "imap");
-		$("m-pass-note").textContent = m.imap_password_from_env
-			? "The password comes from CATEGORIZER_IMAP_PASSWORD in /etc/ledger/ledger.env."
-			: "A password saved here is stored in the Ledger database (and its backups). To keep it out, set CATEGORIZER_IMAP_PASSWORD=… in /etc/ledger/ledger.env and restart Ledger.";
-		$("m-folder").value = m.imap_folder;
-		$("m-interval").value = m.mail_interval;
-		$("m-lookback").value = m.mail_lookback_days;
-		$("m-keywords").value = m.mail_keywords.join(", ");
-		const sel = $("m-ap");
-		sel.replaceChildren(el("option", { value: "" }, "None: track bills only"));
-		for (const a of accounts.filter((x) => x.type === "liability")) sel.append(el("option", { value: a.code }, `${a.code} · ${a.name} (${a.currency})`));
-		sel.value = m.ap_account;
-		$("m-msg").textContent = mailStatusText(m);
+	// ---------------------------------------------------------------- status (Ledger's AI and Gmail)
+	const statusLine = (ok, text) => [el("span", { class: `pill ${ok ? "good" : "warn"}` }, ok ? "Ready" : "Not set up"), " ", text];
+	async function loadStatus() {
+		const [st, mail] = await Promise.all([api("/status"), api("/mail/status")]);
+		const ai = st.llm;
+		$("st-ai").replaceChildren(
+			...(!ai.configured
+				? statusLine(false, "No AI provider is set up yet. An admin can choose one under Settings → AI and allow this module there.")
+				: !ai.allowed
+					? statusLine(false, `Ledger uses ${ai.provider} (${ai.model || "default model"}), but this module isn't allowed to use it yet. An admin can allow it under Settings → AI.`)
+					: statusLine(true, `Suggestions and bills use Ledger's AI: ${ai.provider}, ${ai.model || "default model"}.${ai.readsPdf ? " Bill PDFs are read too." : " This provider can't read PDFs, so bill amounts that are only in a PDF have to be typed in."}`)),
+		);
+		let mailText;
+		if (mail.source === "off") mailText = [el("span", { class: "pill plain" }, "Off"), " Reading email is turned off (Settings → LLM API)."];
+		else if (!mail.ready) mailText = statusLine(false, `${mail.missing}.`);
+		else if (mail.source === "gmail") mailText = statusLine(true, `Reads ${mail.gmail.account || "Ledger's Gmail account"} with the search “${mail.gmail_query}”, ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
+		else mailText = statusLine(true, `Reads ${mail.imap.user} on ${mail.imap.host} (${mail.imap.folder}), ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
+		$("st-mail").replaceChildren(...mailText, mail.ready ? el("div", { class: "muted small", style: "margin-top:4px" }, mailStatusText(mail)) : "");
+		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${mail.ap_account || "none (bills are only tracked)"}.`;
+		$("st-version").textContent = `Module ${st.version} on Ledger ${st.ledger}.`;
 	}
-	$("mail").onsubmit = async (e) => {
-		e.preventDefault();
-		const body = {
-			mail_source: $("m-source").value,
-			gmail_url: $("m-gurl").value,
-			gmail_query: $("m-gquery").value,
-			imap_host: $("m-host").value,
-			imap_port: Number($("m-port").value) || 993,
-			imap_user: $("m-user").value,
-			imap_folder: $("m-folder").value,
-			mail_interval: Number($("m-interval").value),
-			mail_lookback_days: Number($("m-lookback").value) || 30,
-			mail_keywords: $("m-keywords").value.split(",").map((k) => k.trim()).filter(Boolean),
-			ap_account: $("m-ap").value,
-		};
-		if ($("m-pass").value !== "") body.imap_password = $("m-pass").value;
-		try {
-			await api("/mail/settings", { method: "PUT", body: JSON.stringify(body) });
-			await loadMail();
-			toast("Email settings saved.");
-		} catch (err) { fail(err); }
-	};
-	$("m-test").onclick = async () => {
-		$("m-msg").textContent = "Connecting…";
+	$("st-test").onclick = async () => {
+		$("st-msg").textContent = "Connecting…";
 		try {
 			const r = await api("/mail/test", { method: "POST" });
-			$("m-msg").textContent = !r.ok
+			$("st-msg").textContent = !r.ok
 				? `Failed: ${r.error}`
 				: r.source === "gmail"
-					? `Works: connected to ${r.account || "Gmail"}; ${r.matching} emails match the search.`
+					? `Works: ${r.account || "Gmail"}; ${r.matching} emails match the search.`
 					: `Works: the folder has ${r.messages} messages, ${r.matching} in the look-back window.`;
-		} catch (err) { $("m-msg").textContent = ""; fail(err); }
-	};
-	function showSource() {
-		const gmail = $("m-source").value === "gmail";
-		$("m-gmail").classList.toggle("hidden", !gmail);
-		$("m-imap").classList.toggle("hidden", gmail);
-		document.querySelectorAll(".imap-only").forEach((n) => n.classList.toggle("hidden", gmail));
-	}
-	$("m-source").onchange = showSource;
-	async function showScript(renew = false) {
-		try {
-			const r = await api("/mail/gmail-script", { method: "POST", body: JSON.stringify({ renew }) });
-			$("m-script").value = r.script;
-			$("m-script-wrap").classList.remove("hidden");
-		} catch (err) { fail(err); }
-	}
-	$("m-show-script").onclick = () => showScript(false);
-	$("m-renew").onclick = () => confirm("Create a new token? The script you deployed stops working until you paste the new one into Apps Script and deploy a new version.") && showScript(true).then(() => toast("New token created: update the script in Apps Script."));
-	$("m-copy-script").onclick = async () => {
-		try { await navigator.clipboard.writeText($("m-script").value); toast("Script copied."); }
-		catch { $("m-script").select(); toast("Press Ctrl+C (⌘C) to copy."); }
-	};
-	$("m-clear-pass").onclick = async () => {
-		try { await api("/mail/settings", { method: "PUT", body: JSON.stringify({ imap_password: null }) }); await loadMail(); toast("Stored password removed."); } catch (err) { fail(err); }
+		} catch (err) { $("st-msg").textContent = ""; fail(err); }
 	};
 
-	showTab("review");
+	// Links from Ledger's search bar arrive as /apps/categorizer?bill=… or ?statement=… on the parent page.
+	function openFromLink() {
+		let params;
+		try { params = new URLSearchParams(window.parent.location.search); } catch { return false; }
+		const bill = params.get("bill");
+		const statement = params.get("statement");
+		if (bill && /^\d+$/.test(bill)) { showTab("bills"); openBill(Number(bill)); return true; }
+		if (statement && /^\d+$/.test(statement)) { showTab("review"); openStatement(Number(statement)); return true; }
+		return false;
+	}
+
+	if (!openFromLink()) showTab("review");
 </script>
 </body>
 </html>

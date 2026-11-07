@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assignMatches, extractBill, findDuplicate, looksLikeBill, matchScore } from "../lib/bills.mjs";
+import { assignMatches, extractBill, findDuplicate, gmailQuery, looksLikeBill, matchScore } from "../lib/bills.mjs";
 import { parseEmail } from "../lib/mime.mjs";
 import { sampleEmail } from "./helpers.mjs";
 
@@ -16,38 +16,30 @@ test("keyword filter", () => {
 	assert.ok(looksLikeBill({ subject: "", from: "", text: "", attachments: [] }, []));
 });
 
-test("extractBill sends the PDF to Claude and parses the answer", async () => {
+const ANSWER = { kind: "bill", vendor: "Rogers", invoice_number: "INV-9", bill_date: "2026-03-03", due_date: "2026-03-20", amount_due: "85.50", currency: "CAD", account_code: "5300", confidence: 0.9, summary: "March phone bill" };
+
+test("extractBill passes the PDF to an AI that reads PDFs and parses the answer", async () => {
 	let sent;
-	const fetchImpl = async (url, init) => {
-		sent = JSON.parse(init.body);
-		const answer = { kind: "bill", vendor: "Rogers", invoice_number: "INV-9", bill_date: "2026-03-03", due_date: "2026-03-20", amount_due: "85.50", currency: "CAD", account_code: "5300", confidence: 0.9, summary: "March phone bill" };
-		return new Response(JSON.stringify({ model: "m", stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify(answer) }] }));
-	};
+	const llm = async (req) => ((sent = req), { data: ANSWER });
 	const email = parseEmail(sampleEmail());
-	const pdfs = email.attachments;
-	const x = await extractBill({ cfg: { provider: "anthropic", api_key: "k" }, email, pdfs, accounts, examples: [{ vendor: "Rogers", account_code: "5300" }], fetchImpl });
+	const x = await extractBill({ llm, readsPdf: true, email, pdfs: email.attachments, accounts, examples: [{ vendor: "Rogers", account_code: "5300" }] });
 	assert.deepEqual(x, { kind: "bill", vendor: "Rogers", invoice_number: "INV-9", bill_date: "2026-03-03", due_date: "2026-03-20", amount_cents: 8550n, currency: "CAD", account_code: "5300", confidence: 0.9, summary: "March phone bill" });
-	const content = sent.messages[0].content;
-	assert.equal(content[0].type, "document");
-	assert.equal(content[0].source.media_type, "application/pdf");
-	assert.equal(Buffer.from(content[0].source.data, "base64").toString("latin1").slice(0, 8), "%PDF-1.4");
-	assert.equal(content[1].type, "text");
-	assert.match(content[1].text, /"Rogers" -> 5300/);
-	assert.match(content[1].text, /Subject: Your Rogers bill/);
-	assert.deepEqual(sent.output_config.format.schema.properties.account_code.enum, ["5300", "5400", ""]);
+	assert.equal(sent.documents.length, 1);
+	assert.equal(sent.documents[0].media_type, "application/pdf");
+	assert.equal(Buffer.from(sent.documents[0].data, "base64").toString("latin1").slice(0, 8), "%PDF-1.4");
+	assert.match(sent.prompt, /"Rogers" -> 5300/);
+	assert.match(sent.prompt, /Subject: Your Rogers bill/);
+	assert.deepEqual(sent.schema.properties.account_code.enum, ["5300", "5400", ""]);
 });
 
-test("local models get the text and are told about PDFs they can't see", async () => {
+test("an AI that can't read PDFs gets the text and is told about the PDF", async () => {
 	let sent;
-	const fetchImpl = async (url, init) => {
-		sent = JSON.parse(init.body);
-		return new Response(JSON.stringify({ message: { content: JSON.stringify({ kind: "not_bill", vendor: "", invoice_number: "", bill_date: "", due_date: "", amount_due: "", currency: "", account_code: "", confidence: 0.2, summary: "" }) } }));
-	};
+	const llm = async (req) => ((sent = req), { data: { ...ANSWER, kind: "not_bill", amount_due: "" } });
 	const email = parseEmail(sampleEmail());
-	const x = await extractBill({ cfg: { provider: "ollama", model: "q" }, email, pdfs: email.attachments, accounts, fetchImpl });
+	const x = await extractBill({ llm, readsPdf: false, email, pdfs: email.attachments, accounts });
 	assert.equal(x.kind, "not_bill");
-	assert.equal(typeof sent.messages[1].content, "string");
-	assert.match(sent.messages[1].content, /Attached PDFs that you cannot see: Rogers March.pdf/);
+	assert.deepEqual(sent.documents, []);
+	assert.match(sent.prompt, /Attached PDFs that you cannot see: Rogers March.pdf/);
 });
 
 test("duplicates: same invoice number, or same amount and due date", () => {
@@ -73,4 +65,10 @@ test("matching: exact amount out, date window, vendor bonus", () => {
 	const m = assignMatches(bills, txs).map((p) => [p.bill.id, p.tx.id]);
 	assert.deepEqual(m.sort(), [[1, "ROGERS"], [2, "BELL CANADA"]]);
 	assert.deepEqual(assignMatches(bills, txs, (b, t) => !(b.id === 1 && t.id === "ROGERS")).map((p) => [p.bill.id, p.tx.id]), [[2, "BELL CANADA"]]);
+});
+
+test("Gmail search for bills", () => {
+	assert.equal(gmailQuery({ lookbackDays: 30, keywords: ["invoice", "amount due"], custom: "" }), 'newer_than:30d {invoice "amount due"}');
+	assert.equal(gmailQuery({ lookbackDays: 7, keywords: ["invoice"], custom: "label:bills" }), "newer_than:7d label:bills");
+	assert.equal(gmailQuery({ lookbackDays: 7, keywords: [], custom: "" }), "newer_than:7d");
 });

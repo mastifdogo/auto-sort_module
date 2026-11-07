@@ -72,28 +72,30 @@ prints the session cookie). If PostgreSQL has no password yet:
 
 ## This module: LLM API (`id: categorizer`, schema `mod_categorizer`)
 
-Statement upload (CSV, OFX, QFX) with an LLM recommending an account per
+Statement upload (CSV, OFX, QFX) with Ledger's AI recommending an account per
 transaction, transfers between your own accounts, and bills found in email
-(Gmail or IMAP), tracked until paid and matched to statement payments.
+(Ledger's Gmail through `ctx.gmail`, or IMAP for other providers), tracked
+until paid and matched to statement payments.
 
 - The id is `categorizer` (permanent: it names the schema). The name shown
-  is "LLM API".
-- Layout: `server.mjs` (settings, statements, categorizing),
-  `lib/bill-routes.mjs` (bills and mail routes), `lib/llm.mjs` (calls
-  Anthropic / Ollama / OpenAI-compatible APIs directly), `lib/gmail.mjs` (an
-  Apps Script bridge), `lib/imap.mjs`, `lib/mime.mjs`, `lib/parse.mjs`
-  (statement formats), `lib/categorize.mjs`, `lib/transfers.mjs`,
-  `lib/bills.mjs`. Tests: `test/*.test.mjs` (`npm test`).
-- Known follow-ups (Ledger ≥ 0.10.0):
-  - Move AI calls from `lib/llm.mjs` to `ctx.llm.json()` and drop the
-    module's own provider, key and model settings (the admin sets them under
-    Settings → AI and allows this module). Keep batch size and review
-    threshold as module settings.
-  - Replace the Apps Script Gmail bridge with `ctx.gmail.search()` /
-    `message()` / `attachment()` / `raw()` (`lib/mime.mjs` can keep parsing
-    `raw()`). Keep IMAP for other providers. A migration can drop the bridge
-    columns only after the code no longer reads them.
-  - Show `ctx.llm.status()` / `ctx.gmail.status()` in the UI when the module
-    isn't allowed yet.
-  - `nav.icon` is `robot`, which Ledger doesn't know (generic icon shown);
-    `bot` is the built-in, or draw one.
+  is "LLM API". Needs Ledger ≥ 0.10.0.
+- Layout: `server.mjs` (statements, categorizing, `/status`, search, the
+  one-time copy of pre-0.1.0 settings to `ctx.settings`),
+  `lib/bill-routes.mjs` (bills and mail routes; mail from `ctx.gmail` or
+  `lib/imap.mjs`), `lib/mime.mjs` (parses `ctx.gmail.raw()` and IMAP
+  messages), `lib/parse.mjs` (statement formats), `lib/categorize.mjs` and
+  `lib/bills.mjs` (prompts and schemas for `ctx.llm.json()`, matching),
+  `lib/transfers.mjs` + `lib/transfer-sync.mjs`, `lib/dashboard.mjs`. Tests:
+  `test/*.test.mjs` (`npm test`).
+- AI: every call is `ctx.llm.json()`; a 403/409 from it ("not allowed" /
+  "not set up") stops a batch run early, and its message (which says where
+  to fix it) is shown on the rows.
+- Options are the manifest's `settings.fields`, read per request with
+  `ctx.settings.get()`. `mod_categorizer.settings` only keeps `mail_state`
+  (the last mail check).
+- The sidebar icon is drawn (`nav.icon.path`, a robot head).
+- Testing the real flows: Ledger reads its AI and Gmail settings from
+  `INTEGRATIONS_DIR` (`llm.json`, `gmail.json`) and Gmail's endpoints from
+  `GMAIL_API_BASE` / `GOOGLE_OAUTH_BASE`. Point them at local stubs (a fake
+  Messages API and a fake Gmail API), allow `categorizer` in both files, and
+  drive statements, bills, transfers and Gmail through the HTTP API.

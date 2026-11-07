@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildPrompt, candidateAccounts, examplesFromEntries, suggest } from "../lib/categorize.mjs";
-import { completeJson } from "../lib/llm.mjs";
 
 const bank = { code: "1000", name: "Chequing", type: "asset", currency: "CAD", is_active: true };
 const accounts = [
@@ -14,33 +13,26 @@ const accounts = [
 ];
 const candidates = candidateAccounts(accounts, bank);
 
-/** A fake fetch that records requests and answers like the Messages API. */
-function fakeAnthropic(answer) {
+/** A fake ctx.llm.json that records requests; answer(prompt) gives the results rows. */
+function fakeLlm(answer) {
 	const calls = [];
-	const fetchImpl = async (url, init) => {
-		const body = JSON.parse(init.body);
-		calls.push({ url, headers: init.headers, body });
-		const results = answer(body);
-		return new Response(JSON.stringify({ model: body.model, stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ results }) }] }), { status: 200 });
+	const llm = async (req) => {
+		calls.push(req);
+		return { data: { results: answer(req) }, model: "m" };
 	};
-	return { calls, fetchImpl };
+	return { calls, llm };
 }
+
+const rowsOf = (req) => req.prompt.split("\n").filter((l) => l.startsWith("{")).map((l) => JSON.parse(l));
 
 test("candidate accounts: active, same currency, not the statement account", () => {
 	assert.deepEqual(candidates.map((a) => a.code), ["5100", "5200", "4000"]);
 });
 
-test("rules answer without the model; the rest go to Claude with a constrained schema", async () => {
-	const { calls, fetchImpl } = fakeAnthropic((body) => {
-		const lines = body.messages[0].content.split("\n").filter((l) => l.startsWith("{"));
-		return lines.map((l) => {
-			const t = JSON.parse(l);
-			return { i: t.i, account_code: t.amount.startsWith("-") ? "5100" : "4000", confidence: 1.7, reason: "test" };
-		});
-	});
-	const cfg = { provider: "anthropic", model: "claude-opus-5-5", api_key: "k", effort: "low" };
+test("rules answer without the model; the rest go to the AI with a constrained schema", async () => {
+	const { calls, llm } = fakeLlm((req) => rowsOf(req).map((t) => ({ i: t.i, account_code: t.amount.startsWith("-") ? "5100" : "4000", confidence: 1.7, reason: "test" })));
 	const out = await suggest({
-		cfg,
+		llm,
 		statementAccount: bank,
 		candidates,
 		examples: [{ description: "NETFLIX.COM", amount: "-16.99", account_code: "5200" }],
@@ -50,19 +42,11 @@ test("rules answer without the model; the rest go to Claude with a constrained s
 			{ id: 2, date: "2026-03-02", description: "SHELL #12", memo: "", amount_cents: -4510n },
 			{ id: 3, date: "2026-03-03", description: "PAYROLL", memo: "", amount_cents: 200000n },
 		],
-		fetchImpl,
 	});
 	assert.equal(calls.length, 1);
-	const req = calls[0];
-	assert.equal(req.url, "https://api.anthropic.com/v1/messages");
-	assert.equal(req.headers["anthropic-version"], "2026-10-21");
-	assert.equal(req.headers["anthropic-beta"], "server-side-fallback-2026-07-01");
-	assert.equal(req.body.fallbacks, "default");
-	assert.equal(req.body.output_config.effort, "low");
-	assert.deepEqual(req.body.output_config.format.schema.properties.results.items.properties.account_code.enum, ["5100", "5200", "4000"]);
-	assert.ok(!("temperature" in req.body));
-	assert.match(req.body.messages[0].content, /"NETFLIX.COM" -16.99 -> 5200/);
-
+	assert.deepEqual(calls[0].schema.properties.results.items.properties.account_code.enum, ["5100", "5200", "4000"]);
+	assert.match(calls[0].prompt, /"NETFLIX.COM" -16.99 -> 5200/);
+	assert.equal(rowsOf(calls[0]).length, 2); // the rule-matched row isn't sent
 	assert.equal(out.get(1).source, "rule");
 	assert.equal(out.get(1).code, "5200");
 	assert.deepEqual(out.get(2), { code: "5100", confidence: 1, reason: "test", source: "llm" });
@@ -70,43 +54,37 @@ test("rules answer without the model; the rest go to Claude with a constrained s
 });
 
 test("invalid codes and missing rows become errors; batches are split", async () => {
-	const { calls, fetchImpl } = fakeAnthropic(() => [{ i: 1, account_code: "9999", confidence: 0.9, reason: "x" }]);
+	const { calls, llm } = fakeLlm(() => [{ i: 1, account_code: "9999", confidence: 0.9, reason: "x" }]);
 	const txs = [1, 2, 3].map((id) => ({ id, date: "2026-03-01", description: `X${id}`, memo: "", amount_cents: -100n }));
-	const out = await suggest({ cfg: { provider: "anthropic", api_key: "k" }, statementAccount: bank, candidates, examples: [], rules: new Map(), transactions: txs, batchSize: 2, fetchImpl });
+	const out = await suggest({ llm, statementAccount: bank, candidates, examples: [], rules: new Map(), transactions: txs, batchSize: 2 });
 	assert.equal(calls.length, 2);
 	for (const id of [1, 2, 3]) assert.equal(out.get(id).source, "error");
 });
 
-test("auth errors stop after the first batch", async () => {
+test("'not allowed' and 'not set up' from Ledger's AI stop after the first batch", async () => {
+	for (const status of [403, 409]) {
+		let n = 0;
+		const llm = async () => {
+			n++;
+			throw Object.assign(new Error("this module isn't allowed to use AI; an admin can allow it under Settings → AI"), { status });
+		};
+		const txs = [1, 2, 3, 4].map((id) => ({ id, date: "2026-03-01", description: `X${id}`, memo: "", amount_cents: -100n }));
+		const out = await suggest({ llm, statementAccount: bank, candidates, examples: [], rules: new Map(), transactions: txs, batchSize: 1 });
+		assert.equal(n, 1);
+		assert.match(out.get(4).reason, /Settings → AI/);
+	}
+});
+
+test("a provider failure on one batch doesn't stop the others", async () => {
 	let n = 0;
-	const fetchImpl = async () => (n++, new Response(JSON.stringify({ error: { message: "invalid x-api-key" } }), { status: 401 }));
-	const txs = [1, 2, 3, 4].map((id) => ({ id, date: "2026-03-01", description: `X${id}`, memo: "", amount_cents: -100n }));
-	const out = await suggest({ cfg: { provider: "anthropic", api_key: "bad" }, statementAccount: bank, candidates, examples: [], rules: new Map(), transactions: txs, batchSize: 1, fetchImpl });
-	assert.equal(n, 1);
-	assert.match(out.get(4).reason, /401: invalid x-api-key/);
-});
-
-test("refusals and missing keys raise readable errors", async () => {
-	const refuse = async () => new Response(JSON.stringify({ stop_reason: "refusal", content: [] }), { status: 200 });
-	const req = { system: "s", prompt: "p", schema: {} };
-	await assert.rejects(completeJson({ provider: "anthropic", api_key: "k" }, req, refuse), /declined/);
-	await assert.rejects(completeJson({ provider: "anthropic", api_key: "" }, req, refuse), /no Anthropic API key/);
-});
-
-test("Ollama and OpenAI-compatible requests", async () => {
-	const seen = [];
-	const fetchImpl = async (url, init) => {
-		seen.push({ url, body: JSON.parse(init.body) });
-		const content = '{"ok": true}';
-		return new Response(JSON.stringify(url.endsWith("/api/chat") ? { model: "m", message: { content } } : { model: "m", choices: [{ message: { content: "```json\n" + content + "\n```" } }] }));
+	const llm = async (req) => {
+		if (n++ === 0) throw Object.assign(new Error("api.anthropic.com answered 529: overloaded"), { status: 502 });
+		return { data: { results: rowsOf(req).map((t) => ({ i: t.i, account_code: "5100", confidence: 0.9, reason: "ok" })) } };
 	};
-	const req = { system: "s", prompt: "p", schema: { type: "object" } };
-	assert.deepEqual((await completeJson({ provider: "ollama", model: "qwen3:14b", base_url: "http://h:11434/" }, req, fetchImpl)).data, { ok: true });
-	assert.deepEqual((await completeJson({ provider: "openai", model: "m", base_url: "http://h:1234/v1" }, req, fetchImpl)).data, { ok: true });
-	assert.equal(seen[0].url, "http://h:11434/api/chat");
-	assert.deepEqual(seen[0].body.format, { type: "object" });
-	assert.equal(seen[1].url, "http://h:1234/v1/chat/completions");
-	assert.equal(seen[1].body.response_format.type, "json_schema");
+	const txs = [1, 2].map((id) => ({ id, date: "2026-03-01", description: `X${id}`, memo: "", amount_cents: -100n }));
+	const out = await suggest({ llm, statementAccount: bank, candidates, examples: [], rules: new Map(), transactions: txs, batchSize: 1 });
+	assert.equal(out.get(1).source, "error");
+	assert.equal(out.get(2).source, "llm");
 });
 
 test("examples come from two-line entries touching the statement account", () => {

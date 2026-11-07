@@ -2,12 +2,13 @@
 
 A module for [Ledger (Bookeeping)](https://github.com/mastifdogo/Bookeeping). You upload a bank or
 credit-card statement and an LLM suggests an account from your chart of accounts for each
-transaction. You check the suggestions, then post them as journal entries.
+transaction. You check the suggestions, then post them as journal entries. It uses Ledger's own
+AI provider and Gmail account: there's no API key or mail login to set up in the module.
 
 - **Formats:** CSV exports (columns are found from the header, or guessed from the data when there's
   no header; single amount or debit/credit columns) and **OFX / QFX / QBO**.
-- **Models:** **Claude** (Anthropic API), or a **local model** through **Ollama** or any
-  OpenAI-compatible server (LM Studio, llama.cpp, vLLM) so statements stay on your network.
+- **AI:** whatever the admin chose under **Settings → AI** in Ledger: Claude, or a local model
+  through Ollama or an OpenAI-compatible server so statements stay on your network.
 - **Uses your books:** the prompt includes your chart of accounts and how you booked similar
   transactions from the same bank account before. The model can only answer with one of your real
   account codes (the response is constrained to a JSON schema).
@@ -17,36 +18,40 @@ transaction. You check the suggestions, then post them as journal entries.
   statements don't post anything twice. Nothing is posted until you press **Post**.
 - Low-confidence suggestions are marked **Needs review**; **Select confident** + **Post selected**
   takes care of the rest.
-- **Bills from email:** checks a mailbox on a schedule (IMAP, read-only), reads bills and receipts
+- **Transfers** between your own accounts are linked and posted once. See [Transfers](#transfers-between-your-accounts).
+- **Bills from email:** checks Ledger's Gmail account (or an IMAP mailbox) on a schedule, reads bills and receipts
   out of the emails and their PDFs, keeps a list of bills to be paid, and matches each bill to the
   bank transaction that pays it. See [Bills](#bills).
 
 ## Install
 
-Needs **Ledger 0.7.0 or newer** (for dashboard to-dos and notifications and the sidebar icon).
+Needs **Ledger 0.10.0 or newer** (shared AI and Gmail for modules, settings forms, roles, search,
+drawn icons).
 
-The sidebar entry asks for the `robot` icon. Ledger versions whose icon set doesn't include it show
-the generic module icon instead. The module's id stays `categorizer` (its page is
-`/apps/categorizer` and its data lives in the `mod_categorizer` schema), so renaming it kept all
-existing data.
+1. In Ledger, open **Settings → Modules**, enter `mastifdogo/llm-api-module` and press **Add**.
+   **LLM API** appears in the sidebar with a robot icon. You can hide or reorder it under
+   Settings → Sidebar. Updates install on Ledger's update schedule, or with **Update modules now**.
+2. An admin allows the module to use the shared services:
+   - **Settings → AI:** choose a provider (Claude needs an API key; Ollama a model you've pulled) and
+     tick **LLM API** under the modules allowed to use it. Claude also reads bill PDFs; local
+     models only see the email text. Larger local models (14B and up) categorise noticeably
+     better than small ones.
+   - **Settings → Gmail** (for bills): connect the account and allow **LLM API** to read mail. It
+     never sends, changes or deletes mail.
+3. Options are under **Settings → LLM API**: review threshold, transactions per AI request, where
+   bills come from (Gmail, IMAP or off), how often to check, the Gmail search, keywords, how far
+   back the first check looks, IMAP details, and the accounts payable account.
+4. The module's **Status** tab shows whether AI and email are ready, and what's missing if not.
 
-1. Publish a release of this repository. Ledger installs the **latest GitHub Release**:
-   bump `version` in `ledger-module.json`, then
-   ```sh
-   git tag v0.0.2 && git push origin v0.0.2
-   ```
-   and create a release from the tag on GitHub (not a draft or pre-release).
-2. In Ledger, open **Settings → Modules**, enter `mastifdogo/llm-api-module` and press **Add**.
-   **LLM API** appears in the sidebar with a robot icon (you can hide or reorder it under Settings → Sidebar).
-   Updates install on Ledger's update schedule, or with **Update modules now**.
-3. Open **LLM API → Settings**:
-   - **Claude:** paste an Anthropic API key, or (to keep it out of the database and its backups)
-     add `CATEGORIZER_API_KEY=sk-ant-...` to `/etc/ledger/ledger.env` and run
-     `systemctl restart ledger`. The default model is `claude-opus-5-5` at low effort, which
-     works well for this kind of classification.
-   - **Ollama:** choose *Ollama*, set the server URL (e.g. `http://192.168.1.20:11434`) and a model
-     you have pulled. Larger models (14B and up) categorise noticeably better than small ones.
-   - Press **Test connection**.
+The module's id stays `categorizer` (its page is `/apps/categorizer` and its data lives in the
+`mod_categorizer` schema), so renaming it and updating keep all existing data.
+
+**Updating from 0.0.x:** the module used to have its own AI key, model and mail settings. On the
+first start of 0.1.0 it copies the options that still exist (review threshold, batch size, payables
+account, mail interval, keywords, IMAP details) to Settings → LLM API, and deletes its old settings,
+including any stored AI key and Gmail bridge token. Then the admin allows the module under Settings
+→ AI (and Settings → Gmail). The Apps Script you may have deployed for 0.0.2 is no longer used:
+delete it at script.google.com.
 
 ### Accounts it expects
 
@@ -57,8 +62,8 @@ The module creates no accounts. It works with your chart of accounts:
 - **Categories:** your expense, revenue and other accounts. The model only suggests active
   accounts in the statement account's currency (CAD or USD).
 - **Accounts payable** (optional, liability, e.g. `2000 Accounts payable`): choose it under
-  Settings → Email to post approved bills there. One per currency is needed if you get bills in
-  both.
+  Settings → LLM API to post approved bills there. It's in one currency: bills in the other
+  currency are tracked but can't be approved into it.
 
 ### On Ledger's dashboard
 
@@ -109,39 +114,17 @@ into payables. The card's own statement already records those charges.
 
 ## Bills
 
-**Set up:** *Settings → Email*. Choose where mail comes from, how often to check (0 turns
-scheduled checks off; **Check email now** on the Bills tab always works), and how far back the
-first check looks.
+**Set up:** under **Settings → LLM API**, choose where bills come from:
 
-### Gmail (no IMAP)
+- **Gmail** (the default): Ledger's connected account. An admin connects it under **Settings →
+  Gmail** and allows LLM API to read mail. Each check runs a Gmail search: by default
+  `newer_than:30d {invoice bill statement "amount due" ...}` built from the keywords. Set your own
+  search (e.g. `label:bills`, with a Gmail filter that labels bills) to keep everything else out.
+- **IMAP** for other providers (below).
+- **Off.**
 
-Gmail no longer accepts your normal password over IMAP. Personal accounts may still work with an
-app password, and Google Workspace accounts generally can't use one for IMAP. So the module reads Gmail
-through a small **Google Apps Script** that runs in your own Google account instead:
-
-1. Choose **Gmail**, press **Show the script** and copy it. It contains a secret token made for
-   your Ledger.
-2. Open [script.google.com](https://script.google.com/home/projects/create), create a project,
-   replace the code with the script, and save.
-3. **Deploy → New deployment → Web app**. Set *Execute as: Me* and *Who has access: Anyone*,
-   deploy, and allow access when Google asks.
-4. Paste the **Web app URL** (it ends in `/exec`) into Ledger, save, and press **Test
-   connection**. It shows the account and how many emails match.
-
-On each check the module asks the script for emails matching a Gmail search, by default
-`newer_than:30d {invoice bill statement "amount due" ...}` from the keywords. Set your own (e.g.
-`label:bills`, with a Gmail filter that labels bills) to keep everything else out. It then
-fetches each new message.
-
-- **Read-only:** the script never changes, labels, moves or deletes mail.
-- **Access:** it answers only requests carrying the token. Google shows a broad "read, compose,
-  send and delete" permission because Apps Script's Gmail service only offers that scope, but
-  the code only reads.
-- **Network:** the Ledger container needs internet access to `script.google.com`.
-- **New token:** **Create a new token** stops the deployed script from working. Paste the new
-  script and use *Deploy → Manage deployments → Edit → New version*.
-- **Workspace accounts:** if an admin has blocked Apps Script, or web apps shared with
-  "Anyone", this connector can't be used.
+Set how often to check (0 turns scheduled checks off; **Check email now** on the Bills tab always
+works), and how far back the first check looks.
 
 ### IMAP (other providers)
 
@@ -151,21 +134,22 @@ fetches each new message.
 | iCloud | `imap.mail.me.com` | an app-specific password |
 | Fastmail | `imap.fastmail.com` | an app password |
 | Proton Mail | Proton Bridge, e.g. `127.0.0.1` port `1143` | the Bridge password |
-| Personal Gmail | `imap.gmail.com` | an [app password](https://myaccount.google.com/apppasswords), if your account still offers them (needs 2-Step Verification) |
+
+For Gmail, use the Gmail option instead.
 
 Implicit TLS on port 993 is used, except for a bridge running on the same machine. The mailbox
-is opened read-only: nothing is marked as read, moved or deleted. To keep the password out of
-the database and its backups, set `CATEGORIZER_IMAP_PASSWORD=...` in `/etc/ledger/ledger.env`
-and restart Ledger.
+is opened read-only: nothing is marked as read, moved or deleted. The password is a secret field
+in Settings → LLM API. To keep it out of the database and its backups, set
+`CATEGORIZER_IMAP_PASSWORD=...` in `/etc/ledger/ledger.env` and restart Ledger instead.
 
 **What happens on each check:**
-1. New messages are read (from the IMAP folder, or the Gmail search). The first check goes back
-   30 days (configurable).
-   Each message is looked at once.
+1. New messages are read (from the Gmail search, or the IMAP folder), oldest first. The first
+   check goes back 30 days (configurable). Each message is looked at once, remembered by its
+   Gmail id or IMAP UID; read/unread state is never used or changed.
 2. Only messages containing one of the keywords (invoice, bill, statement, amount due, receipt,
    ...) go to the model. A mail filter that puts bills in their own folder or label keeps
    everything else out.
-3. The model reads the email and its PDF attachment (PDFs need Claude; local models only see the
+3. Ledger's AI reads the email and its PDF attachment (PDFs need Claude; local models only see the
    email text) and returns the vendor, invoice number, dates, amount and a suggested account.
 4. Reminders for a bill that's already listed (same vendor and invoice number, or same amount and
    due date) are skipped.
@@ -174,7 +158,7 @@ and restart Ledger.
 bill (PDF or saved `.eml`) or add one by hand.
 
 **Accounting:**
-- *With an accounts payable account* (Settings → Email): approving a bill posts
+- *With an accounts payable account* (Settings → LLM API; an active liability account): approving a bill posts
   Dr *bill's account* / Cr *payables* on the bill date. The bank payment later books
   Dr *payables* / Cr *bank*.
 - *Without one:* bills are only tracked, and the payment books straight to the bill's account.
@@ -204,9 +188,8 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/transactions/:id/not-transfer` | unlink a transfer match (both sides get a fresh suggestion) |
 | `POST` | `/suggest` | `{account_code, transactions: [{date, description, amount, memo?}]}` returns suggestions without storing anything (for scripts or other modules) |
 | `GET`/`DELETE` | `/rules`, `/rules/:key` | learned payee rules |
-| `GET`/`PUT` | `/settings`; `POST /settings/test` | provider settings (the API key is never returned) |
-| `POST` | `/mail/gmail-script` | `{renew?: true}`: the Apps Script for the Gmail connector, with its token (a new token with `renew`) |
-| `GET`/`PUT` | `/mail/settings`; `POST /mail/test`, `POST /mail/check`, `GET /mail/log` | mailbox settings (the password is never returned), a connection test, a check now, the messages looked at |
+| `GET` | `/status` | Ledger's AI and Gmail status for this module, the options in effect, the user's role |
+| `GET` | `/mail/status`; `POST /mail/test`, `POST /mail/check`, `GET /mail/log` | where mail comes from and whether it's ready; a connection test; a check now; the messages looked at |
 | `GET`/`POST` | `/bills?status=unpaid\|new\|open\|paid\|ignored`, `/bills` | list; add by hand `{vendor, amount, due_date, ...}` |
 | `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF or `.eml` |
 | `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payment; edit fields or `status`; delete |
@@ -214,24 +197,29 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/bills/:id/approve`, `/unapprove` | approve (posts to payables if configured); undo (reverses that entry) |
 | `GET`/`POST` | `/bills/:id/candidates`, `/match {transaction_id}`, `/unmatch` | manual matching |
 
+Options are Ledger's module settings (`GET`/`PUT /api/v1/modules/categorizer/settings`, admins
+only). Viewers can look but not change anything; Ledger enforces that. Ledger's search bar finds
+bills, statements and transactions; the links open them on the module's page.
+
 ## Privacy
 
-With Claude, each transaction's date, description, memo and amount, your account codes, names and
-descriptions, and descriptions of recent entries on the statement account are sent to the
-Anthropic API. With email checks on, emails that pass the keyword filter (sender, subject, text
-and PDF attachments) are sent too. With Ollama or another server on your network, nothing leaves
-it. Emails that don't pass the filter are never sent anywhere. Bill PDFs and email text are stored
-in the Ledger database.
+With Claude as Ledger's AI, each transaction's date, description, memo and amount, your account
+codes, names and descriptions, and descriptions of recent entries on the statement account are
+sent to the Anthropic API. With email checks on, emails that pass the keyword filter (sender,
+subject, text and PDF attachments) are sent too. With Ollama or another server on your network,
+nothing leaves it. Emails that don't pass the filter are never sent anywhere. Bill PDFs and email
+text are stored in the Ledger database. Ledger logs each AI call (tokens, not content) under
+Settings → AI.
 
 ## Notes on Ledger's module guidelines
 
 - **No dependencies:** only Node built-ins. `server.mjs` imports its own files from `lib/`, which
   install with the release archive.
-- **Long timeouts for the LLM:** requests to the model may take up to 180 s, and IMAP up to
-  60 s, because classifying a batch of 40 transactions or reading a PDF takes longer than the
-  usual 10 s limit for outbound calls.
-- **Secrets:** the API key and mailbox password are stored in the module's `settings` table (or
-  read from `/etc/ledger/ledger.env`). They are never returned by the API or logged.
+- **AI and Gmail** go through `ctx.llm` and `ctx.gmail`; the module has no key, OAuth or Apps
+  Script of its own. IMAP is kept for other providers. Its timeout is 60 s, longer than the usual
+  10 s for outbound calls, because fetching a large message with a PDF takes longer.
+- **Secrets:** the only one is the IMAP password, a `secret` settings field (or the environment
+  variable). It is never returned by the module's API or logged.
 - **Layout:** the page works from about 260 px wide (Ledger's side-by-side panes) up to full
   width, in light and dark mode.
 
@@ -242,11 +230,9 @@ ledger-module.json     manifest
 server.mjs             routes, background categorisation, posting
 lib/parse.mjs          CSV / OFX parsing, amounts, dates, payee keys
 lib/categorize.mjs     prompt, schema, rules, batching
-lib/llm.mjs            Anthropic / Ollama / OpenAI-compatible clients (built-in fetch, no dependencies)
 lib/bill-routes.mjs    mailbox checks and schedule, bill routes, matching bills to transactions
-lib/bills.mjs          bill extraction prompt, duplicates, match scoring
-lib/imap.mjs           minimal read-only IMAP client
-lib/gmail.mjs          Gmail connector: the Apps Script, its client, the search
+lib/bills.mjs          bill extraction prompt, duplicates, match scoring, the Gmail search
+lib/imap.mjs           minimal read-only IMAP client (other providers; Gmail goes through ctx.gmail)
 lib/mime.mjs           email (MIME) parser
 lib/dashboard.mjs      notifications and to-dos on Ledger's dashboard
 lib/transfers.mjs      transfer scoring and pairing
@@ -258,10 +244,20 @@ test/                  unit tests: npm test (Node 22+)
 
 Ledger installs modules without a build step or `npm install`, so the module has no dependencies.
 
+
 ## Development
 
-Run Ledger (0.7.0+) from a checkout with `MODULES_DIR` pointing at a directory that contains this
-repository (or a symlink to it) named `categorizer`; see Ledger's `docs/MODULES.md`. Apply
-`migrations/*.sql` in order to the `mod_categorizer` schema. To try it without spending API
-credit, point **Server URL** at a local stub that answers like the Messages API. `npm test` runs
-the unit tests (Node 22+).
+Use the `ledger-module` skill in `.claude/skills/`: it checks the module against a real Ledger
+(`sh .claude/skills/ledger-module/scripts/check.sh` with `TEST_DATABASE_URL` set) and links to
+Ledger's module docs. `npm test` runs the unit tests (Node 22+). To try it without spending API
+credit, point Ledger's AI (Settings → AI, Server URL) at a local stub that answers like the
+Messages API.
+
+## Changes
+
+- **0.1.0:** uses Ledger 0.10.0's shared AI (`ctx.llm`) and Gmail (`ctx.gmail`) instead of the
+  module's own provider settings and Apps Script bridge. Options moved to Settings → LLM API, and
+  old settings are copied over once. Adds a Status tab, Ledger search results, and a drawn robot
+  icon.
+- **0.0.2:** Gmail through an Apps Script bridge.
+- **0.0.1:** statement categorisation, bills from email, transfer matching, Ledger dashboard items.

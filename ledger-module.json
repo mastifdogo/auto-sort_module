@@ -1,14 +1,129 @@
 {
   "id": "categorizer",
   "name": "LLM API",
-  "version": "0.0.2",
-  "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and an LLM (Claude, or a local model via Ollama) recommends an account for each transaction. Optionally checks Gmail (no IMAP needed) or an IMAP mailbox on a schedule for bills, tracks them until paid and matches them to statement payments. With Claude, transaction and bill details are sent to the Anthropic API.",
-  "ledger": ">=0.7.0",
+  "version": "0.1.0",
+  "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and Ledger's AI suggests an account for each transaction; transfers between your accounts are posted once. Optionally reads bills from Ledger's Gmail account (or an IMAP mailbox) on a schedule, tracks them until paid and matches them to statement payments. Needs an admin to allow it under Settings → AI (and Settings → Gmail for bills).",
+  "ledger": ">=0.10.0",
   "server": "server.mjs",
   "ui": "ui",
   "nav": {
     "label": "LLM API",
-    "icon": "robot"
+    "icon": {
+      "path": "M5 8h14v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z M12 8V5 M12 3a1 1 0 1 0 0 .01 M9 12.5h.01 M15 12.5h.01 M9.5 16h5 M2.5 12v3 M21.5 12v3"
+    }
   },
-  "migrations": "migrations"
+  "migrations": "migrations",
+  "settings": {
+    "fields": [
+      {
+        "key": "review_threshold",
+        "label": "Needs review below confidence",
+        "type": "number",
+        "min": 0,
+        "max": 1,
+        "default": 0.75,
+        "help": "Suggestions below this confidence (0 to 1) are marked Needs review."
+      },
+      {
+        "key": "batch_size",
+        "label": "Transactions per AI request",
+        "type": "number",
+        "min": 1,
+        "max": 200,
+        "default": 40
+      },
+      {
+        "key": "mail_source",
+        "label": "Read bills from",
+        "type": "select",
+        "default": "gmail",
+        "options": [
+          {
+            "value": "gmail",
+            "label": "Gmail (Ledger's connected account)"
+          },
+          {
+            "value": "imap",
+            "label": "Another provider (IMAP)"
+          },
+          {
+            "value": "off",
+            "label": "Don't read email"
+          }
+        ],
+        "help": "Gmail needs this module allowed to read mail under Settings → Gmail."
+      },
+      {
+        "key": "mail_interval",
+        "label": "Check email for bills every (minutes)",
+        "type": "number",
+        "min": 0,
+        "max": 10080,
+        "default": 60,
+        "help": "0 turns scheduled checks off; Check email now on the Bills tab always works."
+      },
+      {
+        "key": "gmail_query",
+        "label": "Gmail search for bills",
+        "type": "text",
+        "default": "",
+        "help": "Optional, e.g. label:bills (with a Gmail filter that labels bills). Empty: any of the keywords below."
+      },
+      {
+        "key": "mail_keywords",
+        "label": "Bill keywords",
+        "type": "textarea",
+        "default": "invoice, bill, statement, amount due, balance due, payment due, due date, receipt, pre-authorized, autopay, facture",
+        "help": "Comma-separated. Only emails containing one of these are sent to the AI. Empty: every email the search finds."
+      },
+      {
+        "key": "mail_lookback_days",
+        "label": "First check looks back (days)",
+        "type": "number",
+        "min": 1,
+        "max": 365,
+        "default": 30
+      },
+      {
+        "key": "imap_host",
+        "label": "IMAP server",
+        "type": "text",
+        "default": "",
+        "help": "Only for IMAP, e.g. imap.fastmail.com, outlook.office365.com, imap.mail.me.com, or 127.0.0.1 for Proton Bridge."
+      },
+      {
+        "key": "imap_port",
+        "label": "IMAP port",
+        "type": "number",
+        "min": 1,
+        "max": 65535,
+        "default": 993
+      },
+      {
+        "key": "imap_user",
+        "label": "IMAP user name",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "imap_password",
+        "label": "IMAP password",
+        "type": "secret",
+        "help": "Usually an app password. Or set CATEGORIZER_IMAP_PASSWORD in /etc/ledger/ledger.env."
+      },
+      {
+        "key": "imap_folder",
+        "label": "IMAP folder",
+        "type": "text",
+        "default": "INBOX"
+      },
+      {
+        "key": "ap_account",
+        "label": "Accounts payable account code",
+        "type": "text",
+        "default": "",
+        "help": "Optional. A liability account, e.g. 2000. Approving a bill then posts it there, and its bank payment clears it. Empty: bills are only tracked."
+      }
+    ]
+  }
 }

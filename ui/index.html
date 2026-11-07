@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LLM API</title>
+<title>Auto sort</title>
 <style>
 	:root {
 		--bg: #fff; --panel: #f6f8fa; --text: #1d232b; --muted: #5d6875; --border: #dde1e6; --accent: #1f6feb;
@@ -90,7 +90,6 @@
 </style>
 </head>
 <body>
-<h1>LLM API</h1>
 <nav class="tabs">
 	<button data-tab="review" class="active">Statements</button>
 	<button data-tab="bills">Bills</button>
@@ -168,11 +167,12 @@
 		</label>
 		<span class="spacer"></span>
 		<span id="b-mail-status" class="muted small"></span>
+		<button class="btn primary" id="b-sort" title="Read new bills from email, then match bills and transfers to statement transactions waiting to be posted">Sort now</button>
 		<button class="btn" id="b-check">Check email now</button>
 		<label class="btn" style="display:inline-block; font-weight:normal">Upload bill (PDF or .eml)<input type="file" id="b-file" accept=".pdf,.eml,application/pdf,message/rfc822" class="hidden"></label>
 		<button class="btn" id="b-add">Add by hand</button>
 	</div>
-	<p class="muted small">Bills are read from your mailbox on a schedule (choose Gmail or IMAP under Settings → LLM API in Ledger; Gmail must be allowed under Settings → Gmail). Approve a bill once its details are right. When a statement contains its payment, the transaction is matched to the bill automatically, and posting it marks the bill paid.</p>
+	<p class="muted small">Bills are read from your mailbox on a schedule (choose Gmail or IMAP under Settings → <span class="mod-name">Auto sort</span> in Ledger; Gmail must be allowed under Settings → Gmail). Approve a bill once its details are right. When a statement contains its payment, the transaction is matched to the bill automatically, and posting it marks the bill paid.</p>
 	<div class="table-wrap">
 		<table id="bills" class="stack">
 			<thead><tr><th>Due</th><th>Vendor</th><th>Invoice</th><th class="num">Amount</th><th>Account</th><th>Status</th><th>Payment</th></tr></thead>
@@ -268,7 +268,7 @@
 			<span id="st-msg" class="muted small"></span>
 		</div>
 		<h2>Options</h2>
-		<p class="small">Review threshold, batch size, where bills come from, the Gmail search, keywords and the accounts payable account are set under <strong>Settings → LLM API</strong> in Ledger.</p>
+		<p class="small">Review threshold, batch size, where bills come from, the Gmail search, keywords and the accounts payable account are set under <strong>Settings → <span class="mod-name">Auto sort</span></strong> in Ledger.</p>
 		<p id="st-options" class="muted small"></p>
 		<p id="st-version" class="muted small"></p>
 	</div>
@@ -632,7 +632,8 @@
 		const when = new Date(st.last_check_at).toLocaleString();
 		if (st.error) return `Last check ${when} failed: ${st.error}`;
 		const r = st.result || {};
-		return `Last check ${when}: ${r.bills || 0} bills, ${r.receipts || 0} receipts from ${r.looked_at || 0} new emails` + (r.remaining ? ` (${r.remaining} more next time)` : "");
+		const n = (k, one, many) => `${k || 0} ${k === 1 ? one : many}`;
+		return `Last check ${when}: ${n(r.bills, "bill", "bills")}, ${n(r.receipts, "receipt", "receipts")} from ${n(r.looked_at, "new email", "new emails")}` + (r.remaining ? ` (${r.remaining} more next time)` : "");
 	}
 
 	async function loadBills() {
@@ -666,6 +667,26 @@
 		);
 	}
 	$("b-filter").onchange = () => loadBills().catch(fail);
+
+	$("b-sort").onclick = async () => {
+		$("b-sort").disabled = true;
+		$("b-check").disabled = true;
+		$("b-mail-status").textContent = "Sorting…";
+		try {
+			const r = await api("/sort-now", { method: "POST" });
+			const m = r.mail || {};
+			const parts = [];
+			if (m.skipped) parts.push(`Email not read: ${m.skipped}.`);
+			else if (m.error) parts.push(`Email check failed: ${m.error}.`);
+			else parts.push(`Email: ${m.bills || 0} new bill${m.bills === 1 ? "" : "s"}, ${m.receipts || 0} receipt${m.receipts === 1 ? "" : "s"} from ${m.looked_at || 0} new message${m.looked_at === 1 ? "" : "s"}.`);
+			parts.push(`${r.bill_matches} payment${r.bill_matches === 1 ? "" : "s"} matched to bills, ${r.transfer_links} transfer${r.transfer_links === 1 ? "" : "s"} linked.`);
+			toast(parts.join("\n"), !!m.error);
+			await loadBills();
+		} catch (e) { fail(e); } finally {
+			$("b-sort").disabled = false;
+			$("b-check").disabled = false;
+		}
+	};
 
 	$("b-check").onclick = async () => {
 		$("b-check").disabled = true;
@@ -741,7 +762,7 @@
 		$("bd-reopen").classList.toggle("hidden", !["ignored", "paid"].includes(b.status) || !!b.paid_entry_id);
 		$("bd-ignore").classList.toggle("hidden", !open || locked);
 		$("bd-delete").classList.toggle("hidden", locked || b.status === "paid");
-		$("bd-ap-note").textContent = b.status === "new" && b.kind === "bill" ? "Approving posts this bill to accounts payable if one is set under Settings → LLM API." : "";
+		$("bd-ap-note").textContent = b.status === "new" && b.kind === "bill" ? `Approving posts this bill to accounts payable if one is set under Settings → ${moduleName}.` : "";
 
 		const pay = $("bd-payments");
 		if (payments.length === 0) pay.replaceChildren(el("p", { class: "muted small" }, b.status === "paid" ? "Marked paid by hand." : "No matching bank transaction yet. It's matched when a statement with the payment is uploaded."));
@@ -859,7 +880,7 @@
 					: statusLine(true, `Suggestions and bills use Ledger's AI: ${ai.provider}, ${ai.model || "default model"}.${ai.readsPdf ? " Bill PDFs are read too." : " This provider can't read PDFs, so bill amounts that are only in a PDF have to be typed in."}`)),
 		);
 		let mailText;
-		if (mail.source === "off") mailText = [el("span", { class: "pill plain" }, "Off"), " Reading email is turned off (Settings → LLM API)."];
+		if (mail.source === "off") mailText = [el("span", { class: "pill plain" }, "Off"), ` Reading email is turned off (Settings → ${moduleName}).`];
 		else if (!mail.ready) mailText = statusLine(false, `${mail.missing}.`);
 		else if (mail.source === "gmail") mailText = statusLine(true, `Reads ${mail.gmail.account || "Ledger's Gmail account"} with the search “${mail.gmail_query}”, ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
 		else mailText = statusLine(true, `Reads ${mail.imap.user} on ${mail.imap.host} (${mail.imap.folder}), ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
@@ -889,6 +910,14 @@
 		if (statement && /^\d+$/.test(statement)) { showTab("review"); openStatement(Number(statement)); return true; }
 		return false;
 	}
+
+	// The module's name as set in its manifest (Ledger shows it in the sidebar and as the Settings tab).
+	let moduleName = "Auto sort";
+	api("/status").then((st) => {
+		moduleName = st.name || moduleName;
+		document.title = moduleName;
+		document.querySelectorAll(".mod-name").forEach((n) => (n.textContent = moduleName));
+	}).catch(() => {});
 
 	if (!openFromLink()) showTab("review");
 </script>

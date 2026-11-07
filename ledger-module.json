@@ -1,7 +1,7 @@
 {
   "id": "categorizer",
   "name": "Auto sort",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and Ledger's AI suggests an account for each transaction; transfers between your accounts are posted once. Optionally reads bills from Ledger's Gmail account (or an IMAP mailbox) on a schedule, tracks them until paid and matches them to statement payments. Needs an admin to allow it under Settings → AI (and Settings → Gmail for bills).",
   "ledger": ">=0.10.0",
   "server": "server.mjs",

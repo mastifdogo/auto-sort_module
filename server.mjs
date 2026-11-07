@@ -1,8 +1,8 @@
-// LLM API (module id "categorizer"): Ledger loads this file at startup and calls register(ctx).
+// Auto sort (module id "categorizer", formerly "LLM API"): Ledger loads this file at startup and calls register(ctx).
 // The module API is described in Ledger's docs/MODULE_LLM_CONTEXT.md. AI goes
 // through Ledger's provider (ctx.llm, Settings → AI) and Gmail through
 // Ledger's account (ctx.gmail, Settings → Gmail); options are the manifest's
-// settings form (ctx.settings, Settings → LLM API).
+// settings form (ctx.settings, the module's tab under Settings).
 //
 // Flow: upload a statement -> transactions are staged in this module's tables
 // -> a background job asks the AI for an account per transaction -> you
@@ -36,7 +36,7 @@ export default async function register(ctx) {
 	// Settings
 	// -----------------------------------------------------------------------
 
-	/** The options that matter for categorising, from Settings → LLM API. */
+	/** The options that matter for categorising, from the module's settings. */
 	async function readSettings() {
 		const v = await ctx.settings.get();
 		const t = Number(v.review_threshold);
@@ -56,7 +56,7 @@ export default async function register(ctx) {
 	/**
 	 * Before Ledger 0.10.0 this module kept its options (and its own AI key and
 	 * mail credentials) in mod_categorizer.settings. Copy the options that still
-	 * exist to Settings → LLM API once, and delete everything else there, keys included.
+	 * exist to the module's settings (ctx.settings) once, and delete everything else there, keys included.
 	 */
 	async function migrateOldSettings() {
 		const { rows } = await q(`SELECT key, value FROM ${T("settings")} WHERE key <> 'mail_state'`);
@@ -81,7 +81,7 @@ export default async function register(ctx) {
 			}
 		}
 		await q(`DELETE FROM ${T("settings")} WHERE key <> 'mail_state'`);
-		ctx.log.info("settings moved to Settings → LLM API", { copied: Object.keys(values).join(","), removed: rows.length });
+		ctx.log.info("settings moved to the module's settings", { copied: Object.keys(values).join(","), removed: rows.length });
 	}
 
 	// -----------------------------------------------------------------------
@@ -227,7 +227,18 @@ export default async function register(ctx) {
 	// GET /status: whether Ledger's AI and Gmail are available to this module, for the page.
 	ctx.route("GET", "/status", async (req) => {
 		const [llm, gmail, cfg] = await Promise.all([ctx.llm.status(), ctx.gmail.status(), readSettings()]);
-		return { llm, gmail, settings: cfg, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version };
+		return { name: ctx.name, llm, gmail, settings: cfg, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version };
+	});
+
+	// POST /sort-now: do now what otherwise happens on the schedule. Read new bills from email (when
+	// email is set up), then match bills and transfers to the statement transactions waiting to be posted.
+	ctx.route("POST", "/sort-now", async () => {
+		const why = await bills.mailMissing();
+		const mail = why ? { skipped: why } : await bills.checkMail({ trigger: "sort now" });
+		const billMatches = (mail.matched ?? 0) + (await bills.autoMatch());
+		const transferLinks = await transfers.matchTransfers();
+		ctx.log.info("sort now", { bills: mail.bills ?? 0, receipts: mail.receipts ?? 0, bill_matches: billMatches, transfer_links: transferLinks });
+		return { mail, bill_matches: billMatches, transfer_links: transferLinks };
 	});
 
 	// -----------------------------------------------------------------------
@@ -580,5 +591,5 @@ export default async function register(ctx) {
 		].slice(0, limit);
 	});
 
-	ctx.log.info("LLM API module ready", { resumed: unfinished.length });
+	ctx.log.info("module ready", { resumed: unfinished.length });
 }

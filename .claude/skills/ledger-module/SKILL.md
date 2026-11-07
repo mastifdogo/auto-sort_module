@@ -76,7 +76,7 @@ leave pushing it to them. The module must work without that change.
 3. Ledger installs it on its update schedule or with "Update modules now"
    (Settings → Modules).
 
-## This module: LLM API (`id: categorizer`, schema `mod_categorizer`)
+## This module: Auto sort (`id: categorizer`, schema `mod_categorizer`)
 
 Statement upload (CSV, OFX, QFX) with Ledger's AI recommending an account per
 transaction, transfers between your own accounts, and bills found in email
@@ -84,7 +84,8 @@ transaction, transfers between your own accounts, and bills found in email
 until paid and matched to statement payments.
 
 - The id is `categorizer` (permanent: it names the schema). The name shown
-  is "LLM API". Needs Ledger ≥ 0.10.0.
+  is "Auto sort" (it was "LLM API"); messages use `ctx.name`, never a fixed
+  name. Needs Ledger ≥ 0.10.0.
 - Layout: `server.mjs` (statements, categorizing, `/status`, search, the
   one-time copy of pre-0.1.0 settings to `ctx.settings`),
   `lib/bill-routes.mjs` (bills and mail routes; mail from `ctx.gmail` or
@@ -96,6 +97,12 @@ until paid and matched to statement payments.
 - AI: every call is `ctx.llm.json()`; a 403/409 from it ("not allowed" /
   "not set up") stops a batch run early, and its message (which says where
   to fix it) is shown on the rows.
+- Statements in email (`email_statements` = `review`): `lib/email-statements.mjs`
+  finds statement attachments and reads PDF statements; `stageStatement()` in
+  `server.mjs` stages them (and uploads). A statement whose account isn't
+  known is `needs_account` (account_code `''`) until
+  `POST /statements/:id/account`, which also remembers the sender in
+  `statement_sources`. Never post email statements automatically.
 - Options are the manifest's `settings.fields`, read per request with
   `ctx.settings.get()`. `mod_categorizer.settings` only keeps `mail_state`
   (the last mail check).

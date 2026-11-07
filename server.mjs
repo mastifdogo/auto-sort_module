@@ -1,8 +1,8 @@
-// LLM API (module id "categorizer"): Ledger loads this file at startup and calls register(ctx).
+// Auto sort (module id "categorizer", formerly "LLM API"): Ledger loads this file at startup and calls register(ctx).
 // The module API is described in Ledger's docs/MODULE_LLM_CONTEXT.md. AI goes
 // through Ledger's provider (ctx.llm, Settings → AI) and Gmail through
 // Ledger's account (ctx.gmail, Settings → Gmail); options are the manifest's
-// settings form (ctx.settings, Settings → LLM API).
+// settings form (ctx.settings, the module's tab under Settings).
 //
 // Flow: upload a statement -> transactions are staged in this module's tables
 // -> a background job asks the AI for an account per transaction -> you
@@ -36,7 +36,7 @@ export default async function register(ctx) {
 	// Settings
 	// -----------------------------------------------------------------------
 
-	/** The options that matter for categorising, from Settings → LLM API. */
+	/** The options that matter for categorising, from the module's settings. */
 	async function readSettings() {
 		const v = await ctx.settings.get();
 		const t = Number(v.review_threshold);
@@ -56,7 +56,7 @@ export default async function register(ctx) {
 	/**
 	 * Before Ledger 0.10.0 this module kept its options (and its own AI key and
 	 * mail credentials) in mod_categorizer.settings. Copy the options that still
-	 * exist to Settings → LLM API once, and delete everything else there, keys included.
+	 * exist to the module's settings (ctx.settings) once, and delete everything else there, keys included.
 	 */
 	async function migrateOldSettings() {
 		const { rows } = await q(`SELECT key, value FROM ${T("settings")} WHERE key <> 'mail_state'`);
@@ -81,7 +81,7 @@ export default async function register(ctx) {
 			}
 		}
 		await q(`DELETE FROM ${T("settings")} WHERE key <> 'mail_state'`);
-		ctx.log.info("settings moved to Settings → LLM API", { copied: Object.keys(values).join(","), removed: rows.length });
+		ctx.log.info("settings moved to the module's settings", { copied: Object.keys(values).join(","), removed: rows.length });
 	}
 
 	// -----------------------------------------------------------------------
@@ -126,6 +126,9 @@ export default async function register(ctx) {
 		if (!s || (s.open === 0 && s.status !== "error")) return dash.remove(key, "notification");
 		if (s.status === "error") {
 			return dash.notify({ key, title: `${s.filename}: suggestions failed`.slice(0, 200), body: `${s.error ?? ""}\nRe-run them on the Statements tab.`.trim(), level: "danger", link: dash.link });
+		}
+		if (s.status === "needs_account") {
+			return dash.notify({ key, title: `${s.filename}: choose its account`.slice(0, 200), body: `${s.open} transaction${s.open === 1 ? "" : "s"} from a statement in email are waiting. Choose which account the statement is for on the Statements tab.`, level: "warning", link: dash.link });
 		}
 		if (s.status === "queued" || s.status === "categorizing") return;
 		await dash.notify({
@@ -201,13 +204,82 @@ export default async function register(ctx) {
 		}
 	}
 
+	/** Fingerprints identify a transaction across overlapping uploads (per account). */
+	function fingerprintsOf(txs) {
+		const occurrences = new Map();
+		return txs.map((t) => {
+			if (t.fitid) return createHash("sha256").update(`fitid|${t.fitid}`).digest("hex");
+			const base = `${t.date}|${t.amount_cents}|${t.description.toUpperCase().replace(/\s+/g, " ")}`;
+			const n = (occurrences.get(base) ?? 0) + 1;
+			occurrences.set(base, n);
+			return createHash("sha256").update(`${base}|${n}`).digest("hex");
+		});
+	}
+
+	/**
+	 * Stages a parsed statement's transactions (from an upload or from email) and starts the
+	 * suggestions. account: the statement account, or null when it isn't known yet (the statement
+	 * then waits as 'needs_account' until someone chooses). Transactions already staged for the
+	 * account are skipped. Returns { id, transactions, duplicates }; with no new transactions the
+	 * statement isn't kept (id null).
+	 */
+	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null }) {
+		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -t.amount_cents : t.amount_cents }));
+		const code = account?.code ?? "";
+		const { rows } = await q(
+			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+			[
+				(filename || `statement.${parsed.format}`).slice(0, 200),
+				code,
+				parsed.format,
+				uploadedBy,
+				account ? "queued" : "needs_account",
+				mail ? "email" : "upload",
+				mail?.messageId ?? null,
+				(mail?.from ?? "").slice(0, 300),
+				(mail?.subject ?? "").slice(0, 500),
+				mail?.sourceKey ?? null,
+			],
+		);
+		const id = rows[0].id;
+		const { rowCount } = await q(
+			`INSERT INTO ${T("transactions")} (statement_id, line_no, account_code, fingerprint, tx_date, description, memo, amount_cents, fitid)
+			 SELECT $1, u.line_no, $2, u.fp, u.d, u.description, u.memo, u.amount, u.fitid
+			   FROM unnest($3::int[], $4::text[], $5::date[], $6::text[], $7::text[], $8::bigint[], $9::text[])
+			        AS u(line_no, fp, d, description, memo, amount, fitid)
+			 ON CONFLICT (account_code, fingerprint) DO NOTHING`,
+			[
+				id,
+				code,
+				txs.map((t) => t.line),
+				fingerprintsOf(txs),
+				txs.map((t) => t.date),
+				txs.map((t) => t.description.slice(0, 500)),
+				txs.map((t) => (t.memo ?? "").slice(0, 500)),
+				txs.map((t) => t.amount_cents.toString()),
+				txs.map((t) => (t.fitid ?? "").slice(0, 100)),
+			],
+		);
+		const duplicates = txs.length - rowCount;
+		if (rowCount === 0) {
+			await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [id]);
+			return { id: null, transactions: 0, duplicates };
+		}
+		await q(`UPDATE ${T("statements")} SET duplicates = $2 WHERE id = $1`, [id, duplicates]);
+		if (account) enqueue(id);
+		else await syncStatementNotice(id);
+		ctx.log.info("statement staged", { statement: String(id), account: code || "(to choose)", source: mail ? "email" : "upload", transactions: rowCount, duplicates, by: uploadedBy });
+		return { id, transactions: rowCount, duplicates };
+	}
+
 	const requeue = async (ids) => {
 		for (const sid of ids) {
 			const { rowCount } = await q(`UPDATE ${T("statements")} SET status = 'queued' WHERE id = $1 AND status IN ('ready', 'error')`, [sid]);
 			if (rowCount > 0) enqueue(sid);
 		}
 	};
-	const bills = registerBills(ctx, { q, T, bad, ai, requeue });
+	const bills = registerBills(ctx, { q, T, bad, ai, requeue, stageStatement });
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 
 	await migrateOldSettings().catch((err) => ctx.log.error("moving old settings failed", { err: String(err?.message || err) }));
@@ -227,7 +299,18 @@ export default async function register(ctx) {
 	// GET /status: whether Ledger's AI and Gmail are available to this module, for the page.
 	ctx.route("GET", "/status", async (req) => {
 		const [llm, gmail, cfg] = await Promise.all([ctx.llm.status(), ctx.gmail.status(), readSettings()]);
-		return { llm, gmail, settings: cfg, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version };
+		return { name: ctx.name, llm, gmail, settings: cfg, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version };
+	});
+
+	// POST /sort-now: do now what otherwise happens on the schedule. Read new bills from email (when
+	// email is set up), then match bills and transfers to the statement transactions waiting to be posted.
+	ctx.route("POST", "/sort-now", async () => {
+		const why = await bills.mailMissing();
+		const mail = why ? { skipped: why } : await bills.checkMail({ trigger: "sort now" });
+		const billMatches = (mail.matched ?? 0) + (await bills.autoMatch());
+		const transferLinks = await transfers.matchTransfers();
+		ctx.log.info("sort now", { bills: mail.bills ?? 0, receipts: mail.receipts ?? 0, bill_matches: billMatches, transfer_links: transferLinks });
+		return { mail, bill_matches: billMatches, transfer_links: transferLinks };
 	});
 
 	// -----------------------------------------------------------------------
@@ -252,6 +335,7 @@ export default async function register(ctx) {
 
 	const STATEMENT_SELECT = `
 		SELECT s.id, s.filename, s.account_code, s.format, s.status, s.error, s.duplicates, s.uploaded_by, s.created_at, s.categorized_at,
+		       s.source, s.mail_from, s.mail_subject, s.source_key,
 		       count(t.id)::int AS total,
 		       count(t.id) FILTER (WHERE t.status = 'posted')::int AS posted,
 		       count(t.id) FILTER (WHERE t.status = 'skipped')::int AS skipped,
@@ -280,51 +364,9 @@ export default async function register(ctx) {
 			if (err instanceof ParseError) throw bad(err.message);
 			throw err;
 		}
-		const flip = b.flip_signs === true;
-		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -t.amount_cents : t.amount_cents }));
-
-		// Fingerprints identify a transaction across overlapping uploads.
-		const occurrences = new Map();
-		const fingerprints = txs.map((t) => {
-			if (t.fitid) return createHash("sha256").update(`fitid|${t.fitid}`).digest("hex");
-			const base = `${t.date}|${t.amount_cents}|${t.description.toUpperCase().replace(/\s+/g, " ")}`;
-			const n = (occurrences.get(base) ?? 0) + 1;
-			occurrences.set(base, n);
-			return createHash("sha256").update(`${base}|${n}`).digest("hex");
-		});
-
-		const { rows } = await q(
-			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by) VALUES ($1, $2, $3, $4) RETURNING id`,
-			[filename || `statement.${parsed.format}`, account.code, parsed.format, req.user.username],
-		);
-		const id = rows[0].id;
-		const { rowCount } = await q(
-			`INSERT INTO ${T("transactions")} (statement_id, line_no, account_code, fingerprint, tx_date, description, memo, amount_cents, fitid)
-			 SELECT $1, u.line_no, $2, u.fp, u.d, u.description, u.memo, u.amount, u.fitid
-			   FROM unnest($3::int[], $4::text[], $5::date[], $6::text[], $7::text[], $8::bigint[], $9::text[])
-			        AS u(line_no, fp, d, description, memo, amount, fitid)
-			 ON CONFLICT (account_code, fingerprint) DO NOTHING`,
-			[
-				id,
-				account.code,
-				txs.map((t) => t.line),
-				fingerprints,
-				txs.map((t) => t.date),
-				txs.map((t) => t.description.slice(0, 500)),
-				txs.map((t) => t.memo.slice(0, 500)),
-				txs.map((t) => t.amount_cents.toString()),
-				txs.map((t) => t.fitid.slice(0, 100)),
-			],
-		);
-		const duplicates = txs.length - rowCount;
-		if (rowCount === 0) {
-			await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [id]);
-			throw new ctx.HttpError(409, `all ${txs.length} transactions in this file were uploaded before`);
-		}
-		await q(`UPDATE ${T("statements")} SET duplicates = $2 WHERE id = $1`, [id, duplicates]);
-		enqueue(id);
-		ctx.log.info("statement uploaded", { statement: String(id), account: account.code, transactions: rowCount, duplicates, by: req.user.username });
-		return ctx.response(201, { id, transactions: rowCount, duplicates, warnings: parsed.warnings.slice(0, 50) });
+		const r = await stageStatement(parsed, { filename, account, flip: b.flip_signs === true, uploadedBy: req.user.username });
+		if (r.transactions === 0) throw new ctx.HttpError(409, `all ${r.duplicates} transactions in this file were uploaded before`);
+		return ctx.response(201, { id: r.id, transactions: r.transactions, duplicates: r.duplicates, warnings: parsed.warnings.slice(0, 50) });
 	});
 
 	async function getStatement(id) {
@@ -348,15 +390,65 @@ export default async function register(ctx) {
 			[statement.id],
 		);
 		const { review_threshold } = await readSettings();
-		return { statement, transactions: rows, review_threshold };
+		// Card exports that show purchases as positive: offered as "flip signs" when choosing a card account.
+		const flip_hint = statement.format === "csv" && rows.length > 0 && rows.filter((t) => t.amount_cents > 0n).length / rows.length > 0.6;
+		return { statement, transactions: rows, review_threshold, flip_hint };
 	});
 
 	ctx.route("POST", "/statements/:id/categorize", async (req) => {
 		const statement = await getStatement(req.params.id);
 		if (statement.status === "categorizing" || statement.status === "queued") throw new ctx.HttpError(409, "this statement is already being categorised");
+		if (statement.status === "needs_account") throw new ctx.HttpError(409, "choose the statement's account first");
 		await q(`UPDATE ${T("statements")} SET status = 'queued' WHERE id = $1`, [statement.id]);
 		enqueue(statement.id, { all: req.body?.all === true });
 		return ctx.response(202, { id: statement.id, status: "queued" });
+	});
+
+	// POST /statements/:id/account {account_code, flip_signs?}: choose (or change) the account of a
+	// statement with nothing posted yet. For a statement from email, the choice is remembered for
+	// that sender and account number, so its next statements go there by themselves.
+	ctx.route("POST", "/statements/:id/account", async (req) => {
+		const statement = await getStatement(req.params.id);
+		const b = req.body ?? {};
+		if (typeof b.account_code !== "string" || b.account_code === "") throw bad("account_code is required");
+		if (b.flip_signs !== undefined && typeof b.flip_signs !== "boolean") throw bad("flip_signs must be true or false");
+		if (statement.posted > 0) throw new ctx.HttpError(409, "some transactions are already posted; the account can't change now");
+		if (statement.status === "categorizing" || statement.status === "queued") throw new ctx.HttpError(409, "wait until the suggestions are done");
+		const { account } = await statementAccount(b.account_code);
+		if (!account.is_active || !["asset", "liability"].includes(account.type)) throw bad("choose an active bank (asset) or card (liability) account");
+		const flip = b.flip_signs === true;
+		// Rows this account already has (from an earlier upload) are dropped, as at upload.
+		const { rows: dupes } = await q(
+			`DELETE FROM ${T("transactions")} t WHERE t.statement_id = $1 AND t.status <> 'posted'
+			    AND EXISTS (SELECT 1 FROM ${T("transactions")} o WHERE o.account_code = $2 AND o.fingerprint = t.fingerprint AND o.id <> t.id)
+			  RETURNING t.id`,
+			[statement.id, account.code],
+		);
+		await q(
+			`UPDATE ${T("transactions")} SET account_code = $2, amount_cents = CASE WHEN $3 THEN -amount_cents ELSE amount_cents END,
+			        suggested_code = NULL, confidence = NULL, reason = '', source = '', bill_id = NULL, transfer_tx_id = NULL, transfer_entry_id = NULL, error = NULL
+			  WHERE statement_id = $1 AND status <> 'posted'`,
+			[statement.id, account.code, flip],
+		);
+		const { rows } = await q(
+			`UPDATE ${T("statements")} SET account_code = $2, status = 'queued', error = NULL, duplicates = duplicates + $3 WHERE id = $1 RETURNING source_key`,
+			[statement.id, account.code, dupes.length],
+		);
+		if (rows[0]?.source_key) {
+			await q(
+				`INSERT INTO ${T("statement_sources")} (source_key, account_code, flip_signs, updated_by) VALUES ($1, $2, $3, $4)
+				 ON CONFLICT (source_key) DO UPDATE SET account_code = EXCLUDED.account_code, flip_signs = EXCLUDED.flip_signs, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+				[rows[0].source_key, account.code, flip, req.user.username],
+			);
+		}
+		const { rows: left } = await q(`SELECT count(*)::int AS n FROM ${T("transactions")} WHERE statement_id = $1`, [statement.id]);
+		if (left[0].n === 0) {
+			await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [statement.id]);
+			await syncStatementNotice(statement.id);
+			return { id: statement.id, removed: true, duplicates: dupes.length };
+		}
+		enqueue(statement.id);
+		return { id: statement.id, account_code: account.code, duplicates: dupes.length };
 	});
 
 	ctx.route("DELETE", "/statements/:id", async (req) => {
@@ -580,5 +672,5 @@ export default async function register(ctx) {
 		].slice(0, limit);
 	});
 
-	ctx.log.info("LLM API module ready", { resumed: unfinished.length });
+	ctx.log.info("module ready", { resumed: unfinished.length });
 }

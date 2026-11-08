@@ -7,7 +7,7 @@ AI provider and Gmail account: there's no API key or mail login to set up in the
 
 - **Formats:** CSV exports (columns are found from the header, or guessed from the data when there's
   no header; single amount or debit/credit columns) and **OFX / QFX / QBO**.
-- **AI:** whatever the admin chose under **Settings → AI** in Ledger: Claude, or a local model
+- **AI:** whatever the admin chose under **Settings → LLM API** in Ledger: Claude, or a local model
   through Ollama or an OpenAI-compatible server so statements stay on your network.
 - **Uses your books:** the prompt includes your chart of accounts and how you booked similar
   transactions from the same bank account before. The model can only answer with one of your real
@@ -33,14 +33,15 @@ AI provider and Gmail account: there's no API key or mail login to set up in the
 
 ## Install
 
-Needs **Ledger 0.11.0 or newer** (shared AI and Gmail for modules, file exchange between modules,
-organizations, settings forms, roles, search, drawn icons).
+Needs **Ledger 0.11.2 or newer** (shared LLM API and Gmail for modules, LLM connections for
+images, journal entry links, file exchange between modules, organizations, settings forms, roles,
+search, drawn icons).
 
 1. In Ledger, open **Settings → Modules**, enter `mastifdogo/llm-api-module` and press **Add**.
    **Auto sort** appears in the sidebar with a robot icon. You can hide or reorder it under
    Settings → Sidebar. Updates install on Ledger's update schedule, or with **Update modules now**.
 2. An admin allows the module to use the shared services:
-   - **Settings → AI:** choose a provider (Claude needs an API key; Ollama a model you've pulled) and
+   - **Settings → LLM API:** choose a provider (Claude needs an API key; Ollama a model you've pulled) and
      tick **Auto sort** under the modules allowed to use it. Claude also reads bill PDFs; local
      models only see the email text. Larger local models (14B and up) categorise noticeably
      better than small ones.
@@ -132,6 +133,22 @@ module links the two rows so the transfer is posted **once**:
 
 If you also get the credit card's statement email as a bill, ignore it rather than approving it
 into payables. The card's own statement already records those charges.
+
+## Photos of bills and receipts
+
+Upload a photo or scan (JPEG, PNG, WebP, GIF) on the Import tab like a PDF; large phone photos are
+shrunk in the browser first. Pictures go to Ledger's LLM connection for images (Settings → LLM API;
+Claude, or a local vision model such as one served by Ollama), which can be a different model than
+the one for text. Photos attached to bill emails (with no PDF) and pictures other modules send are
+read the same way. The picture is kept with the bill or receipt. Without a connection for images,
+enter the details by hand. The Status tab shows which connection reads PDFs and pictures.
+
+## Links in the journal
+
+Every entry Auto sort posts links back to where it came from, shown on the entry in Ledger: the
+statement line (*march.csv · SHELL #12*, opening the statement), the bill or receipt for an approved
+bill and its payment, both statement lines for a transfer, and the bank line merged into an entry you
+entered by hand (removed again on unmerge).
 
 ## The AI only suggests
 
@@ -333,7 +350,7 @@ sent to the Anthropic API. With email checks on, emails that pass the keyword fi
 subject, text and PDF attachments) are sent too. With Ollama or another server on your network,
 nothing leaves it. Emails that don't pass the filter are never sent anywhere. Bill PDFs and email
 text are stored in the Ledger database. Ledger logs each AI call (tokens, not content) under
-Settings → AI.
+Settings → LLM API.
 
 ## Notes on Ledger's module guidelines
 
@@ -378,10 +395,15 @@ Ledger installs modules without a build step or `npm install`, so the module has
 Use the `ledger-module` skill in `.claude/skills/`: it checks the module against a real Ledger
 (`sh .claude/skills/ledger-module/scripts/check.sh` with `TEST_DATABASE_URL` set) and links to
 Ledger's module docs. `npm test` runs the unit tests (Node 22+). To try it without spending API
-credit, point Ledger's AI (Settings → AI, Server URL) at a local stub that answers like the
+credit, point Ledger's AI (Settings → LLM API, Server URL) at a local stub that answers like the
 Messages API.
 
 ## Changes
+
+- **0.5.0:** Needs Ledger 0.11.2. Photos and scans of bills and receipts are read through Ledger's
+  LLM connection for images (uploads, email attachments, files from other modules). Journal entries
+  link back to their statement line, bill or receipt. Ledger's Settings → AI is now Settings → LLM
+  API; messages and the Status tab follow.
 
 - **0.4.0:** Follows Ledger's new rule that AI output needs a person's approval: a file another
   module sent that the AI read is marked done only after you approve it (new **Approve** /

@@ -275,9 +275,9 @@
 		<span id="up-msg" class="muted"></span>
 	</form>
 		<div class="panel">
-			<strong>Bill or receipt</strong> (PDF or a saved email, .eml)
+			<strong>Bill or receipt</strong> (PDF, photo or a saved email, .eml)
 			<p class="muted small">Ledger's AI reads it and puts it on the Bills or Receipts tab.</p>
-			<label class="btn" style="display:inline-block; font-weight:normal">Choose a file<input type="file" id="b-file" accept=".pdf,.eml,application/pdf,message/rfc822" class="hidden"></label>
+			<label class="btn" style="display:inline-block; font-weight:normal">Choose a file<input type="file" id="b-file" accept=".pdf,.eml,.jpg,.jpeg,.png,.webp,.gif,application/pdf,message/rfc822,image/jpeg,image/png,image/webp,image/gif" class="hidden"></label>
 		</div>
 	</div>
 
@@ -930,17 +930,37 @@
 		} catch (e) { fail(e); } finally { $("b-check").disabled = false; }
 	};
 
+	/** A photo scaled to at most 1800 px on its longer side, as JPEG. */
+	async function shrinkImage(file) {
+		const bmp = await createImageBitmap(file);
+		const scale = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+		const c = document.createElement("canvas");
+		c.width = Math.round(bmp.width * scale);
+		c.height = Math.round(bmp.height * scale);
+		c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+		return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error("couldn't shrink the picture"))), "image/jpeg", 0.85));
+	}
+
 	$("b-file").onchange = async () => {
 		const file = $("b-file").files[0];
 		$("b-file").value = "";
 		if (!file) return;
-		if (file.size > 700_000) return toast("That file is over 700 KB, too large to upload here.", true);
-		const bytes = new Uint8Array(await file.arrayBuffer());
+		let blob = file;
+		let name = file.name;
+		// Phone photos are several MB; Ledger takes requests up to 1 MB, and a smaller JPEG reads just as well.
+		if (/^image\/(jpeg|png|webp)$/.test(file.type) && file.size > 500_000) {
+			try {
+				blob = await shrinkImage(file);
+				name = name.replace(/\.[a-z0-9]+$/i, "") + ".jpg";
+			} catch { /* keep the original */ }
+		}
+		if (blob.size > 700_000) return toast("That file is over 700 KB, too large to upload here.", true);
+		const bytes = new Uint8Array(await blob.arrayBuffer());
 		let bin = "";
 		for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
 		toast("Reading the bill…");
 		try {
-			const b = await api("/bills/upload", { method: "POST", body: JSON.stringify({ filename: file.name, content_base64: btoa(bin) }) });
+			const b = await api("/bills/upload", { method: "POST", body: JSON.stringify({ filename: name, content_base64: btoa(bin) }) });
 			$("b-filter").value = "unpaid";
 			showTab(b.kind === "receipt" ? "receipts" : "bills");
 			openBill(b.id);
@@ -1035,7 +1055,7 @@
 		else src.push("Uploaded or entered by hand");
 		$("bd-source").textContent = src.join("");
 		$("bd-show-doc").classList.toggle("hidden", !b.has_document);
-		$("bd-show-doc").textContent = `Show ${b.document_name || "PDF"}`;
+		$("bd-show-doc").textContent = `Show ${b.document_name || "document"}`;
 		$("bd-doc").replaceChildren();
 		$("bd-body").textContent = b.body_text || "";
 		$("bd-body").classList.toggle("hidden", !b.body_text);
@@ -1046,7 +1066,10 @@
 			const d = await api(`/bills/${currentBill.id}/document`);
 			const bytes = Uint8Array.from(atob(d.data), (c) => c.charCodeAt(0));
 			const url = URL.createObjectURL(new Blob([bytes], { type: d.type || "application/pdf" }));
-			$("bd-doc").replaceChildren(el("iframe", { class: "pdf", src: url, title: d.name }), el("p", {}, el("a", { href: url, download: d.name || "bill.pdf" }, "Download")));
+			const view = /^image\//.test(d.type || "")
+				? el("img", { src: url, alt: d.name || "picture", style: "max-width:100%; height:auto; border:1px solid var(--border); border-radius:6px" })
+				: el("iframe", { class: "pdf", src: url, title: d.name });
+			$("bd-doc").replaceChildren(view, el("p", {}, el("a", { href: url, download: d.name || "bill.pdf" }, "Download")));
 		} catch (e) { fail(e); }
 	};
 
@@ -1253,10 +1276,14 @@
 		const ai = st.llm;
 		$("st-ai").replaceChildren(
 			...(!ai.configured
-				? statusLine(false, "No AI provider is set up yet. An admin can choose one under Settings → AI and allow this module there.")
+				? statusLine(false, "No AI provider is set up yet. An admin can choose one under Settings → LLM API and allow this module there.")
 				: !ai.allowed
-					? statusLine(false, `Ledger uses ${ai.provider} (${ai.model || "default model"}), but this module isn't allowed to use it yet. An admin can allow it under Settings → AI.`)
-					: statusLine(true, `Suggestions and bills use Ledger's AI: ${ai.provider}, ${ai.model || "default model"}.${ai.readsPdf ? " Bill PDFs are read too." : " This provider can't read PDFs, so bill amounts that are only in a PDF have to be typed in."}`)),
+					? statusLine(false, `Ledger uses ${ai.provider} (${ai.model || "default model"}), but this module isn't allowed to use it yet. An admin can allow it under Settings → LLM API.`)
+					: statusLine(true, `Suggestions and bills use Ledger's LLM API: ${ai.provider}, ${ai.model || "default model"}. ${
+						!ai.images?.configured
+							? "No connection for images is set up, so amounts that are only in a PDF or a photo have to be typed in."
+							: `PDFs and photos go to ${ai.images.provider}, ${ai.images.model || "default model"}${ai.readsPdf ? "" : " (it reads photos of bills and receipts; PDFs need Claude)"}.`
+					}`)),
 		);
 		let mailText;
 		if (mail.source === "off") mailText = [el("span", { class: "pill plain" }, "Off"), ` ${mail.missing[0].toUpperCase()}${mail.missing.slice(1)}.`];

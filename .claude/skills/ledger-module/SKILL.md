@@ -42,7 +42,7 @@ feature the module uses (the context file says which version added what;
   `ctx.ledger.createJournalEntry(entry, req.user)`.
 - AI goes through `ctx.llm` and Gmail through `ctx.gmail` (Ledger ≥ 0.10.0):
   no API keys, OAuth, IMAP or Apps Script bridges of the module's own for
-  those. The admin allows the module under Settings → AI / Gmail.
+  those. The admin allows the module under Settings → LLM API / Gmail.
 - Files another module produces come through `ctx.files` (Ledger ≥ 0.11.0),
   never by reading the other module's tables. This module declares
   `"files": {"accepts": [...]}` and marks each file `done` or `rejected`
@@ -63,6 +63,13 @@ feature the module uses (the context file says which version added what;
   `accepted` until `settle()` (lib/received-files.mjs), AI account guesses
   are `statements.account_guess` (preselected only). No auto-approve setting.
 - Bad input answers 4xx (`throw new ctx.HttpError(422, "…")`), never 500.
+- LLM connections (Ledger 0.11.2): requests with `documents` or `images` go
+  to the connection for images. `ai()` in server.mjs gives `readsPdf`
+  (images connection is Claude) and `readsImages`; photos go to
+  `extractBill({ images })`, sniffed by `imageType()` in lib/bills.mjs.
+- Journal entry links (Ledger 0.11.2): every entry the module posts carries
+  `links` (`tx:<id>` → `?statement=`, `bill:<id>` → `?bill=`); entries
+  linked later use `linkEntry()` (transfers, duplicates).
 - Versions: new features (a page, route, setting, data kept) raise the middle
   number (`0.2.6` → `0.3.0`); fixes only raise the last.
 

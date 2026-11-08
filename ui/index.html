@@ -1242,7 +1242,7 @@
 					: statusLine(true, `Suggestions and bills use Ledger's AI: ${ai.provider}, ${ai.model || "default model"}.${ai.readsPdf ? " Bill PDFs are read too." : " This provider can't read PDFs, so bill amounts that are only in a PDF have to be typed in."}`)),
 		);
 		let mailText;
-		if (mail.source === "off") mailText = [el("span", { class: "pill plain" }, "Off"), ` Reading email is turned off (Settings → ${moduleName}).`];
+		if (mail.source === "off") mailText = [el("span", { class: "pill plain" }, "Off"), ` ${mail.missing[0].toUpperCase()}${mail.missing.slice(1)}.`];
 		else if (!mail.ready) mailText = statusLine(false, `${mail.missing}.`);
 		else if (mail.source === "gmail") mailText = statusLine(true, `Reads ${mail.gmail.account || "Ledger's Gmail account"} with the search “${mail.gmail_query}”, ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
 		else mailText = statusLine(true, `Reads ${mail.imap.user} on ${mail.imap.host} (${mail.imap.folder}), ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
@@ -1252,7 +1252,7 @@
 		const org = st.organization;
 		const others = st.organizations.filter((o) => o.id !== org.id);
 		$("st-org").textContent = `These are ${org.name}'s books (organization ${org.id}). Statements, bills and rules here are kept apart from other organizations'.`
-			+ (mail.mail_organization ? ` Email goes into organization ${mail.mail_organization}${mail.mail_organization === org.id ? " (this one)" : ""}; change it with “Organization for email” under Settings → ${moduleName}.` : "")
+			+ ` Settings → ${moduleName} are this organization's own, including whether it reads email (${mail.source === "off" ? "it doesn't" : mail.source === "gmail" ? "Gmail" : "IMAP"}).`
 			+ (others.length ? ` Other organizations: ${others.map((o) => `${o.name} (${o.id})`).join(", ")}.` : "");
 	}
 	$("st-test").onclick = async () => {

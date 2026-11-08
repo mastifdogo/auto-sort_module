@@ -1,7 +1,7 @@
 {
   "id": "categorizer",
   "name": "Auto sort",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and Ledger's AI suggests an account for each transaction; transfers between your accounts are posted once. Optionally reads bills from Ledger's Gmail account (or an IMAP mailbox) on a schedule, tracks them until paid and matches them to statement payments. Needs an admin to allow it under Settings → AI (and Settings → Gmail for bills).",
   "ledger": ">=0.11.0",
   "server": "server.mjs",
@@ -44,8 +44,12 @@
         "key": "mail_source",
         "label": "Read bills from",
         "type": "select",
-        "default": "gmail",
+        "default": "auto",
         "options": [
+          {
+            "value": "auto",
+            "label": "Gmail in the main books; nothing in other organizations"
+          },
           {
             "value": "gmail",
             "label": "Gmail (Ledger's connected account)"
@@ -59,7 +63,7 @@
             "label": "Don't read email"
           }
         ],
-        "help": "Gmail needs this module allowed to read mail under Settings → Gmail."
+        "help": "Set per organization. Gmail needs this module allowed to read mail under Settings → Gmail. Ledger has one Gmail account, so choose Gmail in only one organization unless you want its bills in several."
       },
       {
         "key": "mail_interval",
@@ -69,15 +73,6 @@
         "max": 10080,
         "default": 60,
         "help": "0 turns scheduled checks off; Check email now on the Import tab always works."
-      },
-      {
-        "key": "mail_organization",
-        "label": "Organization for email",
-        "type": "number",
-        "min": 1,
-        "max": 100000,
-        "default": 1,
-        "help": "Email is shared by the whole server, so bills and statements from it go into one organization's books: 1 is the main books. The Import tab shows each organization's number."
       },
       {
         "key": "email_statements",

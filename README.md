@@ -133,6 +133,19 @@ module links the two rows so the transfer is posted **once**:
 If you also get the credit card's statement email as a bill, ignore it rather than approving it
 into payables. The card's own statement already records those charges.
 
+## The AI only suggests
+
+Following Ledger's rule for modules, nothing the AI decides takes effect until a person approves it:
+
+- Account suggestions for transactions are posted only when you press **Post**.
+- Bills and receipts read from email or files wait as **Needs review** until you **Approve** them.
+- A new account the AI suggests is created only when you press **Create account**.
+- The bank or card account the AI guesses for a PDF statement is only preselected; you choose it.
+- A file another module sent that the AI read is marked done for its sender only when you approve
+  it (Import tab), approve the bill it became, or post from the statement it became.
+
+There's no auto-approve setting. Transfers, duplicates and learned rules don't use the AI.
+
 ## Duplicates
 
 The **Duplicates** tab lists transactions waiting to be posted that look like one payment:
@@ -173,7 +186,9 @@ exchange (`ctx.files`, Ledger 0.11.0). A module offering "send to…" lists it a
 - **Bills and receipts** (PDF or a saved `.eml`) go to the Bills or Receipts tab; the sender's label
   decides which.
 - Each file is marked **done** with what it became (e.g. "12 transactions staged") or **rejected**
-  with why, which the sender sees. The Import tab lists them under *Sent by other modules*, with
+  with why, which the sender sees. A file the AI read (bills, receipts, PDF statements) stays
+  *accepted* until you approve it: **Approve** on the Import tab, approving the bill, or posting from
+  the statement; deleting the bill or discarding the statement rejects it. The Import tab lists them under *Sent by other modules*, with
   **Try again** for rejected ones. Nothing is posted until you approve it.
 
 ## Organizations
@@ -367,6 +382,11 @@ credit, point Ledger's AI (Settings → AI, Server URL) at a local stub that ans
 Messages API.
 
 ## Changes
+
+- **0.4.0:** Follows Ledger's new rule that AI output needs a person's approval: a file another
+  module sent that the AI read is marked done only after you approve it (new **Approve** /
+  **Reject** on the Import tab, or approving the bill / posting the statement it became), and the
+  account the AI guesses for a PDF statement is only preselected. Migration 009.
 
 - **0.3.0:** For Ledger 0.11.1, where module settings are per organization: each organization
   chooses its own email source under Settings → Auto sort, and the new default reads Gmail in the

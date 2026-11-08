@@ -257,12 +257,12 @@ export default async function register(ctx) {
 	 * account are skipped. Returns { id, transactions, duplicates }; with no new transactions the
 	 * statement isn't kept (id null).
 	 */
-	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null, source = mail ? "email" : "upload" }) {
+	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null, source = mail ? "email" : "upload", guess = null }) {
 		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -t.amount_cents : t.amount_cents }));
 		const code = account?.code ?? "";
 		const { rows } = await q(
-			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key, account_guess)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
 			[
 				(filename || `statement.${parsed.format}`).slice(0, 200),
 				code,
@@ -274,6 +274,7 @@ export default async function register(ctx) {
 				(mail?.from ?? "").slice(0, 300),
 				(mail?.subject ?? "").slice(0, 500),
 				mail?.sourceKey ?? null,
+				account ? null : guess,
 			],
 		);
 		const id = rows[0].id;
@@ -313,7 +314,8 @@ export default async function register(ctx) {
 			if (rowCount > 0) enqueue(sid);
 		}
 	};
-	const bills = registerBills(ctx, { q, T, bad, ai, requeue, stageStatement });
+	const billHelpers = { q, T, bad, ai, requeue, stageStatement, settleFile: null };
+	const bills = registerBills(ctx, billHelpers);
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue });
 
@@ -331,7 +333,9 @@ export default async function register(ctx) {
 			  WHERE status = 'posting'`,
 		);
 	});
-	registerReceivedFiles(ctx, { q, T, bills });
+	const files = registerReceivedFiles(ctx, { q, T, bills });
+	// Approving a bill, posting from a statement or discarding it settles the file it came from.
+	bills.settleFile = billHelpers.settleFile = files.settle;
 
 	// -----------------------------------------------------------------------
 	// Routes: settings
@@ -434,7 +438,7 @@ export default async function register(ctx) {
 
 	const STATEMENT_SELECT = `
 		SELECT s.id, s.filename, s.account_code, s.format, s.status, s.error, s.duplicates, s.uploaded_by, s.created_at, s.categorized_at,
-		       s.source, s.mail_from, s.mail_subject, s.source_key,
+		       s.source, s.mail_from, s.mail_subject, s.source_key, s.account_guess,
 		       count(t.id)::int AS total,
 		       count(t.id) FILTER (WHERE t.status = 'posted')::int AS posted,
 		       count(t.id) FILTER (WHERE t.status = 'skipped')::int AS skipped,
@@ -556,6 +560,7 @@ export default async function register(ctx) {
 		const statement = await getStatement(req.params.id);
 		// Posted rows stay so their fingerprints keep blocking duplicate uploads.
 		await q(`DELETE FROM ${T("transactions")} WHERE statement_id = $1 AND status <> 'posted'`, [statement.id]);
+		if (statement.posted === 0) await bills.settleFile?.({ statementId: statement.id }, "rejected", `discarded in ${ctx.name} by ${req.user.username}`, req.user.username);
 		await q(`DELETE FROM ${T("statements")} s WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM ${T("transactions")} t WHERE t.statement_id = s.id)`, [statement.id]);
 		await syncStatementNotice(statement.id);
 	});
@@ -695,6 +700,8 @@ export default async function register(ctx) {
 		for (const sid of otherStatements) if (String(sid) !== String(statement.id)) await syncStatementNotice(sid);
 		// New entries can be the recorded side of transfers still waiting on other statements.
 		if (results.posted > 0) await transfers.matchTransfers();
+		// Someone posted from it: the file it came from (if another module sent it) is done.
+		if (results.posted > 0) await bills.settleFile?.({ statementId: statement.id }, "done", `${results.posted} transaction${results.posted === 1 ? "" : "s"} posted by ${req.user.username}`, req.user.username);
 		ctx.log.info("transactions posted", { statement: String(statement.id), posted: results.posted, failed: results.failed.length, by: req.user.username });
 		return results;
 	});

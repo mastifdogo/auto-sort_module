@@ -56,6 +56,12 @@ feature the module uses (the context file says which version added what;
 - Configuration goes in the manifest's `settings.fields`; data shown in the
   UI goes in with `textContent`, never `innerHTML`; support dark mode and
   narrow panes (~260 px).
+- AI only proposes; a person approves. Anything `ctx.llm` decides is stored
+  as pending and acted on only after a user approves it in the UI (POST with
+  `req.user`): posting, changing or deleting records, marking files done.
+  Here: suggestions need Post, bills need Approve, files the AI read stay
+  `accepted` until `settle()` (lib/received-files.mjs), AI account guesses
+  are `statements.account_guess` (preselected only). No auto-approve setting.
 - Bad input answers 4xx (`throw new ctx.HttpError(422, "…")`), never 500.
 - Versions: new features (a page, route, setting, data kept) raise the middle
   number (`0.2.6` → `0.3.0`); fixes only raise the last.

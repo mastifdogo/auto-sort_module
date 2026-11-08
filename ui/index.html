@@ -585,7 +585,9 @@
 		const sel = $("d-account-select");
 		const bankish = accounts.filter((a) => a.type === "asset" || a.type === "liability");
 		sel.replaceChildren(el("option", { value: "" }, "Choose…"), ...bankish.map((a) => el("option", { value: a.code }, `${a.code} · ${a.name} (${a.type}, ${a.currency})`)));
-		sel.value = needs ? "" : s.account_code;
+		// The AI's guess (from a PDF statement) is only preselected; nothing happens until you choose.
+		const guess = needs && s.account_guess && bankish.some((a) => a.code === s.account_guess) ? s.account_guess : "";
+		sel.value = needs ? guess : s.account_code;
 		const syncFlip = () => {
 			const a = accounts.find((x) => x.code === sel.value);
 			$("d-account-flip").checked = !!(current.flip_hint && a?.type === "liability");
@@ -593,7 +595,10 @@
 		sel.onchange = syncFlip;
 		syncFlip();
 		$("d-account-cancel").classList.toggle("hidden", needs);
-		$("d-account-note").textContent = s.source === "email" ? "Next time a statement comes from this sender for this account number, it goes to this account by itself." : "";
+		$("d-account-note").textContent = [
+			guess ? `Preselected: the AI's guess from the statement (${accountLabel(guess)}). Check it before using it.` : "",
+			s.source === "email" || s.source === "module" ? "Next time a statement comes from this sender for this account number, it goes to the account you choose by itself." : "",
+		].filter(Boolean).join(" ");
 		const sug = current.suggested_account;
 		$("d-account-new").classList.toggle("hidden", !(needs && sug));
 		if (needs && sug) {
@@ -1156,13 +1161,25 @@
 		if (data.length === 0) return;
 		$("files-log").tBodies[0].replaceChildren(
 			...data.map((f) => {
-				const [cls, label] = f.outcome ? FILE_OUTCOME[f.outcome] || ["plain", f.outcome] : ["plain", f.status === "new" ? "Waiting" : "Working on it…"];
+				const [cls, label] = f.pending
+					? ["warn", `${(FILE_OUTCOME[f.outcome] || ["", f.outcome])[1]} · waiting for review`]
+					: f.status === "rejected" && f.outcome && f.outcome !== "rejected" ? ["bad", "Rejected"]
+					: f.outcome ? FILE_OUTCOME[f.outcome] || ["plain", f.outcome] : ["plain", f.status === "new" ? "Waiting" : "Working on it…"];
 				const extra = [];
 				if (f.bill_id) {
 					extra.push(el("a", { href: "#", onclick: (e) => { e.preventDefault(); openBill(f.bill_id); } }, `Open in ${f.bill_kind === "receipt" ? "Receipts" : "Bills"}${f.bill_vendor ? `: ${f.bill_vendor}` : ""}`));
 				} else if (f.statement_id) {
 					extra.push(el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(f.statement_id); } }, "Open in Statements"));
 				}
+				if (f.pending) {
+					// The AI read this file: the sender hears "done" only once a person approves.
+					const act = (action) => async () => {
+						try { await api(`/files/${f.id}/${action}`, { method: "POST" }); } catch (err) { fail(err); }
+						loadFiles().catch(fail);
+					};
+					extra.push(el("div", { class: "muted" }, `Read by the AI. Check it, then approve${f.bill_id ? ` (approving the ${f.bill_kind === "receipt" ? "receipt" : "bill"} does too)` : f.statement_id ? " (posting from the statement does too)" : ""}.`));
+					extra.push(el("button", { class: "btn small", onclick: act("approve") }, "Approve"), " ", el("button", { class: "btn small", onclick: act("reject") }, "Reject"));
+				} else if (f.settled_by) extra.push(el("span", { class: "muted" }, ` ${f.status === "done" ? "Approved" : "Rejected"} by ${f.settled_by}`));
 				if (f.outcome === "rejected") {
 					extra.push(el("span", { class: "muted" }, ` ${f.result || ""} `));
 					extra.push(el("button", { class: "btn small", onclick: async () => {

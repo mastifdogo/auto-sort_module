@@ -1,6 +1,6 @@
 // Auto sort (module id "categorizer", formerly "LLM API"): Ledger loads this file at startup and calls register(ctx).
 // The module API is described in Ledger's docs/MODULE_LLM_CONTEXT.md. AI goes
-// through Ledger's provider (ctx.llm, Settings → AI) and Gmail through
+// through Ledger's provider (ctx.llm, Settings → LLM API) and Gmail through
 // Ledger's account (ctx.gmail, Settings → Gmail); options are the manifest's
 // settings form (ctx.settings, the module's tab under Settings).
 //
@@ -52,7 +52,23 @@ export default async function register(ctx) {
 	/** Ledger's AI for this module: a JSON call, and whether the provider reads PDFs. */
 	async function ai() {
 		const st = await ctx.llm.status();
-		return { llm: (req) => ctx.llm.json(req), readsPdf: st.readsPdf === true, status: st };
+		// PDFs and pictures go to Ledger's LLM connection for images (Ledger 0.11.2): Claude reads both,
+		// a local vision model only pictures.
+		return { llm: (req) => ctx.llm.json(req), readsPdf: st.readsPdf === true, readsImages: st.images?.configured === true, status: st };
+	}
+
+	// Journal entries link back to what they came from (Ledger 0.11.2), shown on the entry in Ledger.
+	const txLink = (id, statementId, filename, description) => ({
+		ref: `tx:${id}`,
+		label: `${filename} · ${description}`.replace(/\s+/g, " ").trim().slice(0, 200),
+		href: `/apps/${ctx.id}?statement=${statementId}`,
+	});
+	async function linkEntry(entryId, link, user) {
+		try {
+			await ctx.ledger.linkJournalEntry(entryId, link, user);
+		} catch (err) {
+			ctx.log.warn("journal entry link failed", { entry: String(entryId), ref: link.ref, err: String(err?.message || err) });
+		}
 	}
 
 	/**
@@ -317,7 +333,7 @@ export default async function register(ctx) {
 	const billHelpers = { q, T, bad, ai, requeue, stageStatement, settleFile: null };
 	const bills = registerBills(ctx, billHelpers);
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
-	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue });
+	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
 
 	await migrateOldSettings().catch((err) => ctx.log.error("moving old settings failed", { err: String(err?.message || err) }));
 
@@ -633,7 +649,7 @@ export default async function register(ctx) {
 			// Claim the row so a double click cannot post it twice.
 			const claim = await q(
 				`UPDATE ${T("transactions")} SET status = 'posting' WHERE id = $1 AND status = 'new'
-				 RETURNING tx_date::text AS date, description, memo, amount_cents, fitid, account_code, COALESCE(chosen_code, suggested_code) AS code, bill_id,
+				 RETURNING tx_date::text AS date, description, memo, amount_cents, fitid, account_code, COALESCE(chosen_code, suggested_code) AS code, bill_id, statement_id,
 				           transfer_tx_id, transfer_entry_id`,
 				[id],
 			);
@@ -658,8 +674,10 @@ export default async function register(ctx) {
 					const { rows: o } = await q(`SELECT status, journal_entry_id FROM ${T("transactions")} WHERE id = $1`, [t.transfer_tx_id]);
 					if (o[0]?.status === "posted" && o[0].journal_entry_id !== null) existing = o[0].journal_entry_id;
 				}
+				const link = txLink(id, statement.id, statement.filename, t.description);
 				if (existing !== null) {
 					await markPosted(existing);
+					await linkEntry(existing, link, req.user);
 					results.posted++;
 					results.already_recorded++;
 					continue;
@@ -673,6 +691,7 @@ export default async function register(ctx) {
 							{ account_code: t.account_code, debit_cents: amt > 0n ? abs : 0n, credit_cents: amt < 0n ? abs : 0n, memo: t.memo.slice(0, 500) },
 							{ account_code: t.code, debit_cents: amt < 0n ? abs : 0n, credit_cents: amt > 0n ? abs : 0n, memo: "" },
 						],
+						links: [link],
 					},
 					req.user,
 				);
@@ -681,13 +700,18 @@ export default async function register(ctx) {
 				if (t.transfer_tx_id !== null) {
 					const { rows: other } = await q(
 						`UPDATE ${T("transactions")} SET status = 'posted', journal_entry_id = $2, posted_by = $3, posted_at = now(), error = NULL, reason = $4
-						  WHERE id = $1 AND status = 'new' AND COALESCE(chosen_code, suggested_code) = $5 RETURNING statement_id`,
+						  WHERE id = $1 AND status = 'new' AND COALESCE(chosen_code, suggested_code) = $5
+						  RETURNING statement_id, description, (SELECT filename FROM ${T("statements")} s WHERE s.id = statement_id) AS filename`,
 						[t.transfer_tx_id, entry.id, req.user.username, `recorded with the transfer from ${t.account_code} (entry #${entry.id})`, t.account_code],
 					);
-					for (const r of other) otherStatements.add(r.statement_id);
+					for (const r of other) {
+						otherStatements.add(r.statement_id);
+						await linkEntry(entry.id, txLink(t.transfer_tx_id, r.statement_id, r.filename, r.description), req.user);
+					}
 				}
 				// A bill payment marks the bill paid; it isn't a payee rule (it books to payables).
 				const paidBill = t.bill_id !== null && (await bills.onPosted(id, t.code, entry.id));
+				if (paidBill) await linkEntry(entry.id, await bills.linkFor(t.bill_id), req.user);
 				if (!paidBill) await learn(t.description, t.code, req.user.username);
 				results.posted++;
 			} catch (err) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assignMatches, extractBill, findDuplicate, gmailQuery, looksLikeBill, matchScore, sentByMe } from "../lib/bills.mjs";
+import { assignMatches, extractBill, findDuplicate, gmailQuery, imageType, looksLikeBill, matchScore, sentByMe } from "../lib/bills.mjs";
 import { parseEmail } from "../lib/mime.mjs";
 import { sampleEmail } from "./helpers.mjs";
 
@@ -86,4 +86,30 @@ test("mail you sent is left out; bills forwarded to yourself stay in", () => {
 	assert.equal(sentByMe({ from: "Me <me@example.com>", to: "x@y.z", cc: "Me <me@example.com>" }, me), false);
 	assert.equal(sentByMe({ from: "Rogers <b@rogers.com>", to: "me@example.com" }, me), false);
 	assert.equal(sentByMe({ from: "Me <me@example.com>", to: "x@y.z" }, ""), false); // account unknown: can't tell
+});
+
+test("pictures are recognised by their bytes", () => {
+	assert.equal(imageType(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1])), "image/jpeg");
+	assert.equal(imageType(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(8)])), "image/png");
+	assert.equal(imageType(Buffer.from("GIF89a......")), "image/gif");
+	assert.equal(imageType(Buffer.from("RIFF\x00\x00\x00\x00WEBPVP8 ", "latin1")), "image/webp");
+	assert.equal(imageType(Buffer.from("%PDF-1.4 not a picture")), null);
+	assert.equal(imageType(Buffer.from("tiny")), null);
+});
+
+test("photos of a receipt go to Ledger's LLM API as images, when a connection for images exists", async () => {
+	const photo = { filename: "receipt.jpg", contentType: "image/jpeg", data: Buffer.from([0xff, 0xd8, 0xff, 1, 2, 3, 4, 5, 6, 7, 8, 9]) };
+	const email = { subject: "receipt.jpg", from: "", date: null, text: "", attachments: [photo] };
+	const calls = [];
+	const llm = async (req) => {
+		calls.push(req);
+		return { data: { kind: "receipt", vendor: "Cafe", invoice_number: "", bill_date: "2026-04-02", due_date: "", amount_due: "12.40", currency: "CAD", account_code: "", confidence: 0.8, summary: "" } };
+	};
+	const x = await extractBill({ llm, readsImages: true, email, images: [photo], accounts: [] });
+	assert.equal(x.amount_cents, 1240n);
+	assert.deepEqual(calls[0].images, [{ media_type: "image/jpeg", data: photo.data.toString("base64") }]);
+	assert.match(calls[0].prompt, /Attached pictures .*receipt\.jpg \(included above\)/);
+	await extractBill({ llm, readsImages: false, email, images: [photo], accounts: [] });
+	assert.equal(calls[1].images, undefined);
+	assert.match(calls[1].prompt, /pictures that you cannot see/);
 });

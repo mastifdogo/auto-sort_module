@@ -1,8 +1,8 @@
 {
   "id": "categorizer",
   "name": "Auto sort",
-  "version": "0.5.0",
-  "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and Ledger's AI suggests an account for each transaction; transfers between your accounts are posted once. Optionally reads bills from Ledger's Gmail account (or an IMAP mailbox) on a schedule, tracks them until paid and matches them to statement payments. Needs an admin to allow it under Settings → LLM API (and Settings → Gmail for bills).",
+  "version": "0.6.0",
+  "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and Ledger's LLM API suggests an account for each transaction; transfers between your accounts are posted once, and lines already in the journal are found and linked. Bills and receipts (PDFs, photos, saved emails, or files from other modules) are tracked until paid and matched to statement payments; an Auto sort button asks the LLM for matches. Needs an admin to allow it under Settings → LLM API.",
   "ledger": ">=0.11.2",
   "server": "server.mjs",
   "ui": "ui",
@@ -39,112 +39,6 @@
         "min": 1,
         "max": 200,
         "default": 40
-      },
-      {
-        "key": "mail_source",
-        "label": "Read bills from",
-        "type": "select",
-        "default": "auto",
-        "options": [
-          {
-            "value": "auto",
-            "label": "Gmail in the main books; nothing in other organizations"
-          },
-          {
-            "value": "gmail",
-            "label": "Gmail (Ledger's connected account)"
-          },
-          {
-            "value": "imap",
-            "label": "Another provider (IMAP)"
-          },
-          {
-            "value": "off",
-            "label": "Don't read email"
-          }
-        ],
-        "help": "Set per organization. Gmail needs this module allowed to read mail under Settings → Gmail. Ledger has one Gmail account, so choose Gmail in only one organization unless you want its bills in several."
-      },
-      {
-        "key": "mail_interval",
-        "label": "Check email for bills every (minutes)",
-        "type": "number",
-        "min": 0,
-        "max": 10080,
-        "default": 60,
-        "help": "0 turns scheduled checks off; Check email now on the Import tab always works."
-      },
-      {
-        "key": "email_statements",
-        "label": "Statements in email",
-        "type": "select",
-        "default": "off",
-        "options": [
-          {
-            "value": "off",
-            "label": "Ignore"
-          },
-          {
-            "value": "review",
-            "label": "Stage transactions for review"
-          }
-        ],
-        "help": "With Stage, bank and card statements found in email (CSV, OFX or QFX attachments, or PDF statements when Ledger's AI is Claude) are staged on the Statements tab. You approve and post the transactions yourself."
-      },
-      {
-        "key": "gmail_query",
-        "label": "Gmail search for bills",
-        "type": "text",
-        "default": "",
-        "help": "Optional, e.g. label:bills (with a Gmail filter that labels bills). Empty: any of the keywords below."
-      },
-      {
-        "key": "mail_keywords",
-        "label": "Bill keywords",
-        "type": "textarea",
-        "default": "invoice, bill, statement, amount due, balance due, payment due, due date, receipt, pre-authorized, autopay, facture",
-        "help": "Comma-separated. Only emails containing one of these are sent to the AI. Empty: every email the search finds."
-      },
-      {
-        "key": "mail_lookback_days",
-        "label": "First check looks back (days)",
-        "type": "number",
-        "min": 1,
-        "max": 365,
-        "default": 30
-      },
-      {
-        "key": "imap_host",
-        "label": "IMAP server",
-        "type": "text",
-        "default": "",
-        "help": "Only for IMAP, e.g. imap.fastmail.com, outlook.office365.com, imap.mail.me.com, or 127.0.0.1 for Proton Bridge."
-      },
-      {
-        "key": "imap_port",
-        "label": "IMAP port",
-        "type": "number",
-        "min": 1,
-        "max": 65535,
-        "default": 993
-      },
-      {
-        "key": "imap_user",
-        "label": "IMAP user name",
-        "type": "text",
-        "default": ""
-      },
-      {
-        "key": "imap_password",
-        "label": "IMAP password",
-        "type": "secret",
-        "help": "Usually an app password. Or set CATEGORIZER_IMAP_PASSWORD in /etc/ledger/ledger.env."
-      },
-      {
-        "key": "imap_folder",
-        "label": "IMAP folder",
-        "type": "text",
-        "default": "INBOX"
       },
       {
         "key": "ap_account",

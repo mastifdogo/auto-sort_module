@@ -1,16 +1,17 @@
 // Auto sort (module id "categorizer", formerly "LLM API"): Ledger loads this file at startup and calls register(ctx).
 // The module API is described in Ledger's docs/MODULE_LLM_CONTEXT.md. AI goes
-// through Ledger's provider (ctx.llm, Settings → LLM API) and Gmail through
-// Ledger's account (ctx.gmail, Settings → Gmail); options are the manifest's
-// settings form (ctx.settings, the module's tab under Settings).
+// through Ledger's LLM API (ctx.llm, Settings → LLM API); options are the
+// manifest's settings form (ctx.settings, the module's tab under Settings).
 //
 // Flow: upload a statement -> transactions are staged in this module's tables
 // -> a background job asks the AI for an account per transaction -> you
 // review on the module's page -> posting creates one journal entry per
 // transaction through ctx.ledger.createJournalEntry and teaches a payee rule.
 //
-// Bills (lib/bill-routes.mjs): a scheduled mailbox check turns bill emails
-// into bills; transactions that pay them are matched before the LLM is asked.
+// Bills (lib/bill-routes.mjs): uploaded or sent by other modules, read by the
+// LLM; transactions that pay them are matched before the LLM is asked.
+// Journal matches (lib/journal-matches.mjs): staged rows, bills and receipts
+// found in the journal, and the Auto sort button that asks the LLM.
 // Transfers (lib/transfer-sync.mjs): the two rows of a transfer between your
 // own accounts are linked and posted as one entry.
 
@@ -20,12 +21,13 @@ import { dashboard } from "./lib/dashboard.mjs";
 import { registerTransfers } from "./lib/transfer-sync.mjs";
 import { registerReceivedFiles } from "./lib/received-files.mjs";
 import { registerDuplicates } from "./lib/duplicate-routes.mjs";
+import { registerJournalMatches } from "./lib/journal-matches.mjs";
 import { candidateAccounts, examplesFromEntries, proposeCode, suggest } from "./lib/categorize.mjs";
 import { ParseError, parseAmount, parseDate, parseStatement, payeeKey } from "./lib/parse.mjs";
 
 const MAX_CONTENT_CHARS = 1_000_000;
 /** Settings this module kept in its own table before Ledger 0.10.0 (copied to ctx.settings once, then deleted). */
-const OLD_SETTINGS = ["batch_size", "review_threshold", "ap_account", "mail_interval", "mail_keywords", "mail_lookback_days", "gmail_query", "imap_host", "imap_port", "imap_user", "imap_password", "imap_folder", "mail_source"];
+const OLD_SETTINGS = ["batch_size", "review_threshold", "ap_account"];
 
 /** @param {import("../../backend/src/module-host.ts").ModuleContext} ctx */
 export default async function register(ctx) {
@@ -80,17 +82,12 @@ export default async function register(ctx) {
 		const { rows } = await q(`SELECT key, value FROM ${T("settings")} WHERE key <> 'mail_state'`);
 		if (rows.length === 0) return;
 		const old = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-		const numbers = ["batch_size", "review_threshold", "mail_interval", "mail_lookback_days", "imap_port"];
+		const numbers = ["batch_size", "review_threshold"];
 		const values = {};
 		for (const k of OLD_SETTINGS) {
 			if (old[k] === undefined) continue;
-			if (k === "mail_keywords") values[k] = old[k].split(",").map((x) => x.trim()).filter(Boolean).join(", ");
-			else if (numbers.includes(k)) values[k] = Number(old[k]);
-			else values[k] = old[k];
+			values[k] = numbers.includes(k) ? Number(old[k]) : old[k];
 		}
-		// The Apps Script bridge is gone: a mailbox that used it now reads through Ledger's Gmail.
-		if (old.mail_source === "gmail" || old.gmail_url) values.mail_source = "gmail";
-		else if (old.imap_host) values.mail_source = "imap";
 		for (const [k, v] of Object.entries(values)) {
 			try {
 				await ctx.settings.set({ [k]: v });
@@ -146,7 +143,7 @@ export default async function register(ctx) {
 			return dash.notify({ key, title: `${s.filename}: suggestions failed`.slice(0, 200), body: `${s.error ?? ""}\nRe-run them on the Statements tab.`.trim(), level: "danger", link: dash.link });
 		}
 		if (s.status === "needs_account") {
-			return dash.notify({ key, title: `${s.filename}: choose its account`.slice(0, 200), body: `${s.open} transaction${s.open === 1 ? "" : "s"} from a statement in email are waiting. Choose which account the statement is for on the Statements tab.`, level: "warning", link: dash.link });
+			return dash.notify({ key, title: `${s.filename}: choose its account`.slice(0, 200), body: `${s.open} transaction${s.open === 1 ? "" : "s"} from a statement are waiting. Choose which account the statement is for on the Statements tab.`, level: "warning", link: dash.link });
 		}
 		if (s.status === "queued" || s.status === "categorizing") return;
 		await dash.notify({
@@ -267,7 +264,7 @@ export default async function register(ctx) {
 	}
 
 	/**
-	 * Stages a parsed statement's transactions (from an upload or from email) and starts the
+	 * Stages a parsed statement's transactions (from an upload or another module) and starts the
 	 * suggestions. account: the statement account, or null when it isn't known yet (the statement
 	 * then waits as 'needs_account' until someone chooses). Transactions already staged for the
 	 * account are skipped. Returns { id, transactions, duplicates }; with no new transactions the
@@ -334,8 +331,16 @@ export default async function register(ctx) {
 	const bills = registerBills(ctx, billHelpers);
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
+	const journal = registerJournalMatches(ctx, { q, T, bad, ai, bills, duplicates, transfers, syncStatementNotice });
 
 	await migrateOldSettings().catch((err) => ctx.log.error("moving old settings failed", { err: String(err?.message || err) }));
+	// The email checker is gone (0.6.0): forget its state and its error notice in every organization.
+	await ctx.orgs
+		.forEach(async () => {
+			await q(`DELETE FROM ${T("settings")} WHERE key = 'mail_state'`);
+			await dash.remove("mail-error", "notification");
+		})
+		.catch((err) => ctx.log.warn("email checker cleanup failed", { err: String(err?.message || err) }));
 
 	// Resume work interrupted by a restart, in every organization's books (startup runs in the main
 	// books otherwise). The categorising itself isn't awaited: register must finish quickly.
@@ -357,25 +362,24 @@ export default async function register(ctx) {
 	// Routes: settings
 	// -----------------------------------------------------------------------
 
-	// GET /status: whether Ledger's AI and Gmail are available to this module, for the page.
+	// GET /status: whether Ledger's LLM API is available to this module, for the page.
 	ctx.route("GET", "/status", async (req) => {
-		const [llm, gmail, cfg] = await Promise.all([ctx.llm.status(), ctx.gmail.status(), readSettings()]);
-		// Organizations (separate books): which one this request works in; the full list only for
-		// admins, who choose the one email goes into.
+		const [llm, cfg] = await Promise.all([ctx.llm.status(), readSettings()]);
+		const { ap_account } = await ctx.settings.get();
+		// Organizations (separate books): which one this request works in; the full list only for admins.
 		const organization = await ctx.orgs.current();
 		const organizations = req.user.role === "admin" ? await ctx.orgs.list() : [];
-		return { name: ctx.name, llm, gmail, settings: cfg, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version, organization, organizations };
+		return { name: ctx.name, llm, settings: { ...cfg, ap_account: String(ap_account ?? "") }, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version, organization, organizations };
 	});
 
-	// POST /sort-now: do now what otherwise happens on the schedule. Read new bills from email (when
-	// email is set up), then match bills and transfers to the statement transactions waiting to be posted.
+	// POST /sort-now: match bills, receipts and transfers to the statement transactions waiting to be
+	// posted, and look for staged rows, bills and receipts already in the journal (no AI).
 	ctx.route("POST", "/sort-now", async () => {
-		const why = await bills.mailMissing();
-		const mail = why ? { skipped: why } : await bills.checkMail({ trigger: "sort now" });
-		const billMatches = (mail.matched ?? 0) + (await bills.autoMatch());
+		const billMatches = await bills.autoMatch();
 		const transferLinks = await transfers.matchTransfers();
-		ctx.log.info("sort now", { bills: mail.bills ?? 0, receipts: mail.receipts ?? 0, bill_matches: billMatches, transfer_links: transferLinks });
-		return { mail, bill_matches: billMatches, transfer_links: transferLinks };
+		const found = await journal.refresh();
+		ctx.log.info("sort now", { bill_matches: billMatches, transfer_links: transferLinks, journal_matches: found });
+		return { bill_matches: billMatches, transfer_links: transferLinks, journal_matches: found };
 	});
 
 	// -----------------------------------------------------------------------
@@ -526,7 +530,7 @@ export default async function register(ctx) {
 	});
 
 	// POST /statements/:id/account {account_code, flip_signs?}: choose (or change) the account of a
-	// statement with nothing posted yet. For a statement from email, the choice is remembered for
+	// statement with nothing posted yet. For a statement from another module (or, before 0.6.0, email), the choice is remembered for
 	// that sender and account number, so its next statements go there by themselves.
 	ctx.route("POST", "/statements/:id/account", async (req) => {
 		const statement = await getStatement(req.params.id);

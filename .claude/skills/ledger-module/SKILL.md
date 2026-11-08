@@ -40,9 +40,8 @@ feature the module uses (the context file says which version added what;
 - Never edit a released migration; add the next `NNN_name.sql`.
 - Money is integer cents per currency; post to the books only with
   `ctx.ledger.createJournalEntry(entry, req.user)`.
-- AI goes through `ctx.llm` and Gmail through `ctx.gmail` (Ledger ≥ 0.10.0):
-  no API keys, OAuth, IMAP or Apps Script bridges of the module's own for
-  those. The admin allows the module under Settings → LLM API / Gmail.
+- AI goes through `ctx.llm` (Ledger ≥ 0.10.0): no API keys of the module's
+  own. The admin allows the module under Settings → LLM API.
 - Files another module produces come through `ctx.files` (Ledger ≥ 0.11.0),
   never by reading the other module's tables. This module declares
   `"files": {"accepts": [...]}` and marks each file `done` or `rejected`
@@ -51,7 +50,7 @@ feature the module uses (the context file says which version added what;
   module's schema, are a separate database; requests already run in the
   user's current one, so no organization columns. Background work (timers,
   startup, `onReceive` outside a request) runs in the main books unless it
-  loops over `ctx.orgs.forEach`. Settings, `ctx.llm` and `ctx.gmail` are
+  loops over `ctx.orgs.forEach`. Settings are per organization; `ctx.llm` is
   server-wide.
 - Configuration goes in the manifest's `settings.fields`; data shown in the
   UI goes in with `textContent`, never `innerHTML`; support dark mode and
@@ -106,45 +105,53 @@ leave pushing it to them. The module must work without that change.
 
 ## This module: Auto sort (`id: categorizer`, schema `mod_categorizer`)
 
-Statement upload (CSV, OFX, QFX) with Ledger's AI recommending an account per
-transaction, transfers between your own accounts, and bills found in email
-(Ledger's Gmail through `ctx.gmail`, or IMAP for other providers), tracked
-until paid and matched to statement payments.
+Statement upload (CSV, OFX, QFX) with Ledger's LLM API recommending an account
+per transaction, transfers between your own accounts, bills and receipts
+(uploaded PDFs, photos and `.eml` files, or files from other modules) tracked
+until paid and matched to statement payments, and matches with what's already
+in the journal. There is no email checker any more (removed in 0.6.0; never
+add Gmail or IMAP reading back without the user asking).
 
 - The id is `categorizer` (permanent: it names the schema). The name shown
   is "Auto sort" (it was "LLM API"); messages use `ctx.name`, never a fixed
-  name. Needs Ledger ≥ 0.10.0.
-- Layout: `server.mjs` (statements, categorizing, `/status`, search, the
-  one-time copy of pre-0.1.0 settings to `ctx.settings`),
-  `lib/bill-routes.mjs` (bills and mail routes; mail from `ctx.gmail` or
-  `lib/imap.mjs`), `lib/mime.mjs` (parses `ctx.gmail.raw()` and IMAP
-  messages), `lib/parse.mjs` (statement formats), `lib/categorize.mjs` and
+  name. Needs Ledger ≥ 0.11.2.
+- Layout: `server.mjs` (statements, categorizing, `/status`, search, posting
+  with entry links), `lib/bill-routes.mjs` (bill routes, reading uploads and
+  module files, `matchBillTx`, `linkBillEntry`), `lib/mime.mjs` (uploaded
+  `.eml`), `lib/parse.mjs` (statement formats), `lib/categorize.mjs` and
   `lib/bills.mjs` (prompts and schemas for `ctx.llm.json()`, matching),
-  `lib/transfers.mjs` + `lib/transfer-sync.mjs`, `lib/dashboard.mjs`. Tests:
+  `lib/transfers.mjs` + `lib/transfer-sync.mjs`, `lib/duplicates.mjs` +
+  `lib/duplicate-routes.mjs`, `lib/matching.mjs` + `lib/journal-matches.mjs`,
+  `lib/received-files.mjs`, `lib/email-statements.mjs` (statements from
+  modules: account hints, PDF statements), `lib/dashboard.mjs`. Tests:
   `test/*.test.mjs` (`npm test`).
 - AI: every call is `ctx.llm.json()`; a 403/409 from it ("not allowed" /
   "not set up") stops a batch run early, and its message (which says where
   to fix it) is shown on the rows.
-- Statements in email (`email_statements` = `review`): `lib/email-statements.mjs`
-  finds statement attachments and reads PDF statements; `stageStatement()` in
-  `server.mjs` stages them (and uploads). A statement whose account isn't
-  known is `needs_account` (account_code `''`) until
-  `POST /statements/:id/account`, which also remembers the sender in
-  `statement_sources`. Never post email statements automatically.
-- Options are the manifest's `settings.fields`, read per request with
-  `ctx.settings.get()`. `mod_categorizer.settings` only keeps `mail_state`
-  (the last mail check).
-- Tabs: **Import** (checks, uploads, `GET /mail/log` joined to what each
-  email became) feeds **Statements**, **Bills** and **Receipts** (`/bills?kind=`).
-  Mail you sent is skipped by `sentByMe()` in `lib/bills.mjs` (Gmail labels,
-  or your address as sender of mail not addressed to you); keep self-forwards in.
+- Statements from other modules: `stageStatement()` stages them (and
+  uploads). A statement whose account isn't known is `needs_account`
+  (account_code `''`) until `POST /statements/:id/account`, which also
+  remembers the sender in `statement_sources`.
+- Options are the manifest's `settings.fields` (review threshold, batch
+  size, payables account), per organization: read with `ctx.settings.get()`
+  where used.
+- Tabs: **Import** (uploads, files from modules, Sort now) feeds
+  **Statements**, **Bills** and **Receipts** (`/bills?kind=`); **Duplicates**
+  lists duplicates and things already in the journal.
+- Journal matches (no AI): staged rows in the journal come from
+  `duplicate-routes.mjs` (`scan()`, `merge()`); bills in the journal from
+  `findBillEntryMatches()` (`GET /journal-matches`). Linking is a person's
+  click, never automatic.
+- Auto sort (LLM): `matching.mjs` narrows candidates (same amount, close
+  dates; entries, other rows, bills), `journal-matches.mjs` asks the LLM and
+  stores picks in `match_suggestions` (pending). `POST
+  /match-suggestions/:id/approve` carries one out (merge into an entry or a
+  row, link a transfer, match a bill, link a bill to an entry); rejected
+  picks are never suggested again.
 - Organizations: startup resumes interrupted categorising in every
-  organization (`ctx.orgs.forEach`); the mail scheduler visits each one, and
-  each reads its own settings (per organization since Ledger 0.11.1; never
-  cache them). `mail_source` "auto" (the default) means Gmail in the main
-  books and off elsewhere, so new organizations don't import the same mail.
-  The categorising queue is one promise chain; each step keeps the
-  organization it was queued in (AsyncLocalStorage follows `.then`).
+  organization (`ctx.orgs.forEach`). The categorising queue is one promise
+  chain; each step keeps the organization it was queued in
+  (AsyncLocalStorage follows `.then`).
 - Files from other modules: `lib/received-files.mjs` (onReceive queue, a
   sweep of `new`/`accepted` inbox files at startup and every 5 minutes in
   every organization, `received_files` links each file to what it became).
@@ -157,8 +164,7 @@ until paid and matched to statement payments.
   and `lib/duplicate-routes.mjs`. A merged row has status `merged` and is
   never posted; `not_duplicates` remembers dismissed pairs.
 - The sidebar icon is drawn (`nav.icon.path`, a robot head).
-- Testing the real flows: Ledger reads its AI and Gmail settings from
-  `INTEGRATIONS_DIR` (`llm.json`, `gmail.json`) and Gmail's endpoints from
-  `GMAIL_API_BASE` / `GOOGLE_OAUTH_BASE`. Point them at local stubs (a fake
-  Messages API and a fake Gmail API), allow `categorizer` in both files, and
-  drive statements, bills, transfers and Gmail through the HTTP API.
+- Testing the real flows: Ledger reads its AI settings from
+  `INTEGRATIONS_DIR` (`llm.json`). Point it at a local stub that answers
+  like the Messages API, allow `categorizer`, and drive statements, bills,
+  transfers and Auto sort through the HTTP API.

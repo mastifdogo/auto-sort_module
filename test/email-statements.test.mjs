@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { extractBill } from "../lib/bills.mjs";
-import { accountHint, extractPdfStatement, senderAddress, shouldFlip, sourceKey, statementFiles } from "../lib/email-statements.mjs";
+import { accountHint, extractPdfStatement, senderAddress, shouldFlip, sourceKey } from "../lib/email-statements.mjs";
 import { parseEmail } from "../lib/mime.mjs";
 
 const OFX = `OFXHEADER:100\r\n\r\n<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS><BANKACCTFROM><ACCTID>00123-4567</BANKACCTFROM><BANKTRANLIST>
@@ -26,16 +26,6 @@ const mailWith = (attachments, subject = "Your March eStatement") =>
 			"",
 		].join("\r\n"),
 	);
-
-test("statement attachments are found and parsed; other attachments are not", () => {
-	const email = parseEmail(mailWith([["march.qfx", "application/octet-stream", OFX], ["logo.png", "image/png", "PNG..."], ["notes.csv", "text/csv", "hello,world\n"]]));
-	const files = statementFiles(email);
-	assert.deepEqual(files.map((f) => [f.filename, f.parsed.format, f.parsed.transactions.length]), [["march.qfx", "ofx", 2]]);
-	assert.equal(accountHint(files[0].text, email.subject, email.text), "4567");
-	assert.equal(sourceKey(email.from, "4567"), "alerts@mybank.ca|4567");
-	assert.equal(senderAddress("alerts@mybank.ca"), "alerts@mybank.ca");
-	assert.equal(sourceKey("x@y.z", ""), "x@y.z|-");
-});
 
 test("card CSVs with purchases as positive amounts are flipped", () => {
 	const card = { type: "liability" };
@@ -68,12 +58,3 @@ test("PDF statements are read by the AI into signed transactions", async () => {
 	assert.match(sent.system, /purchase is negative/);
 });
 
-test("with the option on, the bill reader can say an email is a statement", async () => {
-	let sent;
-	const llm = async (req) => ((sent = req), { data: { kind: "statement", vendor: "Visa", invoice_number: "", bill_date: "", due_date: "", amount_due: "", currency: "", account_code: "", confidence: 0.9, summary: "" } });
-	const email = { from: "x", subject: "Your statement", text: "", date: null, attachments: [] };
-	assert.equal((await extractBill({ llm, email, accounts: [], statements: true })).kind, "statement");
-	assert.ok(sent.schema.properties.kind.enum.includes("statement"));
-	assert.equal((await extractBill({ llm, email, accounts: [], statements: false })).kind, "not_bill"); // option off: never "statement"
-	assert.ok(!sent.schema.properties.kind.enum.includes("statement"));
-});

@@ -3,7 +3,7 @@
 A module for [Ledger (Bookeeping)](https://github.com/mastifdogo/Bookeeping). You upload a bank or
 credit-card statement and an LLM suggests an account from your chart of accounts for each
 transaction. You check the suggestions, then post them as journal entries. It uses Ledger's own
-AI provider and Gmail account: there's no API key or mail login to set up in the module.
+LLM API: there's no API key to set up in the module.
 
 - **Formats:** CSV exports (columns are found from the header, or guessed from the data when there's
   no header; single amount or debit/credit columns) and **OFX / QFX / QBO**.
@@ -27,30 +27,35 @@ AI provider and Gmail account: there's no API key or mail login to set up in the
 - **From other modules:** other Ledger modules can hand Auto sort statements, transaction lists,
   bills and receipts (Ledger's file exchange). See [Files from other modules](#files-from-other-modules).
 - **Organizations:** each organization's statements, bills and rules stay in its own books.
-- **Bills from email:** checks Ledger's Gmail account (or an IMAP mailbox) on a schedule, reads bills and receipts
-  out of the emails and their PDFs, keeps a list of bills to be paid, and matches each bill to the
-  bank transaction that pays it. See [Bills](#bills).
+- **Already in the journal?** Staged lines, bills and receipts that are already recorded (entered by
+  hand, or by another module) are found and linked instead of being posted twice. See
+  [Journal matches and Auto sort](#journal-matches-and-auto-sort).
+- **Auto sort button:** on an open statement, bill or receipt, the LLM looks for the same
+  transaction among unposted lines and posted journal entries; you approve each match.
+- **Bills and receipts:** upload a PDF, photo or saved email (or let another module send it); the
+  LLM reads it, you approve it, and it's matched to the bank transaction that pays it. See [Bills](#bills).
 
 ## Install
 
-Needs **Ledger 0.11.2 or newer** (shared LLM API and Gmail for modules, LLM connections for
+Needs **Ledger 0.11.2 or newer** (shared LLM API for modules, LLM connections for
 images, journal entry links, file exchange between modules, organizations, settings forms, roles,
 search, drawn icons).
 
 1. In Ledger, open **Settings → Modules**, enter `mastifdogo/llm-api-module` and press **Add**.
    **Auto sort** appears in the sidebar with a robot icon. You can hide or reorder it under
    Settings → Sidebar. Updates install on Ledger's update schedule, or with **Update modules now**.
-2. An admin allows the module to use the shared services:
-   - **Settings → LLM API:** choose a provider (Claude needs an API key; Ollama a model you've pulled) and
-     tick **Auto sort** under the modules allowed to use it. Claude also reads bill PDFs; local
-     models only see the email text. Larger local models (14B and up) categorise noticeably
-     better than small ones.
-   - **Settings → Gmail** (for bills): connect the account and allow **Auto sort** to read mail. It
-     never sends, changes or deletes mail.
-3. Options are under **Settings → Auto sort**: review threshold, transactions per AI request, where
-   bills come from (Gmail, IMAP or off), how often to check, the Gmail search, keywords, how far
-   back the first check looks, IMAP details, and the accounts payable account.
-4. The module's **Status** tab shows whether AI and email are ready, and what's missing if not.
+2. An admin allows the module under **Settings → LLM API**: set up a connection (Claude needs an API
+   key; Ollama a model you've pulled) and tick **Auto sort** under the modules allowed to use it. A
+   connection for images reads bill PDFs (Claude) and photos (Claude or a local vision model).
+   Larger local models (14B and up) categorise noticeably better than small ones.
+3. Options are under **Settings → Auto sort** (per organization): review threshold, transactions
+   per AI request, and the accounts payable account.
+4. The module's **Status** tab shows whether the LLM API is ready, and what's missing if not.
+
+**Updating to 0.6.0:** the email checker is gone (Gmail and IMAP). Bills and receipts already read
+from email stay. Upload new ones on the Import tab, or let another module send them. Ledger may
+keep the old email settings' values (including an IMAP password) in its settings table until the
+module is removed; they're no longer used. You can disallow Auto sort under Settings → Gmail.
 
 The module was called "LLM API" before 0.1.2 (and this repository llm-api-module). Its id stays
 `categorizer` (its page is `/apps/categorizer` and its data lives in the `mod_categorizer`
@@ -83,21 +88,18 @@ The module creates no accounts. It works with your chart of accounts:
 - A **to-do** per unpaid bill, with its due date ("Review bill: Rogers 85.50 CAD", then "Pay
   Rogers 85.50 CAD" after approval). It's ticked when the payment is posted, and removed when the
   bill is ignored or deleted.
-- A red **notification** when the scheduled email check fails, cleared by the next good check.
+- A **to-do** while there are possible duplicates, and one while Auto sort has matches to review.
 
 ## Use
 
 The page has these tabs:
 
-- **Import:** where things come in. **Check email now** and **Sort now**, uploading a statement or
-  a bill/receipt, and a log of every email the check looked at: what it became (bill, receipt,
-  statement) with a link to it, or why it was skipped.
-- **Statements**, **Bills** and **Receipts:** where you categorise and approve what Import sorted.
+- **Import:** where things come in: uploading a statement or a bill/receipt, files other modules
+  sent, and **Sort now**.
+- **Statements**, **Bills** and **Receipts:** where you categorise and approve, each with **Auto
+  sort**.
+- **Duplicates:** duplicates and things already in the journal, to merge or link.
 - **Learned rules** and **Status**.
-
-Mail you sent is never imported. That covers replies and forwards in Gmail's Sent folder, drafts,
-and IMAP mail from your own address that isn't addressed to you. A bill you forward to yourself is
-still imported.
 
 1. **Upload** (Import tab): choose the file and the bank or card account it belongs to. For credit-card
    exports that show purchases as positive numbers, tick *flip signs*.
@@ -131,7 +133,7 @@ module links the two rows so the transfer is posted **once**:
 - **Wrong match:** **Not a transfer** unlinks the rows, asks the model again, and never links that
   pair again. Booking one side to a different account also drops the link.
 
-If you also get the credit card's statement email as a bill, ignore it rather than approving it
+If you also get the credit card's statement as a bill, ignore it rather than approving it
 into payables. The card's own statement already records those charges.
 
 ## Photos of bills and receipts
@@ -139,7 +141,7 @@ into payables. The card's own statement already records those charges.
 Upload a photo or scan (JPEG, PNG, WebP, GIF) on the Import tab like a PDF; large phone photos are
 shrunk in the browser first. Pictures go to Ledger's LLM connection for images (Settings → LLM API;
 Claude, or a local vision model such as one served by Ollama), which can be a different model than
-the one for text. Photos attached to bill emails (with no PDF) and pictures other modules send are
+the one for text. Photos inside an uploaded email (with no PDF) and pictures other modules send are
 read the same way. The picture is kept with the bill or receipt. Without a connection for images,
 enter the details by hand. The Status tab shows which connection reads PDFs and pictures.
 
@@ -155,7 +157,8 @@ entered by hand (removed again on unmerge).
 Following Ledger's rule for modules, nothing the AI decides takes effect until a person approves it:
 
 - Account suggestions for transactions are posted only when you press **Post**.
-- Bills and receipts read from email or files wait as **Needs review** until you **Approve** them.
+- Bills and receipts read from uploads or files wait as **Needs review** until you **Approve** them.
+- A match **Auto sort** finds is carried out only when you press **Approve**.
 - A new account the AI suggests is created only when you press **Create account**.
 - The bank or card account the AI guesses for a PDF statement is only preselected; you choose it.
 - A file another module sent that the AI read is marked done for its sender only when you approve
@@ -187,7 +190,7 @@ If none of your accounts fits a transaction, the AI can answer "new account" wit
 It's created in Ledger in the statement's currency and every row it was suggested for uses it. Any
 row's account list also has **＋ New account…**.
 
-A statement whose account isn't in your chart yet (from email or another module) offers the same:
+A statement whose account isn't in your chart yet (from another module) offers the same:
 a bank or card account named after the sender and the account number's last digits
 (e.g. *RBC Visa ••4411*, a liability), to edit and **Create and use it**.
 
@@ -211,84 +214,52 @@ exchange (`ctx.files`, Ledger 0.11.0). A module offering "send to…" lists it a
 ## Organizations
 
 With several organizations on one Ledger server, each one's statements, bills, rules and imports
-are kept in its own books; the module works in whichever organization you're in. Since Ledger
-0.11.1 each organization also has its own Settings → Auto sort (its admins edit them there), so
-each chooses where its bills come from. The default, **Gmail in the main books; nothing in other
-organizations**, keeps a new organization from importing the same mail again: Ledger has one Gmail
-account, so choose Gmail in only one organization unless you want its bills in several (IMAP can
-be a different mailbox per organization). The AI and Gmail connection are shared by the server.
-Files from other modules land in the organization they were sent in.
+are kept in its own books; the module works in whichever organization you're in, and each has its
+own Settings → Auto sort. The LLM API connection is shared by the server. Files from other modules
+land in the organization they were sent in.
+
+## Journal matches and Auto sort
+
+**Found in the journal (no AI).** When an unposted statement line has an entry in the journal on
+the same account, with the same amount, within 3 days, and Auto sort didn't post it (you entered it
+by hand, or another module did), the line shows **In the journal: entry #12 · … [Link] [Not the
+same]**. **Link** keeps the line from being posted and links the entry to it (Ledger shows the link
+on the entry). Open bills and receipts already in the journal (an entry with a line of exactly the
+bill's amount in its date window, vendor words in the description raising the score) show the same
+in the bill's view; **Link** counts the bill as paid by that entry and links them (**Unlink** undoes
+it). Everything found is also listed on the **Duplicates** tab, and **Sort now** says how many.
+
+**Auto sort (LLM).** On an open statement, bill or receipt, **Auto sort** looks wider and lets the
+LLM judge:
+
+- For each unposted statement line, candidates with the same amount within 10 days: journal entries
+  on its account, lines on other statements (the same payment uploaded twice, or the other side of
+  a transfer: opposite amount on another account), and open bills and receipts it could pay.
+- For a bill or receipt: unposted lines and journal entries with its amount in its date window
+  (a receipt: a few days before to 15 after; a bill: 10 days before to 60 after its due date).
+
+Ledger's LLM API picks the candidate that is the same transaction, or none, by payee names, dates
+and references. Each pick shows under the line or in the bill's view as **Auto sort: same as …
+· 88% · reason [Approve] [Reject]**. Approve carries it out: a line already in the journal is
+linked to that entry and not posted; a duplicate line is merged into the other; two sides of a
+transfer are linked and posted once; a payment is matched to its bill; a bill already in the journal
+is linked to its entry. Rejected matches aren't suggested again. Nothing changes before you
+approve, and a to-do on Ledger's dashboard counts the matches waiting.
 
 ## Bills
+## Bills
 
-**Set up:** under **Settings → Auto sort**, choose where bills come from:
+Bills and receipts come from the Import tab (a PDF, a photo or a saved email, `.eml`), from other
+modules (Ledger's file exchange), or by hand. Ledger's LLM API reads the vendor, invoice number,
+dates, amount and a suggested account (PDFs need a connection for images that's Claude; photos any
+connection for images). Repeats of a bill that's already listed (same vendor and invoice number, or
+same amount and due date) are refused.
 
-- **Gmail** (the default): Ledger's connected account. An admin connects it under **Settings →
-  Gmail** and allows Auto sort to read mail. Each check runs a Gmail search: by default
-  `newer_than:30d -in:drafts -in:chats {invoice bill statement "amount due" ...}` built from the keywords. Set your own
-  search (e.g. `label:bills`, with a Gmail filter that labels bills) to keep everything else out.
-- **IMAP** for other providers (below).
-- **Off.**
+**Sort now** (Import tab) matches bills and receipts, and transfers between your accounts, to the
+statement transactions waiting to be posted, looks for bills and receipts already in the journal,
+and says what it found.
 
-Set how often to check (0 turns scheduled checks off; **Check email now** on the Import tab always
-works), and how far back the first check looks.
-
-### IMAP (other providers)
-
-| Provider | Server | Password |
-|---|---|---|
-| Outlook.com / Microsoft 365 | `outlook.office365.com` | your password, if IMAP and basic sign-in are allowed |
-| iCloud | `imap.mail.me.com` | an app-specific password |
-| Fastmail | `imap.fastmail.com` | an app password |
-| Proton Mail | Proton Bridge, e.g. `127.0.0.1` port `1143` | the Bridge password |
-
-For Gmail, use the Gmail option instead.
-
-Implicit TLS on port 993 is used, except for a bridge running on the same machine. The mailbox
-is opened read-only: nothing is marked as read, moved or deleted. The password is a secret field
-in Settings → Auto sort. To keep it out of the database and its backups, set
-`CATEGORIZER_IMAP_PASSWORD=...` in `/etc/ledger/ledger.env` and restart Ledger instead.
-
-**What happens on each check:**
-1. New messages are read (from the Gmail search, or the IMAP folder), oldest first. The first
-   check goes back 30 days (configurable). Each message is looked at once, remembered by its
-   Gmail id or IMAP UID; read/unread state is never used or changed.
-2. Only messages containing one of the keywords (invoice, bill, statement, amount due, receipt,
-   ...) go to the model. A mail filter that puts bills in their own folder or label keeps
-   everything else out.
-3. Ledger's AI reads the email and its PDF attachment (PDFs need Claude; local models only see the
-   email text) and returns the vendor, invoice number, dates, amount and a suggested account.
-4. Reminders for a bill that's already listed (same vendor and invoice number, or same amount and
-   due date) are skipped.
-
-### Statements in email
-
-With **Statements in email: Stage transactions for review** (Settings → Auto sort; off by
-default), bank and card statements that arrive by email are staged on the Statements tab like an
-upload. Nothing is posted until you approve it:
-
-1. **Reading:** a CSV, OFX, QFX or QBO attachment is read directly. A PDF statement is read by
-   Ledger's AI (only when that's Claude, which reads PDFs). Its transactions come back signed from
-   the account's side: purchases and withdrawals negative, deposits and card payments positive.
-2. **Account:** the account the statement is for comes from your earlier choice for that sender
-   and account number (the last 4 digits from the OFX or the email). Otherwise it's the AI's guess
-   for a PDF. Otherwise the statement shows **Choose account**, and the dashboard asks you to pick
-   one. Your choice (and whether to flip signs, for card CSVs that show purchases as positive) is
-   remembered, so next month's statement from that sender goes there by itself.
-3. **Review and post:** suggestions are made for each transaction as usual, including bill and
-   transfer matching. Post rows individually or a selection with **Post selected**. While nothing
-   is posted you can still change the statement's account.
-
-A statement email is handled as a statement, not also as a bill, so a card statement's amount due
-isn't counted twice. If a statement can't be read (a PDF without Claude, or no attachment), the
-dashboard says so and you can upload it from your bank instead.
-
-**Sort now** (Import tab) does immediately what otherwise happens on the schedule: it reads new
-bills from email (when email is set up), then matches bills and receipts, and transfers between
-your accounts, to the statement transactions waiting to be posted, and says what it found.
-
-**Review on the Bills and Receipts tabs:** fix anything that's wrong, then **Approve**. You can
-also upload a bill or receipt (PDF or saved `.eml`) on the Import tab, or add one by hand.
+**Review on the Bills and Receipts tabs:** fix anything that's wrong, then **Approve**.
 
 **Accounting:**
 - *With an accounts payable account* (Settings → Auto sort; an active liability account): approving a bill posts
@@ -303,7 +274,8 @@ transaction with **exactly** a bill's amount, dated from a week before the bill 
 after the due date (receipts: a few days around the purchase), is linked to it. A matching vendor
 name raises the confidence. Matched rows show **Bill nn%**, use the payables (or bill) account,
 and aren't sent to the model. Posting a matched row marks the bill **paid**. On a bill, **Not this
-one** unlinks a wrong match, and **This is the payment** links one by hand.
+one** unlinks a wrong match, **This is the payment** links one by hand, and **Auto sort** asks the
+LLM (see above).
 
 ## API
 
@@ -315,7 +287,9 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `GET` | `/statements`, `/statements/:id` | list; one statement with its transactions |
 | `POST` | `/statements/:id/categorize` | `{all?: true}` asks the model again (only unposted rows) |
 | `POST` | `/statements/:id/post` | `{ids?: [...]}` posts rows that have an account |
-| `POST` | `/statements/:id/account` | `{account_code, flip_signs?}`: choose or change the statement's account while nothing is posted (remembered for email senders) |
+| `POST` | `/statements/:id/account` | `{account_code, flip_signs?}`: choose or change the statement's account while nothing is posted (remembered for the sending module) |
+| `GET` | `/statements/:id/journal-matches` | its unposted lines already in the journal (no AI) |
+| `POST` | `/statements/:id/auto-sort` | Auto sort: the LLM looks for its unposted lines elsewhere; stores pending matches |
 | `DELETE` | `/statements/:id` | discards unposted rows |
 | `PATCH` | `/transactions/:id` | `{account_code?, status?: "new"\|"skipped"}` |
 | `POST` | `/transactions/bulk` | the same for `{ids: [...]}` |
@@ -328,15 +302,19 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `GET` | `/files?limit=` | files other modules sent, with what each became; `POST /files/:id/retry`, `DELETE /files/:id` |
 | `POST` | `/suggest` | `{account_code, transactions: [{date, description, amount, memo?}]}` returns suggestions without storing anything (for scripts or other modules) |
 | `GET`/`DELETE` | `/rules`, `/rules/:key` | learned payee rules |
-| `GET` | `/status` | Ledger's AI and Gmail status for this module, the options in effect, the user's role |
-| `POST` | `/sort-now` | read new bills from email (if set up), match bills and transfers; returns `{mail, bill_matches, transfer_links}` |
-| `GET` | `/mail/status`; `POST /mail/test`, `POST /mail/check`, `GET /mail/log` | where mail comes from and whether it's ready; a connection test; a check now; the messages looked at (`?limit=`), each with the bill or statement it became |
+| `GET` | `/status` | Ledger's LLM API status for this module, the options in effect, the user's role, the organization |
+| `POST` | `/sort-now` | match bills and transfers, count bills already in the journal; returns `{bill_matches, transfer_links, journal_matches}` |
+| `GET` | `/journal-matches?bill_id=` | open bills and receipts already in the journal (no AI) |
+| `GET` | `/match-suggestions?statement_id=\|bill_id=` | Auto sort's pending matches, with what they point to |
+| `POST` | `/match-suggestions/:id/approve`, `/reject` | carry a match out, or turn it down |
 | `GET`/`POST` | `/bills?status=unpaid\|new\|open\|paid\|ignored&kind=bill\|receipt`, `/bills` | list; add by hand `{vendor, amount, due_date, ...}` |
-| `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF or `.eml` |
+| `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF, a picture or an `.eml` |
 | `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payment; edit fields or `status`; delete |
 | `GET` | `/bills/:id/document` | the stored PDF, base64 |
 | `POST` | `/bills/:id/approve`, `/unapprove` | approve (posts to payables if configured); undo (reverses that entry) |
 | `GET`/`POST` | `/bills/:id/candidates`, `/match {transaction_id}`, `/unmatch` | manual matching |
+| `POST` | `/bills/:id/link-entry {entry_id}`, `/unlink-entry` | it's already in the journal: count it paid by that entry, or undo |
+| `POST` | `/bills/:id/auto-sort` | Auto sort for a bill or receipt |
 
 Options are Ledger's module settings (`GET`/`PUT /api/v1/modules/categorizer/settings`, admins
 only). Viewers can look but not change anything; Ledger enforces that. Ledger's search bar finds
@@ -346,21 +324,19 @@ bills, statements and transactions; the links open them on the module's page.
 
 With Claude as Ledger's AI, each transaction's date, description, memo and amount, your account
 codes, names and descriptions, and descriptions of recent entries on the statement account are
-sent to the Anthropic API. With email checks on, emails that pass the keyword filter (sender,
-subject, text and PDF attachments) are sent too. With Ollama or another server on your network,
-nothing leaves it. Emails that don't pass the filter are never sent anywhere. Bill PDFs and email
-text are stored in the Ledger database. Ledger logs each AI call (tokens, not content) under
+sent to the Anthropic API, and so are the bills, receipts and photos you upload. Auto sort sends a
+line's or bill's date, description and amount with its candidates (dates, descriptions, amounts and
+account codes of matching entries, lines and bills). With Ollama or another server on your network,
+nothing leaves it. Bill documents are stored in the Ledger database. Ledger logs each AI call (tokens, not content) under
 Settings → LLM API.
 
 ## Notes on Ledger's module guidelines
 
 - **No dependencies:** only Node built-ins. `server.mjs` imports its own files from `lib/`, which
   install with the release archive.
-- **AI and Gmail** go through `ctx.llm` and `ctx.gmail`; the module has no key, OAuth or Apps
-  Script of its own. IMAP is kept for other providers. Its timeout is 60 s, longer than the usual
-  10 s for outbound calls, because fetching a large message with a PDF takes longer.
-- **Secrets:** the only one is the IMAP password, a `secret` settings field (or the environment
-  variable). It is never returned by the module's API or logged.
+- **AI** goes through `ctx.llm`; the module has no key of its own and makes no outbound calls.
+- **AI only proposes:** see [The AI only suggests](#the-ai-only-suggests).
+- **Secrets:** none.
 - **Layout:** the page works from about 260 px wide (Ledger's side-by-side panes) up to full
   width, in light and dark mode.
 
@@ -371,11 +347,12 @@ ledger-module.json     manifest
 server.mjs             routes, background categorisation, posting
 lib/parse.mjs          CSV / OFX parsing, amounts, dates, payee keys
 lib/categorize.mjs     prompt, schema, rules, batching
-lib/bill-routes.mjs    mailbox checks and schedule, bill routes, matching bills to transactions
-lib/bills.mjs          bill extraction prompt, duplicates, match scoring, the Gmail search
-lib/email-statements.mjs  statements in email: attachments, account hints, PDF statements, card signs
-lib/imap.mjs           minimal read-only IMAP client (other providers; Gmail goes through ctx.gmail)
-lib/mime.mjs           email (MIME) parser
+lib/bill-routes.mjs    bill routes, reading uploads and files, matching bills to transactions, linking to entries
+lib/bills.mjs          bill extraction prompt, picture types, duplicates, match scoring
+lib/email-statements.mjs  statements from other modules: account hints, PDF statements, card signs
+lib/mime.mjs           email (MIME) parser for uploaded .eml files
+lib/matching.mjs       journal and Auto sort candidates, the LLM's match prompt
+lib/journal-matches.mjs  bills in the journal, the Auto sort routes, approving matches
 lib/dashboard.mjs      notifications and to-dos on Ledger's dashboard
 lib/transfers.mjs      transfer scoring and pairing
 lib/transfer-sync.mjs  linking transfer rows (and existing journal entries), the unlink route
@@ -399,6 +376,12 @@ credit, point Ledger's AI (Settings → LLM API, Server URL) at a local stub tha
 Messages API.
 
 ## Changes
+
+- **0.6.0:** **Auto sort** button on statements, bills and receipts: Ledger's LLM API looks for the
+  same transaction among unposted lines and posted journal entries; you approve or reject each
+  match. Lines, bills and receipts already in the journal are found without AI and linked with one
+  click. The **email checker is removed** (Gmail, IMAP, the email log, and their settings). Migration
+  010.
 
 - **0.5.0:** Needs Ledger 0.11.2. Photos and scans of bills and receipts are read through Ledger's
   LLM connection for images (uploads, email attachments, files from other modules). Journal entries

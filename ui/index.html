@@ -56,6 +56,9 @@
 	.newacct { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin-top: 4px; padding: 6px; border: 1px dashed var(--border); border-radius: 6px; }
 	.newacct input { width: 6.5rem; }
 	.newacct input.name { width: 11rem; }
+	.match { margin-top: 4px; padding: 4px 6px; border-left: 3px solid var(--border); font-size: 12px; }
+	.match.ai { border-left-color: var(--warn); }
+	.match .btn { padding: 0 0.5rem; font-size: 12px; margin-left: 4px; }
 	.dup { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
 	.dup .side { border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem; min-width: 0; overflow-wrap: anywhere; }
 	@media (max-width: 560px) { .dup { grid-template-columns: 1fr; } }
@@ -125,6 +128,7 @@
 			<strong id="d-title"></strong>
 			<span id="d-status"></span>
 			<span class="spacer"></span>
+			<button class="btn primary" id="d-autosort" title="Ask Ledger's LLM API whether each unposted line is already in the journal, on another statement, or a bill's payment. You approve each match.">Auto sort</button>
 			<button class="btn" id="rerun" title="Ask the model again for every transaction that isn't posted">Re-run suggestions</button>
 			<button class="btn danger" id="discard" title="Remove the transactions that aren't posted">Discard unposted</button>
 		</div>
@@ -228,11 +232,13 @@
 			<button class="btn" id="bd-reopen">Reopen</button>
 			<button class="btn danger" id="bd-ignore">Ignore</button>
 			<button class="btn danger" id="bd-delete">Delete</button>
+			<button class="btn primary" id="bd-autosort" title="Ask Ledger's LLM API which unposted line or journal entry is this bill's payment or record. You approve the match.">Auto sort</button>
 		</div>
 		<p class="muted small" id="bd-ap-note"></p>
 		<h2>Payment</h2>
 		<div id="bd-payments"></div>
 		<div id="bd-candidates"></div>
+		<div id="bd-matches"></div>
 		<h2>Source</h2>
 		<p class="small" id="bd-source"></p>
 		<button class="btn hidden" id="bd-show-doc">Show PDF</button>
@@ -241,14 +247,13 @@
 	</div>
 </section>
 
-<!-- Import: email checks, uploads, and what each email became -->
+<!-- Import: uploads, files from other modules, Sort now -->
 <section id="tab-import">
 	<div class="panel row">
-		<button class="btn primary" id="b-sort" title="Read new mail, then match bills and transfers to statement transactions waiting to be posted">Sort now</button>
-		<button class="btn" id="b-check">Check email now</button>
-		<span id="b-mail-status" class="muted small"></span>
+		<button class="btn primary" id="b-sort" title="Match bills, receipts and transfers to statement transactions waiting to be posted, and look for them in the journal">Sort now</button>
+		<span id="b-sort-status" class="muted small"></span>
 	</div>
-	<p class="muted small">New email is read on a schedule (choose Gmail or IMAP under Settings → <span class="mod-name">Auto sort</span> in Ledger; Gmail must be allowed under Settings → Gmail), or now with <em>Sort now</em>. Each email is sorted into <strong>Statements</strong>, <strong>Bills</strong> or <strong>Receipts</strong>; categorise them on those tabs. Mail you sent is never imported.</p>
+	<p class="muted small">Upload statements, bills and receipts here, or let other Ledger modules send them. They're sorted into <strong>Statements</strong>, <strong>Bills</strong> and <strong>Receipts</strong>; categorise them on those tabs. <em>Sort now</em> matches payments to bills, links transfers and finds what's already in the journal; <em>Auto sort</em> on an open statement, bill or receipt asks the LLM.</p>
 
 	<h2>Upload a file</h2>
 	<div class="grid">
@@ -281,26 +286,9 @@
 		</div>
 	</div>
 
-	<h2>Imported from email</h2>
-	<div class="row" style="margin-bottom:0.4rem">
-		<label class="inline">Show
-			<select id="imp-filter">
-				<option value="sorted">Sorted into a tab</option>
-				<option value="skipped">Skipped</option>
-				<option value="all">All</option>
-			</select>
-		</label>
-	</div>
-	<div class="table-wrap">
-		<table id="import-log" class="stack">
-			<thead><tr><th>When</th><th>From</th><th>Subject</th><th>Result</th></tr></thead>
-			<tbody></tbody>
-		</table>
-	</div>
-
 	<div id="files-box" class="hidden">
 		<h2>Sent by other modules</h2>
-		<p class="muted small">Statements, bills and receipts other Ledger modules handed to <span class="mod-name">Auto sort</span>. They're sorted the same way as email; nothing is posted until you approve it.</p>
+		<p class="muted small">Statements, bills and receipts other Ledger modules handed to <span class="mod-name">Auto sort</span>. Nothing is posted until you approve it.</p>
 		<div class="table-wrap">
 			<table id="files-log" class="stack">
 				<thead><tr><th>When</th><th>From</th><th>File</th><th>Result</th></tr></thead>
@@ -312,7 +300,7 @@
 
 <!-- Duplicates: the same transaction staged twice, or already in the journal -->
 <section id="tab-duplicates" class="hidden">
-	<p class="muted small">Transactions that look like the same payment: uploaded twice (for example a CSV and an OFX export of the same month, or a pending and a posted copy a day apart), or already entered in the journal. <strong>Merge</strong> keeps one and never posts the other; you can unmerge it from its statement (Show: Merged duplicates). Same account, same amount, within 3 days.</p>
+	<p class="muted small">Bills and receipts already entered in the journal (link them so they count as recorded), and transactions that look like the same payment: uploaded twice (for example a CSV and an OFX export of the same month, or a pending and a posted copy a day apart), or already entered in the journal. <strong>Merge</strong> keeps one and never posts the other; you can unmerge it from its statement (Show: Merged duplicates). Same account, same amount, within 3 days.</p>
 	<div id="dup-list"></div>
 </section>
 
@@ -327,21 +315,15 @@
 	</div>
 </section>
 
-<!-- Status: Ledger's AI and Gmail, and where the options are -->
+<!-- Status: Ledger's LLM API, and where the options are -->
 <section id="tab-settings" class="hidden">
 	<div class="panel">
 		<h2 style="margin-top:0">AI</h2>
 		<p id="st-ai" class="small"></p>
-		<h2>Email for bills</h2>
-		<p id="st-mail" class="small"></p>
-		<div class="row">
-			<button class="btn" type="button" id="st-test">Test email connection</button>
-			<span id="st-msg" class="muted small"></span>
-		</div>
 		<h2>Organization</h2>
 		<p id="st-org" class="small"></p>
 		<h2>Options</h2>
-		<p class="small">Review threshold, batch size, where bills come from, the Gmail search, keywords and the accounts payable account are set under <strong>Settings → <span class="mod-name">Auto sort</span></strong> in Ledger.</p>
+		<p class="small">Review threshold, batch size and the accounts payable account are set under <strong>Settings → <span class="mod-name">Auto sort</span></strong> in Ledger.</p>
 		<p id="st-options" class="muted small"></p>
 		<p id="st-version" class="muted small"></p>
 	</div>
@@ -555,7 +537,21 @@
 		clearTimeout(pollTimer);
 		if (accounts.length === 0) await loadAccounts();
 		current = await api(`/statements/${id}`);
+		current.journal = new Map();
+		current.suggestions = new Map();
 		renderDetail();
+		// Lines already in the journal (no AI) and Auto sort's pending matches, shown under the rows.
+		Promise.all([api(`/statements/${id}/journal-matches`), api(`/match-suggestions?statement_id=${id}`)]).then(([jm, sg]) => {
+			if (current?.statement.id !== id) return;
+			current.journal = new Map(jm.data.map((m) => [String(m.transaction_id), m]));
+			current.suggestions = new Map();
+			for (const x of sg.data) {
+				const k = String(x.subject_id);
+				if (!current.suggestions.has(k)) current.suggestions.set(k, []);
+				current.suggestions.get(k).push(x);
+			}
+			if (current.journal.size || current.suggestions.size) renderDetail();
+		}).catch(() => {});
 		if (["queued", "categorizing"].includes(current.statement.status)) pollTimer = setTimeout(() => refresh(id).catch(fail), 2000);
 	}
 
@@ -580,7 +576,9 @@
 		$("d-account").classList.toggle("hidden", !show);
 		if (!show) return;
 		$("d-account-text").textContent = needs
-			? `This statement came by email${s.mail_subject ? ` (“${s.mail_subject}”${s.mail_from ? ` from ${s.mail_from}` : ""})` : ""}, and its account isn't known yet. Which account is it for?`
+			? (s.source === "module"
+				? `This statement was sent by the ${String(s.mail_from).replace(/^module:/, "")} module${s.mail_subject && s.mail_subject !== s.filename ? ` (“${s.mail_subject}”)` : ""}, and its account isn't known yet. Which account is it for?`
+				: `This statement came by email${s.mail_subject ? ` (“${s.mail_subject}”${s.mail_from ? ` from ${s.mail_from}` : ""})` : ""}, and its account isn't known yet. Which account is it for?`)
 			: "Move this statement's transactions to another account. Suggestions are made again.";
 		const sel = $("d-account-select");
 		const bankish = accounts.filter((a) => a.type === "asset" || a.type === "liability");
@@ -715,7 +713,8 @@
 					el("td", { class: "wide" }, sel, t.chosen_code && t.suggested_code && t.chosen_code !== t.suggested_code ? el("div", { class: "reason" }, `Suggested: ${accountLabel(t.suggested_code)}`) : null, proposal),
 					el("td", { class: "wide" }, conf, t.reason && t.status === "new" ? el("div", { class: t.source === "error" ? "err" : "reason" }, t.reason) : null, t.error ? el("div", { class: "err" }, t.error) : null,
 						open && (t.transfer_tx_id || t.transfer_entry_id) ? el("button", { class: "btn", style: "margin-top:4px", onclick: () => notTransfer(t.id) }, "Not a transfer") : null,
-						t.status === "posted" && t.reason.startsWith("recorded with the transfer") ? el("div", { class: "reason" }, t.reason) : null),
+						t.status === "posted" && t.reason.startsWith("recorded with the transfer") ? el("div", { class: "reason" }, t.reason) : null,
+						...(open ? matchNotes(t) : [])),
 				);
 			}),
 		);
@@ -741,6 +740,66 @@
 	$("sel-none").onclick = () => { selected = new Set(); renderDetail(); };
 
 	const newFormFor = new Set();
+
+	// ---------------------------------------------------------------- matches (journal, Auto sort)
+	function targetLabel(tg) {
+		if (tg.kind === "entry") return tg.missing ? `journal entry #${tg.id} (gone)` : `journal entry #${tg.id} · ${tg.date} · ${tg.description}${tg.accounts?.length ? ` (${tg.accounts.map(accountLabel).join(", ")})` : ""}`;
+		if (tg.kind === "transaction") return `${tg.status === "posted" ? "posted " : ""}line on ${tg.filename} · ${tg.date} · ${tg.description} · ${money(tg.amount_cents)} (${accountLabel(tg.account_code)})`;
+		return `${tg.bill_kind === "receipt" ? "receipt" : "bill"} · ${tg.vendor}${tg.invoice_number ? ` ${tg.invoice_number}` : ""} · ${money(tg.amount_cents)}${tg.date ? ` · ${tg.date}` : ""}`;
+	}
+	async function decide(id, action, after) {
+		try {
+			await api(`/match-suggestions/${id}/${action}`, { method: "POST" });
+			toast(action === "approve" ? "Matched." : "Rejected; it won't be suggested again.");
+			await after();
+			loadDupCount();
+		} catch (e) { fail(e); }
+	}
+	function suggestionNote(x, after) {
+		return el("div", { class: "match ai" },
+			el("strong", {}, "Auto sort: "), `same as ${targetLabel(x.target)}`,
+			el("span", { class: "muted" }, ` · ${Math.round(x.confidence * 100)}%${x.reason ? ` · ${x.reason}` : ""}`),
+			el("button", { class: "btn primary", onclick: () => decide(x.id, "approve", after) }, "Approve"),
+			el("button", { class: "btn", onclick: () => decide(x.id, "reject", after) }, "Reject"));
+	}
+	/** Under an unposted row: it's already in the journal (no AI), and Auto sort's matches (to approve). */
+	function matchNotes(t) {
+		const out = [];
+		const j = current.journal?.get(String(t.id));
+		if (j) {
+			out.push(el("div", { class: "match" },
+				el("strong", {}, "In the journal: "), `entry #${j.entry.id} · ${j.entry.date} · ${j.entry.description}`,
+				el("button", { class: "btn", title: "Don't post this line; link it to that entry", onclick: async () => {
+					try {
+						await api("/duplicates/merge", { method: "POST", body: JSON.stringify({ merge_id: t.id, entry_id: j.entry.id }) });
+						toast(`Linked to entry #${j.entry.id}; this line won't be posted again.`);
+						await refresh();
+						loadDupCount();
+					} catch (e) { fail(e); }
+				} }, "Link"),
+				el("button", { class: "btn", onclick: async () => {
+					try {
+						await api("/duplicates/dismiss", { method: "POST", body: JSON.stringify({ tx_id: t.id, entry_id: j.entry.id }) });
+						await refresh();
+						loadDupCount();
+					} catch (e) { fail(e); }
+				} }, "Not the same")));
+		}
+		for (const x of current.suggestions?.get(String(t.id)) ?? []) out.push(suggestionNote(x, () => refresh()));
+		return out;
+	}
+	$("d-autosort").onclick = async () => {
+		const btn = $("d-autosort");
+		btn.disabled = true;
+		toast("Auto sort: asking the LLM API…");
+		try {
+			const r = await api(`/statements/${current.statement.id}/auto-sort`, { method: "POST" });
+			toast(r.with_candidates === 0
+				? `Nothing with the same amount and a close date was found for the ${r.looked_at} unposted line${r.looked_at === 1 ? "" : "s"}.`
+				: `${r.suggestions} match${r.suggestions === 1 ? "" : "es"} found among ${r.with_candidates} line${r.with_candidates === 1 ? "" : "s"} with candidates. Check each one, then Approve or Reject.`);
+			await refresh();
+		} catch (e) { fail(e); } finally { btn.disabled = false; }
+	};
 	async function unmerge(id) {
 		try {
 			await api(`/transactions/${id}/unmerge`, { method: "POST" });
@@ -838,19 +897,6 @@
 	let billsList = [];
 	let currentBill = null;
 
-	function mailStatusText(m) {
-		if (m.source === "off") return "Reading email is off";
-		if (!m.ready) return "Email not set up";
-		const st = m.state || {};
-		if (m.running) return "Checking email…";
-		if (!st.last_check_at) return m.interval > 0 ? `Checks every ${m.interval} min` : "Scheduled checks off";
-		const when = new Date(st.last_check_at).toLocaleString();
-		if (st.error) return `Last check ${when} failed: ${st.error}`;
-		const r = st.result || {};
-		const n = (k, one, many) => `${k || 0} ${k === 1 ? one : many}`;
-		return `Last check ${when}: ${n(r.bills, "bill", "bills")}, ${n(r.receipts, "receipt", "receipts")}${r.statements ? `, ${n(r.statements, "statement", "statements")}` : ""} from ${n(r.looked_at, "new email", "new emails")}` + (r.remaining ? ` (${r.remaining} more next time)` : "");
-	}
-
 	/** The Bills tab's words for the kind shown (Receipts are already paid; they're matched, not paid). */
 	function setBillLabels() {
 		const receipt = billKind === "receipt";
@@ -900,34 +946,13 @@
 
 	$("b-sort").onclick = async () => {
 		$("b-sort").disabled = true;
-		$("b-check").disabled = true;
-		$("b-mail-status").textContent = "Sorting…";
+		$("b-sort-status").textContent = "Sorting…";
 		try {
 			const r = await api("/sort-now", { method: "POST" });
-			const m = r.mail || {};
-			const parts = [];
-			if (m.skipped) parts.push(`Email not read: ${m.skipped}.`);
-			else if (m.error) parts.push(`Email check failed: ${m.error}.`);
-			else parts.push(`Email: ${m.bills || 0} new bill${m.bills === 1 ? "" : "s"}, ${m.receipts || 0} receipt${m.receipts === 1 ? "" : "s"}${m.statements ? `, ${m.statements} statement${m.statements === 1 ? "" : "s"} staged (Statements tab)` : ""} from ${m.looked_at || 0} new message${m.looked_at === 1 ? "" : "s"}.`);
-			parts.push(`${r.bill_matches} payment${r.bill_matches === 1 ? "" : "s"} matched to bills, ${r.transfer_links} transfer${r.transfer_links === 1 ? "" : "s"} linked.`);
-			toast(parts.join("\n"), !!m.error);
-			await loadImport();
-		} catch (e) { fail(e); } finally {
-			$("b-sort").disabled = false;
-			$("b-check").disabled = false;
-		}
-	};
-
-	$("b-check").onclick = async () => {
-		$("b-check").disabled = true;
-		$("b-mail-status").textContent = "Checking email…";
-		try {
-			const r = await api("/mail/check", { method: "POST" });
-			if (r.error) toast(`Email check failed: ${r.error}`, true);
-			else if (r.skipped) toast(r.skipped);
-			else toast(`Looked at ${r.looked_at} new emails: ${r.bills} bills, ${r.receipts} receipts, ${r.statements || 0} statements, ${r.duplicates} repeats${r.sent ? `, ${r.sent} sent by you (skipped)` : ""}.`);
-			await loadImport();
-		} catch (e) { fail(e); } finally { $("b-check").disabled = false; }
+			const msg = `${r.bill_matches} payment${r.bill_matches === 1 ? "" : "s"} matched to bills, ${r.transfer_links} transfer${r.transfer_links === 1 ? "" : "s"} linked, ${r.journal_matches} bill${r.journal_matches === 1 ? "" : "s"} or receipt${r.journal_matches === 1 ? "" : "s"} found in the journal (Duplicates tab).`;
+			$("b-sort-status").textContent = msg;
+			loadDupCount();
+		} catch (e) { $("b-sort-status").textContent = ""; fail(e); } finally { $("b-sort").disabled = false; }
 	};
 
 	/** A photo scaled to at most 1800 px on its longer side, as JPEG. */
@@ -989,6 +1014,39 @@
 		$("bill-detail").classList.remove("hidden");
 		$("bill-detail").scrollIntoView({ behavior: "smooth", block: "start" });
 	}
+	/** Already in the journal (no AI), Auto sort's matches to approve, or the entry it's linked to. */
+	function renderBillMatches(b, payments) {
+		const box = $("bd-matches");
+		box.replaceChildren();
+		const after = () => openBill(b.id);
+		$("bd-autosort").classList.toggle("hidden", !["new", "open"].includes(b.status) || payments.length > 0 || b.amount_cents == null);
+		if (b.paid_entry_id && !payments.some((t) => t.status === "posted")) {
+			box.append(el("div", { class: "match" }, el("strong", {}, "Linked: "), `recorded in journal entry #${b.paid_entry_id}`,
+				el("button", { class: "btn", onclick: () => billAction("unlink-entry") }, "Unlink")));
+			return;
+		}
+		if (!["new", "open"].includes(b.status) || payments.length > 0) return;
+		Promise.all([api(`/journal-matches?bill_id=${b.id}`), api(`/match-suggestions?bill_id=${b.id}`)]).then(([jm, sg]) => {
+			if (currentBill?.id !== b.id) return;
+			for (const m of jm.data) {
+				box.append(el("div", { class: "match" },
+					el("strong", {}, "In the journal: "), `entry #${m.entry.id} · ${m.entry.date} · ${m.entry.description} (${m.entry.accounts.map(accountLabel).join(", ")})`,
+					el("button", { class: "btn", title: `Count this ${b.kind} as recorded by that entry`, onclick: () => billAction("link-entry", { entry_id: m.entry.id }) }, "Link")));
+			}
+			for (const x of sg.data) box.append(suggestionNote(x, after));
+		}).catch(() => {});
+	}
+	$("bd-autosort").onclick = async () => {
+		const btn = $("bd-autosort");
+		btn.disabled = true;
+		toast("Auto sort: asking the LLM API…");
+		try {
+			const r = await api(`/bills/${currentBill.id}/auto-sort`, { method: "POST" });
+			toast(r.candidates === 0 ? "No unposted line or journal entry with this amount and a fitting date." : r.suggestions ? "Found a match; check it, then Approve or Reject." : `None of the ${r.candidates} candidates looks like the same transaction.`);
+			await openBill(currentBill.id);
+		} catch (e) { fail(e); } finally { btn.disabled = false; }
+	};
+
 	$("bd-close").onclick = () => { currentBill = null; $("bill-detail").classList.add("hidden"); loadBills().catch(fail); };
 
 	function renderBill(b, payments) {
@@ -1018,7 +1076,7 @@
 		$("bd-ap-note").textContent = b.status === "new" && b.kind === "bill" ? `Approving posts this bill to accounts payable if one is set under Settings → ${moduleName}.` : "";
 
 		const pay = $("bd-payments");
-		if (payments.length === 0) pay.replaceChildren(el("p", { class: "muted small" }, b.status === "paid" ? "Marked paid by hand." : "No matching bank transaction yet. It's matched when a statement with the payment is uploaded."));
+		if (payments.length === 0) pay.replaceChildren(el("p", { class: "muted small" }, b.status === "paid" ? (b.paid_entry_id ? `Recorded in journal entry #${b.paid_entry_id}.` : "Marked paid by hand.") : "No matching bank transaction yet. It's matched when a statement with the payment is uploaded, or try Auto sort."));
 		else pay.replaceChildren(
 			el("table", { class: "stack" }, el("tbody", {}, ...payments.map((t) =>
 				el("tr", {},
@@ -1031,6 +1089,7 @@
 				),
 			))),
 		);
+		renderBillMatches(b, payments);
 		$("bd-candidates").replaceChildren();
 		if (open && payments.length === 0 && b.amount_cents != null) {
 			api(`/bills/${b.id}/candidates`).then(({ data }) => {
@@ -1123,51 +1182,10 @@
 	$("bd-ignore").onclick = () => billAction("save", { status: "ignored" });
 	$("bd-delete").onclick = () => confirm("Delete this bill?") && billAction("delete");
 
-	// ---------------------------------------------------------------- import (what each email became)
-	const OUTCOME = {
-		bill: ["warn", "Bill"],
-		receipt: ["warn", "Receipt"],
-		statement: ["warn", "Statement"],
-		duplicate: ["plain", "Already imported"],
-		filtered: ["plain", "Skipped: no bill words"],
-		not_bill: ["plain", "Skipped: not a bill"],
-		sent: ["plain", "Skipped: sent by you"],
-		too_large: ["bad", "Skipped: too large"],
-		statement_unreadable: ["bad", "Statement couldn't be read"],
-	};
-	const SORTED = ["bill", "receipt", "statement"];
+	// ---------------------------------------------------------------- import
 	async function loadImport() {
-		loadFiles().catch(fail);
-		const [log, mail] = await Promise.all([api("/mail/log?limit=200"), api("/mail/status")]);
-		$("b-mail-status").textContent = mailStatusText(mail);
-		const f = $("imp-filter").value;
-		const rows = log.data.filter((r) => f === "all" || (f === "sorted") === SORTED.includes(r.outcome));
-		const body = $("import-log").tBodies[0];
-		if (rows.length === 0) {
-			body.replaceChildren(el("tr", {}, el("td", { colspan: 4, class: "muted" }, f === "sorted" ? "Nothing imported yet. Press Sort now, or wait for the next scheduled check." : "Nothing here.")));
-			return;
-		}
-		body.replaceChildren(
-			...rows.map((r) => {
-				const outcome = r.outcome === "bill" && r.bill_kind === "receipt" ? "receipt" : r.outcome;
-				const [cls, label] = OUTCOME[outcome] || ["plain", r.outcome];
-				let open = null;
-				if (r.bill_id) {
-					const tab = r.bill_kind === "receipt" ? "Receipts" : "Bills";
-					open = el("a", { href: "#", onclick: (e) => { e.preventDefault(); openBill(r.bill_id); } }, `Open in ${tab}${r.bill_vendor ? `: ${r.bill_vendor}` : ""}`);
-				} else if (r.statement_id) {
-					open = el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(r.statement_id); } }, `Open in Statements: ${r.statement_filename ?? ""}${r.statement_status === "needs_account" ? " (choose its account)" : ""}`);
-				}
-				return el("tr", {},
-					el("td", { class: "nowrap small" }, new Date(r.seen_at).toLocaleString()),
-					el("td", { class: "small desc" }, r.mail_from || "—"),
-					el("td", { class: "desc wide" }, r.subject || el("span", { class: "muted" }, "(no subject)")),
-					el("td", { class: "wide" }, el("span", { class: `pill ${cls}` }, label), open ? el("div", { class: "small" }, open) : null),
-				);
-			}),
-		);
+		await loadFiles();
 	}
-	$("imp-filter").onchange = () => loadImport().catch(fail);
 
 	// Files from other modules (Ledger's ctx.files): shown only once there are some.
 	const FILE_KIND = { statement: "Statement", transaction: "Transactions", bill: "Bill", receipt: "Receipt" };
@@ -1225,7 +1243,9 @@
 		$("dup-count").textContent = String(n);
 		$("dup-count").classList.toggle("hidden", !n);
 	}
-	function loadDupCount() { api("/duplicates").then((d) => setDupCount(d.count)).catch(() => {}); }
+	function loadDupCount() {
+		Promise.all([api("/duplicates"), api("/journal-matches")]).then(([d, j]) => setDupCount(d.count + j.data.length)).catch(() => {});
+	}
 	function dupSide(title, t, extra = null) {
 		return el("div", { class: "side" },
 			el("div", { class: "small muted" }, title),
@@ -1247,8 +1267,8 @@
 	}
 	async function loadDuplicates() {
 		if (accounts.length === 0) await loadAccounts();
-		const d = await api("/duplicates");
-		setDupCount(d.count);
+		const [d, jm] = await Promise.all([api("/duplicates"), api("/journal-matches")]);
+		setDupCount(d.count + jm.data.length);
 		const items = [
 			...d.pairs.map((p) => el("div", { class: "panel" },
 				el("div", { class: "small", style: "margin-bottom:0.4rem" }, el("span", { class: `pill ${p.score >= 0.85 ? "warn" : "plain"}` }, `${Math.round(p.score * 100)}% alike`), " Uploaded twice?"),
@@ -1266,13 +1286,26 @@
 					el("button", { class: "btn primary", onclick: () => dupAction("/duplicates/merge", { merge_id: p.merge.id, entry_id: p.entry.id }, "Merged into the journal entry; the staged row won't be posted.") }, "Merge into the entry"),
 					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, entry_id: p.entry.id }, "Marked as not duplicates.") }, "Not duplicates")))),
 		];
-		$("dup-list").replaceChildren(...(items.length ? items : [el("p", { class: "muted" }, "No duplicates found among the transactions waiting to be posted.")]));
+		for (const m of jm.data) {
+			const what = m.bill.kind === "receipt" ? "Receipt" : "Bill";
+			items.push(el("div", { class: "panel" },
+				el("div", { class: "small", style: "margin-bottom:0.4rem" }, el("span", { class: `pill ${m.score >= 0.85 ? "warn" : "plain"}` }, `${Math.round(m.score * 100)}% alike`), ` ${what} already in the journal?`),
+				el("div", { class: "dup" },
+					el("div", { class: "side" }, el("div", { class: "small muted" }, what), el("div", {}, el("strong", {}, m.bill.due_date || m.bill.bill_date || ""), " · ", money(m.bill.amount_cents)), el("div", { class: "desc" }, `${m.bill.vendor}${m.bill.invoice_number ? ` ${m.bill.invoice_number}` : ""}`),
+						el("div", { class: "small" }, el("a", { href: "#", onclick: (e) => { e.preventDefault(); openBill(m.bill.id); } }, `open ${what.toLowerCase()}`))),
+					el("div", { class: "side" }, el("div", { class: "small muted" }, `In the journal: entry #${m.entry.id}`), el("div", {}, el("strong", {}, m.entry.date)), el("div", { class: "desc" }, m.entry.description), el("div", { class: "reason" }, `Accounts: ${m.entry.accounts.map(accountLabel).join(", ")}`))),
+				el("div", { class: "row", style: "margin-top:0.5rem" },
+					el("button", { class: "btn primary", onclick: async () => {
+						try { await api(`/bills/${m.bill.id}/link-entry`, { method: "POST", body: JSON.stringify({ entry_id: m.entry.id }) }); toast(`${what} linked to entry #${m.entry.id}.`); await loadDuplicates(); } catch (e) { fail(e); }
+					} }, "Link"))));
+		}
+		$("dup-list").replaceChildren(...(items.length ? items : [el("p", { class: "muted" }, "No duplicates found among the transactions waiting to be posted, and no bills or receipts found in the journal.")]));
 	}
 
-	// ---------------------------------------------------------------- status (Ledger's AI and Gmail)
+	// ---------------------------------------------------------------- status (Ledger's LLM API)
 	const statusLine = (ok, text) => [el("span", { class: `pill ${ok ? "good" : "warn"}` }, ok ? "Ready" : "Not set up"), " ", text];
 	async function loadStatus() {
-		const [st, mail] = await Promise.all([api("/status"), api("/mail/status")]);
+		const st = await api("/status");
 		const ai = st.llm;
 		$("st-ai").replaceChildren(
 			...(!ai.configured
@@ -1285,32 +1318,14 @@
 							: `PDFs and photos go to ${ai.images.provider}, ${ai.images.model || "default model"}${ai.readsPdf ? "" : " (it reads photos of bills and receipts; PDFs need Claude)"}.`
 					}`)),
 		);
-		let mailText;
-		if (mail.source === "off") mailText = [el("span", { class: "pill plain" }, "Off"), ` ${mail.missing[0].toUpperCase()}${mail.missing.slice(1)}.`];
-		else if (!mail.ready) mailText = statusLine(false, `${mail.missing}.`);
-		else if (mail.source === "gmail") mailText = statusLine(true, `Reads ${mail.gmail.account || "Ledger's Gmail account"} with the search “${mail.gmail_query}”, ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
-		else mailText = statusLine(true, `Reads ${mail.imap.user} on ${mail.imap.host} (${mail.imap.folder}), ${mail.interval > 0 ? `every ${mail.interval} minutes` : "only when you press Check email now"}.`);
-		$("st-mail").replaceChildren(...mailText, mail.ready ? el("div", { class: "muted small", style: "margin-top:4px" }, mailStatusText(mail)) : "");
-		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${mail.ap_account || "none (bills are only tracked)"} · statements in email: ${mail.email_statements === "review" ? "staged for review" : "ignored"}.`;
+		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${st.settings.ap_account || "none (bills are only tracked)"}.`;
 		$("st-version").textContent = `Module ${st.version} on Ledger ${st.ledger}.`;
 		const org = st.organization;
 		const others = st.organizations.filter((o) => o.id !== org.id);
 		$("st-org").textContent = `These are ${org.name}'s books (organization ${org.id}). Statements, bills and rules here are kept apart from other organizations'.`
-			+ ` Settings → ${moduleName} are this organization's own, including whether it reads email (${mail.source === "off" ? "it doesn't" : mail.source === "gmail" ? "Gmail" : "IMAP"}).`
+			+ ` Settings → ${moduleName} are this organization's own.`
 			+ (others.length ? ` Other organizations: ${others.map((o) => `${o.name} (${o.id})`).join(", ")}.` : "");
 	}
-	$("st-test").onclick = async () => {
-		$("st-msg").textContent = "Connecting…";
-		try {
-			const r = await api("/mail/test", { method: "POST" });
-			$("st-msg").textContent = !r.ok
-				? `Failed: ${r.error}`
-				: r.source === "gmail"
-					? `Works: ${r.account || "Gmail"}; ${r.matching} emails match the search.`
-					: `Works: the folder has ${r.messages} messages, ${r.matching} in the look-back window.`;
-		} catch (err) { $("st-msg").textContent = ""; fail(err); }
-	};
-
 	// Links from Ledger's search bar arrive as /apps/categorizer?bill=… or ?statement=… on the parent page.
 	function openFromLink() {
 		let params;

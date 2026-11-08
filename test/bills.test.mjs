@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assignMatches, extractBill, findDuplicate, gmailQuery, imageType, looksLikeBill, matchScore, sentByMe } from "../lib/bills.mjs";
+import { assignMatches, extractBill, findDuplicate, imageType, matchScore } from "../lib/bills.mjs";
 import { parseEmail } from "../lib/mime.mjs";
 import { sampleEmail } from "./helpers.mjs";
 
@@ -8,13 +8,6 @@ const accounts = [
 	{ code: "5300", name: "Phone & Internet", type: "expense" },
 	{ code: "5400", name: "Utilities", type: "expense" },
 ];
-
-test("keyword filter", () => {
-	const e = parseEmail(sampleEmail());
-	assert.ok(looksLikeBill(e, ["invoice", "amount due"]));
-	assert.ok(!looksLikeBill({ ...e, subject: "Hello", text: "lunch?", attachments: [] }, ["invoice"]));
-	assert.ok(looksLikeBill({ subject: "", from: "", text: "", attachments: [] }, []));
-});
 
 const ANSWER = { kind: "bill", vendor: "Rogers", invoice_number: "INV-9", bill_date: "2026-03-03", due_date: "2026-03-20", amount_due: "85.50", currency: "CAD", account_code: "5300", confidence: 0.9, summary: "March phone bill" };
 
@@ -65,27 +58,6 @@ test("matching: exact amount out, date window, vendor bonus", () => {
 	const m = assignMatches(bills, txs).map((p) => [p.bill.id, p.tx.id]);
 	assert.deepEqual(m.sort(), [[1, "ROGERS"], [2, "BELL CANADA"]]);
 	assert.deepEqual(assignMatches(bills, txs, (b, t) => !(b.id === 1 && t.id === "ROGERS")).map((p) => [p.bill.id, p.tx.id]), [[2, "BELL CANADA"]]);
-});
-
-test("Gmail search for bills leaves out drafts and chats", () => {
-	assert.equal(gmailQuery({ lookbackDays: 30, keywords: ["invoice", "amount due"], custom: "" }), 'newer_than:30d -in:drafts -in:chats {invoice "amount due"}');
-	assert.equal(gmailQuery({ lookbackDays: 7, keywords: ["invoice"], custom: "label:bills" }), "newer_than:7d -in:drafts -in:chats label:bills");
-	assert.equal(gmailQuery({ lookbackDays: 7, keywords: [], custom: "" }), "newer_than:7d -in:drafts -in:chats");
-});
-
-test("mail you sent is left out; bills forwarded to yourself stay in", () => {
-	// Gmail labels
-	assert.equal(sentByMe({ labels: ["SENT"] }), true); // in Sent only
-	assert.equal(sentByMe({ labels: ["SENT", "INBOX"] }), false); // sent to yourself: also in the inbox
-	assert.equal(sentByMe({ labels: ["DRAFT"] }), true);
-	assert.equal(sentByMe({ labels: ["INBOX", "CATEGORY_UPDATES"] }), false);
-	// Headers (any source, e.g. an IMAP "All Mail" folder)
-	const me = "me@example.com";
-	assert.equal(sentByMe({ from: "Me <ME@example.com>", to: "Landlord <rent@landlord.ca>" }, me), true);
-	assert.equal(sentByMe({ from: "Me <me@example.com>", to: "me@example.com" }, me), false); // forwarded to yourself
-	assert.equal(sentByMe({ from: "Me <me@example.com>", to: "x@y.z", cc: "Me <me@example.com>" }, me), false);
-	assert.equal(sentByMe({ from: "Rogers <b@rogers.com>", to: "me@example.com" }, me), false);
-	assert.equal(sentByMe({ from: "Me <me@example.com>", to: "x@y.z" }, ""), false); // account unknown: can't tell
 });
 
 test("pictures are recognised by their bytes", () => {

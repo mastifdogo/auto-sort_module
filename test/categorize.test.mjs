@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildPrompt, candidateAccounts, examplesFromEntries, suggest } from "../lib/categorize.mjs";
+import { buildPrompt, candidateAccounts, examplesFromEntries, proposeCode, suggest } from "../lib/categorize.mjs";
 
 const bank = { code: "1000", name: "Chequing", type: "asset", currency: "CAD", is_active: true };
 const accounts = [
@@ -44,7 +44,7 @@ test("rules answer without the model; the rest go to the AI with a constrained s
 		],
 	});
 	assert.equal(calls.length, 1);
-	assert.deepEqual(calls[0].schema.properties.results.items.properties.account_code.enum, ["5100", "5200", "4000"]);
+	assert.deepEqual(calls[0].schema.properties.results.items.properties.account_code.enum, ["5100", "5200", "4000", "NEW"]);
 	assert.match(calls[0].prompt, /"NETFLIX.COM" -16.99 -> 5200/);
 	assert.equal(rowsOf(calls[0]).length, 2); // the rule-matched row isn't sent
 	assert.equal(out.get(1).source, "rule");
@@ -99,4 +99,40 @@ test("examples come from two-line entries touching the statement account", () =>
 	assert.deepEqual(ex, [{ description: "SHELL #1", amount: "-40.00", account_code: "5100" }]);
 	const prompt = buildPrompt({ statementAccount: bank, candidates, examples: ex, batch: [{ i: 1, date: "2026-03-01", description: "A", memo: "", amount_cents: -5n }] });
 	assert.match(prompt, /"amount":"-0.05"/);
+});
+
+test("when no account fits, the model can propose a new one (code chosen by the module)", async () => {
+	const { llm } = fakeLlm((req) =>
+		rowsOf(req).map((t) =>
+			t.description.startsWith("PETSMART")
+				? { i: t.i, account_code: "NEW", confidence: 0.8, reason: "pet store", new_account: { name: "Pet care", type: "expense" } }
+				: t.description.startsWith("WEIRD")
+					? { i: t.i, account_code: "NEW", confidence: 0.4, reason: "?", new_account: { name: "", type: "expense" } }
+					: { i: t.i, account_code: "5100", confidence: 0.9, reason: "fuel", new_account: { name: "", type: "expense" } },
+		),
+	);
+	const out = await suggest({
+		llm,
+		statementAccount: bank,
+		candidates,
+		examples: [],
+		rules: new Map(),
+		transactions: [
+			{ id: 1, date: "2026-03-01", description: "PETSMART #4", memo: "", amount_cents: -5400n },
+			{ id: 2, date: "2026-03-02", description: "SHELL", memo: "", amount_cents: -4000n },
+			{ id: 3, date: "2026-03-03", description: "WEIRD THING", memo: "", amount_cents: -100n },
+		],
+	});
+	assert.deepEqual(out.get(1), { code: null, confidence: 0.8, reason: "pet store", source: "llm", newAccount: { name: "Pet care", type: "expense" } });
+	assert.equal(out.get(2).code, "5100");
+	assert.equal(out.get(2).newAccount, undefined);
+	assert.equal(out.get(3).source, "error"); // "NEW" without a name isn't an answer
+});
+
+test("proposed codes follow the chart's numbering and skip used ones", () => {
+	assert.equal(proposeCode(accounts, "expense"), "5910");
+	assert.equal(proposeCode(accounts, "expense", new Set(["5910"])), "5920");
+	assert.equal(proposeCode(accounts, "liability"), "2000");
+	assert.equal(proposeCode([...accounts, { code: "2000", type: "equity" }], "liability"), "2010");
+	assert.equal(proposeCode([{ code: "CASH", type: "asset" }], "asset"), "1000");
 });

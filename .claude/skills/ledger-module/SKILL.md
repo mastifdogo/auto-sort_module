@@ -20,8 +20,8 @@ The API reference and the full workflow live in the Ledger repository.
   (`scripts/check.sh` does this for you).
 - Read **`<ledger>/docs/MODULE_LLM_CONTEXT.md`** in full before changing
   anything: manifest, `ctx` API and return shapes, `ctx.settings`,
-  `ctx.dashboard`, `ctx.llm`, `ctx.gmail`, `ctx.search`, roles, migrations,
-  UI and security rules.
+  `ctx.dashboard`, `ctx.llm`, `ctx.gmail`, `ctx.search`, `ctx.files`,
+  `ctx.orgs`, roles, migrations, UI and security rules.
 - Then follow **`<ledger>/.claude/skills/ledger-module/SKILL.md`** (design
   rules, implementation rules, checks, publishing). Treat this repository as
   the module directory it talks about. Where the docs and Ledger's code
@@ -43,6 +43,19 @@ feature the module uses (the context file says which version added what;
 - AI goes through `ctx.llm` and Gmail through `ctx.gmail` (Ledger ≥ 0.10.0):
   no API keys, OAuth, IMAP or Apps Script bridges of the module's own for
   those. The admin allows the module under Settings → AI / Gmail.
+- Files another module produces come through `ctx.files` (Ledger ≥ 0.11.0),
+  never by reading the other module's tables. This module declares
+  `"files": {"accepts": [...]}` and marks each file `done` or `rejected`
+  with a `result` (`lib/received-files.mjs`).
+- Organizations (Ledger ≥ 0.11.0): each organization's books, and this
+  module's schema, are a separate database; requests already run in the
+  user's current one, so no organization columns. Background work (timers,
+  startup, `onReceive` outside a request) runs in the main books unless it
+  loops over `ctx.orgs.forEach`. Settings, `ctx.llm` and `ctx.gmail` are
+  server-wide.
+- Configuration goes in the manifest's `settings.fields`; data shown in the
+  UI goes in with `textContent`, never `innerHTML`; support dark mode and
+  narrow panes (~260 px).
 - Bad input answers 4xx (`throw new ctx.HttpError(422, "…")`), never 500.
 
 ## 3. Check before saying it works
@@ -110,6 +123,22 @@ until paid and matched to statement payments.
   email became) feeds **Statements**, **Bills** and **Receipts** (`/bills?kind=`).
   Mail you sent is skipped by `sentByMe()` in `lib/bills.mjs` (Gmail labels,
   or your address as sender of mail not addressed to you); keep self-forwards in.
+- Organizations: startup resumes interrupted categorising in every
+  organization (`ctx.orgs.forEach`); the mail scheduler visits each one and
+  `missing()` lets only `mail_organization` (a setting, default 1) through.
+  The categorising queue is one promise chain; each step keeps the
+  organization it was queued in (AsyncLocalStorage follows `.then`).
+- Files from other modules: `lib/received-files.mjs` (onReceive queue, a
+  sweep of `new`/`accepted` inbox files at startup and every 5 minutes in
+  every organization, `received_files` links each file to what it became).
+  Statements reuse `stageEmailStatement` with `from: "module:<sender>"`, so
+  a chosen account is remembered per sending module and account number.
+- New accounts: the categorize schema allows `account_code: "NEW"` with
+  `new_account {name, type}`; `proposeCode()` picks the code; rows keep the
+  proposal in `transactions.new_account` until `POST /accounts` creates it.
+- Duplicates: `lib/duplicates.mjs` (pure scoring and pairing, unit-tested)
+  and `lib/duplicate-routes.mjs`. A merged row has status `merged` and is
+  never posted; `not_duplicates` remembers dismissed pairs.
 - The sidebar icon is drawn (`nav.icon.path`, a robot head).
 - Testing the real flows: Ledger reads its AI and Gmail settings from
   `INTEGRATIONS_DIR` (`llm.json`, `gmail.json`) and Gmail's endpoints from

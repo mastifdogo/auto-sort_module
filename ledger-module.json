@@ -1,9 +1,9 @@
 {
   "id": "categorizer",
   "name": "Auto sort",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and Ledger's AI suggests an account for each transaction; transfers between your accounts are posted once. Optionally reads bills from Ledger's Gmail account (or an IMAP mailbox) on a schedule, tracks them until paid and matches them to statement payments. Needs an admin to allow it under Settings → AI (and Settings → Gmail for bills).",
-  "ledger": ">=0.10.0",
+  "ledger": ">=0.11.0",
   "server": "server.mjs",
   "ui": "ui",
   "nav": {
@@ -13,6 +13,14 @@
     }
   },
   "migrations": "migrations",
+  "files": {
+    "accepts": [
+      "statement",
+      "transaction",
+      "bill",
+      "receipt"
+    ]
+  },
   "settings": {
     "fields": [
       {
@@ -60,7 +68,16 @@
         "min": 0,
         "max": 10080,
         "default": 60,
-        "help": "0 turns scheduled checks off; Check email now on the Bills tab always works."
+        "help": "0 turns scheduled checks off; Check email now on the Import tab always works."
+      },
+      {
+        "key": "mail_organization",
+        "label": "Organization for email",
+        "type": "number",
+        "min": 1,
+        "max": 100000,
+        "default": 1,
+        "help": "Email is shared by the whole server, so bills and statements from it go into one organization's books: 1 is the main books. The Import tab shows each organization's number."
       },
       {
         "key": "email_statements",

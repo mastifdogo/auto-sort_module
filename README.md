@@ -19,14 +19,22 @@ AI provider and Gmail account: there's no API key or mail login to set up in the
 - Low-confidence suggestions are marked **Needs review**; **Select confident** + **Post selected**
   takes care of the rest.
 - **Transfers** between your own accounts are linked and posted once. See [Transfers](#transfers-between-your-accounts).
+- **Duplicates:** the same transaction uploaded twice (a CSV and an OFX export of one month, a
+  pending and a posted copy), or already entered in the journal, is listed on the **Duplicates** tab
+  to merge. See [Duplicates](#duplicates).
+- **New accounts:** when none of your accounts fits, the AI suggests one (code, name, type) that you
+  can edit before it's created. See [New accounts](#new-accounts).
+- **From other modules:** other Ledger modules can hand Auto sort statements, transaction lists,
+  bills and receipts (Ledger's file exchange). See [Files from other modules](#files-from-other-modules).
+- **Organizations:** each organization's statements, bills and rules stay in its own books.
 - **Bills from email:** checks Ledger's Gmail account (or an IMAP mailbox) on a schedule, reads bills and receipts
   out of the emails and their PDFs, keeps a list of bills to be paid, and matches each bill to the
   bank transaction that pays it. See [Bills](#bills).
 
 ## Install
 
-Needs **Ledger 0.10.0 or newer** (shared AI and Gmail for modules, settings forms, roles, search,
-drawn icons).
+Needs **Ledger 0.11.0 or newer** (shared AI and Gmail for modules, file exchange between modules,
+organizations, settings forms, roles, search, drawn icons).
 
 1. In Ledger, open **Settings → Modules**, enter `mastifdogo/llm-api-module` and press **Add**.
    **Auto sort** appears in the sidebar with a robot icon. You can hide or reorder it under
@@ -124,6 +132,58 @@ module links the two rows so the transfer is posted **once**:
 
 If you also get the credit card's statement email as a bill, ignore it rather than approving it
 into payables. The card's own statement already records those charges.
+
+## Duplicates
+
+The **Duplicates** tab lists transactions waiting to be posted that look like one payment:
+
+- **Uploaded twice:** two rows on the same account, from different statements, with exactly the
+  same amount within 3 days. Same day and similar payee scores highest; a day apart with a similar
+  payee (pending, then posted) next. Rows on one statement are never paired: banks list real repeats.
+- **Already in the journal:** an entry on the same account with the same amount within 3 days that
+  this module didn't post (e.g. entered by hand). Reversed entries don't count.
+
+**Merge** keeps one and never posts the other (the posted copy, or the one you've worked on, or the
+older one is kept; **Merge, keep the other copy** swaps them). The kept row takes the account you
+chose for the merged one. **Not duplicates** is remembered. Merged rows show under *Show: Merged
+duplicates* on their statement, with **Unmerge**. While there are any, Ledger's dashboard has a
+to-do.
+
+## New accounts
+
+If none of your accounts fits a transaction, the AI can answer "new account" with a name and type
+(e.g. *Pet care*, expense). The module picks a free code next to that type's accounts (5910 after
+5900) and shows it under the row, editable: change the code, name or type, then **Create account**.
+It's created in Ledger in the statement's currency and every row it was suggested for uses it. Any
+row's account list also has **＋ New account…**.
+
+A statement whose account isn't in your chart yet (from email or another module) offers the same:
+a bank or card account named after the sender and the account number's last digits
+(e.g. *RBC Visa ••4411*, a liability), to edit and **Create and use it**.
+
+## Files from other modules
+
+Auto sort accepts `statement`, `transaction`, `bill` and `receipt` files through Ledger's file
+exchange (`ctx.files`, Ledger 0.11.0). A module offering "send to…" lists it among the targets.
+
+- **Statements and transaction lists** (CSV, OFX, QFX, QBO, or a PDF read by Claude) are staged on
+  the Statements tab. Put the account in `meta.account_code` (and optionally `meta.flip_signs`,
+  `meta.date_order`); without it the statement waits for you to choose, and your choice is
+  remembered for that module and account number.
+- **Bills and receipts** (PDF or a saved `.eml`) go to the Bills or Receipts tab; the sender's label
+  decides which.
+- Each file is marked **done** with what it became (e.g. "12 transactions staged") or **rejected**
+  with why, which the sender sees. The Import tab lists them under *Sent by other modules*, with
+  **Try again** for rejected ones. Nothing is posted until you approve it.
+
+## Organizations
+
+With several organizations on one Ledger server, each one's statements, bills, rules and imports
+are kept in its own books; the module works in whichever organization you're in. Settings, the AI
+and Gmail are shared by the server, so email goes into one organization's books: **Organization for
+email** under Settings → Auto sort (1, the main books, by default). The Status tab shows each
+organization's number to admins. Files from other modules land in the organization they were sent
+in.
 
 ## Bills
 
@@ -226,6 +286,12 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `PATCH` | `/transactions/:id` | `{account_code?, status?: "new"\|"skipped"}` |
 | `POST` | `/transactions/bulk` | the same for `{ids: [...]}` |
 | `POST` | `/transactions/:id/not-transfer` | unlink a transfer match (both sides get a fresh suggestion) |
+| `GET` | `/duplicates` | likely duplicates: `{pairs: [{keep, merge, score}], entries: [{merge, entry, score}], count}` |
+| `POST` | `/duplicates/merge` | `{merge_id, keep_id}` or `{merge_id, entry_id}`: the merged row is never posted |
+| `POST` | `/duplicates/dismiss` | `{tx_id, other_id}` or `{tx_id, entry_id}`: not duplicates |
+| `POST` | `/transactions/:id/unmerge` | a merged row back to review |
+| `POST` | `/accounts` | `{code, name, type, currency?, description?, transaction_ids?, proposal?}`: create an account in Ledger and book those rows (or every row the AI proposed it for) to it |
+| `GET` | `/files?limit=` | files other modules sent, with what each became; `POST /files/:id/retry`, `DELETE /files/:id` |
 | `POST` | `/suggest` | `{account_code, transactions: [{date, description, amount, memo?}]}` returns suggestions without storing anything (for scripts or other modules) |
 | `GET`/`DELETE` | `/rules`, `/rules/:key` | learned payee rules |
 | `GET` | `/status` | Ledger's AI and Gmail status for this module, the options in effect, the user's role |
@@ -279,6 +345,9 @@ lib/mime.mjs           email (MIME) parser
 lib/dashboard.mjs      notifications and to-dos on Ledger's dashboard
 lib/transfers.mjs      transfer scoring and pairing
 lib/transfer-sync.mjs  linking transfer rows (and existing journal entries), the unlink route
+lib/duplicates.mjs     duplicate scoring and pairing
+lib/duplicate-routes.mjs  the Duplicates tab's routes and dashboard to-do
+lib/received-files.mjs files from other modules (ctx.files)
 ui/index.html          the page shown in Ledger
 migrations/            the module's tables (schema mod_categorizer)
 test/                  unit tests: npm test (Node 22+)
@@ -296,6 +365,13 @@ credit, point Ledger's AI (Settings → AI, Server URL) at a local stub that ans
 Messages API.
 
 ## Changes
+
+- **0.2.6:** Needs Ledger 0.11.0. **Duplicates** tab: merge transactions uploaded twice or already in
+  the journal. When no account fits, the AI **suggests a new account** you can edit and create (also
+  for a statement whose bank or card account isn't in the chart). Accepts statements, transaction
+  lists, bills and receipts from **other modules** (`ctx.files`). Works with **organizations**:
+  background work runs in every organization's books, and email goes into the one chosen under
+  "Organization for email". Migrations 007 and 008.
 
 - **0.2.5:** Email checks no longer import mail you sent (Gmail's Sent folder, drafts, IMAP mail from
   your own address); bills you forward to yourself still come in. New **Import** tab with Check

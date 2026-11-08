@@ -179,11 +179,13 @@ exchange (`ctx.files`, Ledger 0.11.0). A module offering "send to…" lists it a
 ## Organizations
 
 With several organizations on one Ledger server, each one's statements, bills, rules and imports
-are kept in its own books; the module works in whichever organization you're in. Settings, the AI
-and Gmail are shared by the server, so email goes into one organization's books: **Organization for
-email** under Settings → Auto sort (1, the main books, by default). The Status tab shows each
-organization's number to admins. Files from other modules land in the organization they were sent
-in.
+are kept in its own books; the module works in whichever organization you're in. Since Ledger
+0.11.1 each organization also has its own Settings → Auto sort (its admins edit them there), so
+each chooses where its bills come from. The default, **Gmail in the main books; nothing in other
+organizations**, keeps a new organization from importing the same mail again: Ledger has one Gmail
+account, so choose Gmail in only one organization unless you want its bills in several (IMAP can
+be a different mailbox per organization). The AI and Gmail connection are shared by the server.
+Files from other modules land in the organization they were sent in.
 
 ## Bills
 
@@ -365,6 +367,11 @@ credit, point Ledger's AI (Settings → AI, Server URL) at a local stub that ans
 Messages API.
 
 ## Changes
+
+- **0.3.0:** For Ledger 0.11.1, where module settings are per organization: each organization
+  chooses its own email source under Settings → Auto sort, and the new default reads Gmail in the
+  main books only. Replaces 0.2.6's "Organization for email" setting (on Ledger 0.11.0, settings
+  are still shared, so email goes into the main books).
 
 - **0.2.6:** Needs Ledger 0.11.0. **Duplicates** tab: merge transactions uploaded twice or already in
   the journal. When no account fits, the AI **suggests a new account** you can edit and create (also

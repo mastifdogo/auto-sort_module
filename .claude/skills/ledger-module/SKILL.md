@@ -57,6 +57,8 @@ feature the module uses (the context file says which version added what;
   UI goes in with `textContent`, never `innerHTML`; support dark mode and
   narrow panes (~260 px).
 - Bad input answers 4xx (`throw new ctx.HttpError(422, "…")`), never 500.
+- Versions: new features (a page, route, setting, data kept) raise the middle
+  number (`0.2.6` → `0.3.0`); fixes only raise the last.
 
 ## 3. Check before saying it works
 
@@ -124,8 +126,10 @@ until paid and matched to statement payments.
   Mail you sent is skipped by `sentByMe()` in `lib/bills.mjs` (Gmail labels,
   or your address as sender of mail not addressed to you); keep self-forwards in.
 - Organizations: startup resumes interrupted categorising in every
-  organization (`ctx.orgs.forEach`); the mail scheduler visits each one and
-  `missing()` lets only `mail_organization` (a setting, default 1) through.
+  organization (`ctx.orgs.forEach`); the mail scheduler visits each one, and
+  each reads its own settings (per organization since Ledger 0.11.1; never
+  cache them). `mail_source` "auto" (the default) means Gmail in the main
+  books and off elsewhere, so new organizations don't import the same mail.
   The categorising queue is one promise chain; each step keeps the
   organization it was queued in (AsyncLocalStorage follows `.then`).
 - Files from other modules: `lib/received-files.mjs` (onReceive queue, a

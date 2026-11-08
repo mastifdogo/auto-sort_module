@@ -91,15 +91,16 @@
 </head>
 <body>
 <nav class="tabs">
-	<button data-tab="review" class="active">Statements</button>
+	<button data-tab="import" class="active">Import</button>
+	<button data-tab="review">Statements</button>
 	<button data-tab="bills">Bills</button>
-	<button data-tab="upload">Upload</button>
+	<button data-tab="receipts">Receipts</button>
 	<button data-tab="rules">Learned rules</button>
 	<button data-tab="settings">Status</button>
 </nav>
 
 <!-- Statements list + review -->
-<section id="tab-review">
+<section id="tab-review" class="hidden">
 	<div id="list-view">
 		<div class="row"><span class="muted" id="list-empty">No statements yet. Upload one to get suggestions.</span></div>
 		<div class="table-wrap">
@@ -177,16 +178,12 @@
 			</select>
 		</label>
 		<span class="spacer"></span>
-		<span id="b-mail-status" class="muted small"></span>
-		<button class="btn primary" id="b-sort" title="Read new bills from email, then match bills and transfers to statement transactions waiting to be posted">Sort now</button>
-		<button class="btn" id="b-check">Check email now</button>
-		<label class="btn" style="display:inline-block; font-weight:normal">Upload bill (PDF or .eml)<input type="file" id="b-file" accept=".pdf,.eml,application/pdf,message/rfc822" class="hidden"></label>
 		<button class="btn" id="b-add">Add by hand</button>
 	</div>
-	<p class="muted small">Bills are read from your mailbox on a schedule (choose Gmail or IMAP under Settings → <span class="mod-name">Auto sort</span> in Ledger; Gmail must be allowed under Settings → Gmail). Approve a bill once its details are right. When a statement contains its payment, the transaction is matched to the bill automatically, and posting it marks the bill paid.</p>
+	<p class="muted small" id="b-hint"></p>
 	<div class="table-wrap">
 		<table id="bills" class="stack">
-			<thead><tr><th>Due</th><th>Vendor</th><th>Invoice</th><th class="num">Amount</th><th>Account</th><th>Status</th><th>Payment</th></tr></thead>
+			<thead><tr><th id="b-col-date">Due</th><th>Vendor</th><th id="b-col-invoice">Invoice</th><th class="num">Amount</th><th>Account</th><th>Status</th><th>Payment</th></tr></thead>
 			<tbody></tbody>
 		</table>
 	</div>
@@ -231,11 +228,21 @@
 	</div>
 </section>
 
-<!-- Upload -->
-<section id="tab-upload" class="hidden">
+<!-- Import: email checks, uploads, and what each email became -->
+<section id="tab-import">
+	<div class="panel row">
+		<button class="btn primary" id="b-sort" title="Read new mail, then match bills and transfers to statement transactions waiting to be posted">Sort now</button>
+		<button class="btn" id="b-check">Check email now</button>
+		<span id="b-mail-status" class="muted small"></span>
+	</div>
+	<p class="muted small">New email is read on a schedule (choose Gmail or IMAP under Settings → <span class="mod-name">Auto sort</span> in Ledger; Gmail must be allowed under Settings → Gmail), or now with <em>Sort now</em>. Each email is sorted into <strong>Statements</strong>, <strong>Bills</strong> or <strong>Receipts</strong>; categorise them on those tabs. Mail you sent is never imported.</p>
+
+	<h2>Upload a file</h2>
+	<div class="grid">
 	<form id="upload" class="panel">
+		<strong>Statement</strong> (CSV, OFX, QFX, QBO)
 		<div class="grid">
-			<label>Statement file (CSV, OFX, QFX, QBO)
+			<label>File
 				<input type="file" id="file" accept=".csv,.txt,.ofx,.qfx,.qbo,text/csv" required>
 			</label>
 			<label>Bank or card account
@@ -254,6 +261,29 @@
 		<button class="btn primary" id="up-btn">Upload and categorise</button>
 		<span id="up-msg" class="muted"></span>
 	</form>
+		<div class="panel">
+			<strong>Bill or receipt</strong> (PDF or a saved email, .eml)
+			<p class="muted small">Ledger's AI reads it and puts it on the Bills or Receipts tab.</p>
+			<label class="btn" style="display:inline-block; font-weight:normal">Choose a file<input type="file" id="b-file" accept=".pdf,.eml,application/pdf,message/rfc822" class="hidden"></label>
+		</div>
+	</div>
+
+	<h2>Imported from email</h2>
+	<div class="row" style="margin-bottom:0.4rem">
+		<label class="inline">Show
+			<select id="imp-filter">
+				<option value="sorted">Sorted into a tab</option>
+				<option value="skipped">Skipped</option>
+				<option value="all">All</option>
+			</select>
+		</label>
+	</div>
+	<div class="table-wrap">
+		<table id="import-log" class="stack">
+			<thead><tr><th>When</th><th>From</th><th>Subject</th><th>Result</th></tr></thead>
+			<tbody></tbody>
+		</table>
+	</div>
 </section>
 
 <!-- Rules -->
@@ -324,14 +354,26 @@
 	const TYPE_ORDER = ["expense", "revenue", "asset", "liability", "equity"];
 
 	// ---------------------------------------------------------------- tabs
+	let activeTab = "import";
+	let billKind = "bill"; // which kind the Bills tab shows: "bill" (Bills) or "receipt" (Receipts)
+
 	function showTab(name) {
 		document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-		for (const t of ["review", "bills", "upload", "rules", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== name);
-		if (name === "bills") loadBills().catch(fail);
+		// Bills and Receipts are the same list, of one kind each.
+		const section = name === "receipts" ? "bills" : name;
+		for (const t of ["import", "review", "bills", "rules", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== section);
+		activeTab = name;
+		if (section === "bills") {
+			const kind = name === "receipts" ? "receipt" : "bill";
+			if (kind !== billKind) { currentBill = null; $("bill-detail").classList.add("hidden"); }
+			billKind = kind;
+			setBillLabels();
+			loadBills().catch(fail);
+		}
+		if (name === "import") { loadImport().catch(fail); loadUploadAccounts().catch(fail); }
 		if (name === "review") loadStatements().catch(fail);
 		if (name === "rules") loadRules().catch(fail);
 		if (name === "settings") loadStatus().catch(fail);
-		if (name === "upload") loadUploadAccounts().catch(fail);
 	}
 	document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => { closeDetail(); showTab(b.dataset.tab); }));
 
@@ -689,26 +731,41 @@
 		return `Last check ${when}: ${n(r.bills, "bill", "bills")}, ${n(r.receipts, "receipt", "receipts")}${r.statements ? `, ${n(r.statements, "statement", "statements")}` : ""} from ${n(r.looked_at, "new email", "new emails")}` + (r.remaining ? ` (${r.remaining} more next time)` : "");
 	}
 
+	/** The Bills tab's words for the kind shown (Receipts are already paid; they're matched, not paid). */
+	function setBillLabels() {
+		const receipt = billKind === "receipt";
+		const labels = receipt
+			? { unpaid: "Not matched yet", new: "Needs review", open: "Approved, not matched", paid: "Matched to a payment", ignored: "Ignored", "": "All" }
+			: { unpaid: "To be paid", new: "Needs review", open: "Approved, unpaid", paid: "Paid", ignored: "Ignored", "": "All" };
+		for (const o of $("b-filter").options) o.textContent = labels[o.value];
+		$("b-hint").textContent = receipt
+			? "Receipts are purchases already paid (order confirmations, payment receipts). Check the account, then Approve. The matching bank or card transaction gets the receipt's account."
+			: "Bills are amounts you still have to pay. Check the details and account, then Approve. When a statement contains the payment, the transaction is matched to the bill automatically, and posting it marks the bill paid.";
+		$("b-add").textContent = receipt ? "Add a receipt by hand" : "Add a bill by hand";
+		$("b-col-date").textContent = receipt ? "Date" : "Due";
+		$("b-col-invoice").textContent = receipt ? "Order" : "Invoice";
+	}
+
 	async function loadBills() {
 		if (accounts.length === 0) await loadAccounts();
-		const [list, mail] = await Promise.all([api(`/bills?status=${encodeURIComponent($("b-filter").value)}`), api("/mail/status")]);
+		const list = await api(`/bills?status=${encodeURIComponent($("b-filter").value)}&kind=${billKind}`);
 		billsList = list.data;
-		$("b-mail-status").textContent = mailStatusText(mail);
 		const body = $("bills").tBodies[0];
 		if (billsList.length === 0) {
-			body.replaceChildren(el("tr", {}, el("td", { colspan: 7, class: "muted" }, "No bills here.")));
+			body.replaceChildren(el("tr", {}, el("td", { colspan: 7, class: "muted" }, billKind === "receipt" ? "No receipts here." : "No bills here.")));
 			return;
 		}
 		const today = new Date().toISOString().slice(0, 10);
 		body.replaceChildren(
 			...billsList.map((b) => {
-				const [cls, text] = BILL_STATUS[b.status] || ["plain", b.status];
+				const [cls, text0] = BILL_STATUS[b.status] || ["plain", b.status];
+				const text = b.kind === "receipt" && b.status === "paid" ? "Matched" : text0;
 				const overdue = b.due_date && b.due_date < today && ["new", "open"].includes(b.status);
 				const payment = b.transaction_id
 					? el("span", { class: `pill ${b.transaction_status === "posted" ? "good" : "plain"}` }, b.transaction_status === "posted" ? "Posted" : "Matched")
-					: el("span", { class: "muted" }, b.kind === "receipt" ? "receipt" : "—");
+					: el("span", { class: "muted" }, b.kind === "receipt" ? "Not matched" : "—");
 				return el("tr", { class: `clickable ${currentBill?.id === b.id ? "selected" : ""}`, onclick: () => openBill(b.id) },
-					el("td", { class: `nowrap ${overdue ? "neg" : ""}` }, b.due_date || (b.bill_date ? `(${b.bill_date})` : "—")),
+					el("td", { class: `nowrap ${overdue ? "neg" : ""}` }, b.kind === "receipt" ? b.bill_date || b.due_date || "—" : b.due_date || (b.bill_date ? `(${b.bill_date})` : "—")),
 					el("td", { class: "wide" }, b.vendor || el("span", { class: "muted" }, b.mail_subject || "(unknown)")),
 					el("td", {}, b.invoice_number),
 					el("td", { class: "num" }, b.amount_cents == null ? "—" : `${money(b.amount_cents)} ${b.currency}`),
@@ -734,7 +791,7 @@
 			else parts.push(`Email: ${m.bills || 0} new bill${m.bills === 1 ? "" : "s"}, ${m.receipts || 0} receipt${m.receipts === 1 ? "" : "s"}${m.statements ? `, ${m.statements} statement${m.statements === 1 ? "" : "s"} staged (Statements tab)` : ""} from ${m.looked_at || 0} new message${m.looked_at === 1 ? "" : "s"}.`);
 			parts.push(`${r.bill_matches} payment${r.bill_matches === 1 ? "" : "s"} matched to bills, ${r.transfer_links} transfer${r.transfer_links === 1 ? "" : "s"} linked.`);
 			toast(parts.join("\n"), !!m.error);
-			await loadBills();
+			await loadImport();
 		} catch (e) { fail(e); } finally {
 			$("b-sort").disabled = false;
 			$("b-check").disabled = false;
@@ -748,8 +805,8 @@
 			const r = await api("/mail/check", { method: "POST" });
 			if (r.error) toast(`Email check failed: ${r.error}`, true);
 			else if (r.skipped) toast(r.skipped);
-			else toast(`Looked at ${r.looked_at} new emails: ${r.bills} bills, ${r.receipts} receipts, ${r.duplicates} repeats.`);
-			await loadBills();
+			else toast(`Looked at ${r.looked_at} new emails: ${r.bills} bills, ${r.receipts} receipts, ${r.statements || 0} statements, ${r.duplicates} repeats${r.sent ? `, ${r.sent} sent by you (skipped)` : ""}.`);
+			await loadImport();
 		} catch (e) { fail(e); } finally { $("b-check").disabled = false; }
 	};
 
@@ -765,7 +822,7 @@
 		try {
 			const b = await api("/bills/upload", { method: "POST", body: JSON.stringify({ filename: file.name, content_base64: btoa(bin) }) });
 			$("b-filter").value = "unpaid";
-			await loadBills();
+			showTab(b.kind === "receipt" ? "receipts" : "bills");
 			openBill(b.id);
 		} catch (e) { fail(e); }
 	};
@@ -774,7 +831,7 @@
 		const vendor = prompt("Vendor name");
 		if (!vendor) return;
 		try {
-			const b = await api("/bills", { method: "POST", body: JSON.stringify({ vendor }) });
+			const b = await api("/bills", { method: "POST", body: JSON.stringify({ vendor, kind: billKind }) });
 			await loadBills();
 			openBill(b.id);
 		} catch (e) { fail(e); }
@@ -783,6 +840,9 @@
 	async function openBill(id) {
 		const r = await api(`/bills/${id}`).catch(fail);
 		if (!r) return;
+		// A receipt opens on the Receipts tab, a bill on Bills (also after its type was changed).
+		const tab = r.bill.kind === "receipt" ? "receipts" : "bills";
+		if (activeTab !== tab) showTab(tab);
 		currentBill = r.bill;
 		renderBill(r.bill, r.payments);
 		document.querySelectorAll("#bills tbody tr").forEach((tr, i) => tr.classList.toggle("selected", billsList[i]?.id === id));
@@ -920,6 +980,51 @@
 	$("bd-ignore").onclick = () => billAction("save", { status: "ignored" });
 	$("bd-delete").onclick = () => confirm("Delete this bill?") && billAction("delete");
 
+	// ---------------------------------------------------------------- import (what each email became)
+	const OUTCOME = {
+		bill: ["warn", "Bill"],
+		receipt: ["warn", "Receipt"],
+		statement: ["warn", "Statement"],
+		duplicate: ["plain", "Already imported"],
+		filtered: ["plain", "Skipped: no bill words"],
+		not_bill: ["plain", "Skipped: not a bill"],
+		sent: ["plain", "Skipped: sent by you"],
+		too_large: ["bad", "Skipped: too large"],
+		statement_unreadable: ["bad", "Statement couldn't be read"],
+	};
+	const SORTED = ["bill", "receipt", "statement"];
+	async function loadImport() {
+		const [log, mail] = await Promise.all([api("/mail/log?limit=200"), api("/mail/status")]);
+		$("b-mail-status").textContent = mailStatusText(mail);
+		const f = $("imp-filter").value;
+		const rows = log.data.filter((r) => f === "all" || (f === "sorted") === SORTED.includes(r.outcome));
+		const body = $("import-log").tBodies[0];
+		if (rows.length === 0) {
+			body.replaceChildren(el("tr", {}, el("td", { colspan: 4, class: "muted" }, f === "sorted" ? "Nothing imported yet. Press Sort now, or wait for the next scheduled check." : "Nothing here.")));
+			return;
+		}
+		body.replaceChildren(
+			...rows.map((r) => {
+				const outcome = r.outcome === "bill" && r.bill_kind === "receipt" ? "receipt" : r.outcome;
+				const [cls, label] = OUTCOME[outcome] || ["plain", r.outcome];
+				let open = null;
+				if (r.bill_id) {
+					const tab = r.bill_kind === "receipt" ? "Receipts" : "Bills";
+					open = el("a", { href: "#", onclick: (e) => { e.preventDefault(); openBill(r.bill_id); } }, `Open in ${tab}${r.bill_vendor ? `: ${r.bill_vendor}` : ""}`);
+				} else if (r.statement_id) {
+					open = el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(r.statement_id); } }, `Open in Statements: ${r.statement_filename ?? ""}${r.statement_status === "needs_account" ? " (choose its account)" : ""}`);
+				}
+				return el("tr", {},
+					el("td", { class: "nowrap small" }, new Date(r.seen_at).toLocaleString()),
+					el("td", { class: "small desc" }, r.mail_from || "—"),
+					el("td", { class: "desc wide" }, r.subject || el("span", { class: "muted" }, "(no subject)")),
+					el("td", { class: "wide" }, el("span", { class: `pill ${cls}` }, label), open ? el("div", { class: "small" }, open) : null),
+				);
+			}),
+		);
+	}
+	$("imp-filter").onchange = () => loadImport().catch(fail);
+
 	// ---------------------------------------------------------------- status (Ledger's AI and Gmail)
 	const statusLine = (ok, text) => [el("span", { class: `pill ${ok ? "good" : "warn"}` }, ok ? "Ready" : "Not set up"), " ", text];
 	async function loadStatus() {
@@ -972,7 +1077,7 @@
 		document.querySelectorAll(".mod-name").forEach((n) => (n.textContent = moduleName));
 	}).catch(() => {});
 
-	if (!openFromLink()) showTab("review");
+	if (!openFromLink()) showTab("import");
 </script>
 </body>
 </html>

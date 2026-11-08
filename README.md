@@ -78,7 +78,19 @@ The module creates no accounts. It works with your chart of accounts:
 
 ## Use
 
-1. **Upload:** choose the file and the bank or card account it belongs to. For credit-card
+The page has these tabs:
+
+- **Import:** where things come in. **Check email now** and **Sort now**, uploading a statement or
+  a bill/receipt, and a log of every email the check looked at: what it became (bill, receipt,
+  statement) with a link to it, or why it was skipped.
+- **Statements**, **Bills** and **Receipts:** where you categorise and approve what Import sorted.
+- **Learned rules** and **Status**.
+
+Mail you sent is never imported. That covers replies and forwards in Gmail's Sent folder, drafts,
+and IMAP mail from your own address that isn't addressed to you. A bill you forward to yourself is
+still imported.
+
+1. **Upload** (Import tab): choose the file and the bank or card account it belongs to. For credit-card
    exports that show purchases as positive numbers, tick *flip signs*.
 2. Suggestions appear within a few seconds to a minute (40 transactions per request by default).
 3. **Review:** change any account in the drop-down (your choice is kept, even if you re-run the
@@ -119,12 +131,12 @@ into payables. The card's own statement already records those charges.
 
 - **Gmail** (the default): Ledger's connected account. An admin connects it under **Settings →
   Gmail** and allows Auto sort to read mail. Each check runs a Gmail search: by default
-  `newer_than:30d {invoice bill statement "amount due" ...}` built from the keywords. Set your own
+  `newer_than:30d -in:drafts -in:chats {invoice bill statement "amount due" ...}` built from the keywords. Set your own
   search (e.g. `label:bills`, with a Gmail filter that labels bills) to keep everything else out.
 - **IMAP** for other providers (below).
 - **Off.**
 
-Set how often to check (0 turns scheduled checks off; **Check email now** on the Bills tab always
+Set how often to check (0 turns scheduled checks off; **Check email now** on the Import tab always
 works), and how far back the first check looks.
 
 ### IMAP (other providers)
@@ -177,12 +189,12 @@ A statement email is handled as a statement, not also as a bill, so a card state
 isn't counted twice. If a statement can't be read (a PDF without Claude, or no attachment), the
 dashboard says so and you can upload it from your bank instead.
 
-**Sort now** (Bills tab) does immediately what otherwise happens on the schedule: it reads new
+**Sort now** (Import tab) does immediately what otherwise happens on the schedule: it reads new
 bills from email (when email is set up), then matches bills and receipts, and transfers between
 your accounts, to the statement transactions waiting to be posted, and says what it found.
 
-**Review on the Bills tab:** fix anything that's wrong, then **Approve**. You can also upload a
-bill (PDF or saved `.eml`) or add one by hand.
+**Review on the Bills and Receipts tabs:** fix anything that's wrong, then **Approve**. You can
+also upload a bill or receipt (PDF or saved `.eml`) on the Import tab, or add one by hand.
 
 **Accounting:**
 - *With an accounts payable account* (Settings → Auto sort; an active liability account): approving a bill posts
@@ -218,8 +230,8 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `GET`/`DELETE` | `/rules`, `/rules/:key` | learned payee rules |
 | `GET` | `/status` | Ledger's AI and Gmail status for this module, the options in effect, the user's role |
 | `POST` | `/sort-now` | read new bills from email (if set up), match bills and transfers; returns `{mail, bill_matches, transfer_links}` |
-| `GET` | `/mail/status`; `POST /mail/test`, `POST /mail/check`, `GET /mail/log` | where mail comes from and whether it's ready; a connection test; a check now; the messages looked at |
-| `GET`/`POST` | `/bills?status=unpaid\|new\|open\|paid\|ignored`, `/bills` | list; add by hand `{vendor, amount, due_date, ...}` |
+| `GET` | `/mail/status`; `POST /mail/test`, `POST /mail/check`, `GET /mail/log` | where mail comes from and whether it's ready; a connection test; a check now; the messages looked at (`?limit=`), each with the bill or statement it became |
+| `GET`/`POST` | `/bills?status=unpaid\|new\|open\|paid\|ignored&kind=bill\|receipt`, `/bills` | list; add by hand `{vendor, amount, due_date, ...}` |
 | `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF or `.eml` |
 | `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payment; edit fields or `status`; delete |
 | `GET` | `/bills/:id/document` | the stored PDF, base64 |
@@ -284,6 +296,11 @@ credit, point Ledger's AI (Settings → AI, Server URL) at a local stub that ans
 Messages API.
 
 ## Changes
+
+- **0.2.5:** Email checks no longer import mail you sent (Gmail's Sent folder, drafts, IMAP mail from
+  your own address); bills you forward to yourself still come in. New **Import** tab with Check
+  email now, Sort now, uploads and a log of what each email became. Bills and Receipts are now
+  separate tabs. Migration 006.
 
 - **0.2.0:** **Statements in email** option: bank and card statements found by the email check (CSV, OFX,
   QFX, QBO attachments, or PDFs read by Claude) are staged for review and posted only with your

@@ -23,6 +23,10 @@ AI provider and Gmail account: there's no API key or mail login to set up in the
   out of the emails and their PDFs, keeps a list of bills to be paid, and matches each bill to the
   bank transaction that pays it. See [Bills](#bills).
 
+**Browser extension:** [`browser-extension/`](browser-extension/README.md) (Chrome and Firefox) sends
+statements and bills from your bank's or a supplier's website straight to Auto sort. Right-click a
+download link and choose *Send to Ledger…*, or drop a file on its toolbar button.
+
 ## Install
 
 Needs **Ledger 0.10.0 or newer** (shared AI and Gmail for modules, settings forms, roles, search,
@@ -284,6 +288,9 @@ credit, point Ledger's AI (Settings → AI, Server URL) at a local stub that ans
 Messages API.
 
 ## Changes
+
+- **Browser extension** ("Send to Ledger", `browser-extension/`): right-click a download link or drop a
+  file to send statements and bills to Auto sort (or a CSV to Ledger's files).
 
 - **0.2.0:** **Statements in email** option: bank and card statements found by the email check (CSV, OFX,
   QFX, QBO attachments, or PDFs read by Claude) are staged for review and posted only with your

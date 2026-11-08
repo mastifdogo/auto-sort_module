@@ -1,0 +1,27 @@
+:root { --bg: #fff; --panel: #f6f8fa; --text: #1d232b; --muted: #5d6875; --border: #dde1e6; --accent: #1f6feb; --good: #1a7f37; --bad: #cf222e; color-scheme: light; }
+@media (prefers-color-scheme: dark) {
+	:root { --bg: #171b21; --panel: #1e242c; --text: #e3e7ec; --muted: #97a1ad; --border: #2c333c; --accent: #4c8dff; --good: #3fb950; --bad: #f85149; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 14px 16px; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+body.popup { width: 400px; max-width: 100%; }
+h1 { font-size: 1.1rem; margin: 0 0 10px; }
+label { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; font-weight: 500; }
+label.inline { flex-direction: row; align-items: center; gap: 6px; font-weight: normal; }
+label.link { display: inline; margin: 0; font-weight: normal; color: var(--accent); cursor: pointer; text-decoration: underline; }
+input, select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: inherit; font: inherit; min-width: 0; }
+input[type="checkbox"] { padding: 0; }
+.btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:disabled { opacity: 0.55; cursor: default; }
+.drop { border: 2px dashed var(--border); border-radius: 6px; padding: 14px; text-align: center; background: var(--panel); }
+.drop.over { border-color: var(--accent); }
+.drop p { margin: 4px 0; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.hidden { display: none !important; }
+.ok { color: var(--good); }
+.err { color: var(--bad); }
+a { color: var(--accent); }
+.foot { margin-top: 14px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }

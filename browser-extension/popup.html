@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send to Ledger</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="popup">
+<h1>Send to Ledger</h1>
+
+<div id="drop" class="drop" tabindex="0">
+	<p id="drop-text"><strong>Drop a file here</strong> or <label class="link">choose one<input type="file" id="file" class="hidden" accept=".csv,.ofx,.qfx,.qbo,.pdf,.eml,.txt"></label></p>
+	<p class="muted small">Statements: CSV, OFX, QFX, QBO · Bills: PDF, EML</p>
+</div>
+<p id="picked" class="small hidden"></p>
+
+<form id="form" class="hidden">
+	<label>Send as
+		<select id="dest">
+			<option value="statement">Statement (Auto sort): review and post its transactions</option>
+			<option value="bill">Bill or receipt (Auto sort)</option>
+			<option value="ledger-file">CSV file for Ledger's journal import</option>
+		</select>
+	</label>
+	<div id="statement-opts">
+		<label>Bank or card account <select id="account"><option value="">Loading…</option></select></label>
+		<label class="inline"><input type="checkbox" id="flip"> Purchases show as positive amounts (flip signs)</label>
+		<label>Dates like 03/04/2026 are
+			<select id="date-order"><option value="auto">Detect</option><option value="mdy">Month/Day/Year</option><option value="dmy">Day/Month/Year</option></select>
+		</label>
+	</div>
+	<button class="btn primary" id="send">Send</button>
+</form>
+
+<p id="msg" class="small"></p>
+<p class="muted small foot"><a href="#" id="open-ledger">Open Ledger</a> · <a href="#" id="options">Options</a></p>
+<script src="popup.js"></script>
+</body>
+</html>

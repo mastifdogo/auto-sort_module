@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send to Ledger: options</title>
+<link rel="stylesheet" href="style.css">
+<style>body { max-width: 640px; margin: 0 auto; padding: 24px 16px; } .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }</style>
+</head>
+<body>
+<h1>Send to Ledger</h1>
+<form id="form" class="panel">
+	<label>Your Ledger's address
+		<input id="url" placeholder="http://192.168.1.50:8080" autocomplete="off" required>
+	</label>
+	<p class="muted small">The address you open Ledger at in this browser, e.g. <code>http://ledger.local:8080</code> or <code>https://ledger.example.com</code>. The browser asks once to let the extension reach that address, and only that address.</p>
+	<div class="row">
+		<button class="btn primary">Save</button>
+		<button class="btn" type="button" id="test">Test</button>
+		<span id="msg" class="small"></span>
+	</div>
+</form>
+<h2 style="font-size:1rem">How it works</h2>
+<ul class="small">
+	<li><strong>Right-click a download link</strong> on your bank's or a supplier's site and choose <em>Send to Ledger…</em>. The file is downloaded with that site's login and goes straight to Ledger, without being saved to your computer.</li>
+	<li>Or click the toolbar button and <strong>drop a file</strong> you already have.</li>
+	<li>Statements (CSV, OFX, QFX, QBO) are staged in the Auto sort module, where you review the suggested accounts and post the transactions. Bills (PDF, EML) appear on its Bills tab. CSV files can also go to Ledger's own journal import.</li>
+	<li>It uses your Ledger login in this browser; log in to Ledger as usual. The extension stores only the address above, never a password. Requests to Ledger are made from a Ledger tab (a hidden one is opened and closed if none is open), so Ledger's protections stay on.</li>
+</ul>
+<script src="options.js"></script>
+</body>
+</html>

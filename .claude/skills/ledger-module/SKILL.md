@@ -106,6 +106,10 @@ until paid and matched to statement payments.
 - Options are the manifest's `settings.fields`, read per request with
   `ctx.settings.get()`. `mod_categorizer.settings` only keeps `mail_state`
   (the last mail check).
+- Tabs: **Import** (checks, uploads, `GET /mail/log` joined to what each
+  email became) feeds **Statements**, **Bills** and **Receipts** (`/bills?kind=`).
+  Mail you sent is skipped by `sentByMe()` in `lib/bills.mjs` (Gmail labels,
+  or your address as sender of mail not addressed to you); keep self-forwards in.
 - The sidebar icon is drawn (`nav.icon.path`, a robot head).
 - Testing the real flows: Ledger reads its AI and Gmail settings from
   `INTEGRATIONS_DIR` (`llm.json`, `gmail.json`) and Gmail's endpoints from

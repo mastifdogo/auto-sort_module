@@ -52,6 +52,13 @@
 	.pill.good { background: var(--good-bg); color: var(--good); }
 	.pill.warn { background: var(--warn-bg); color: var(--warn); }
 	.pill.bad { background: var(--bad-bg); color: var(--bad); }
+	.badge { display: inline-block; min-width: 1.2em; padding: 0 0.35rem; margin-left: 0.25rem; border-radius: 999px; font-size: 11px; font-weight: 700; background: var(--warn-bg); color: var(--warn); }
+	.newacct { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin-top: 4px; padding: 6px; border: 1px dashed var(--border); border-radius: 6px; }
+	.newacct input { width: 6.5rem; }
+	.newacct input.name { width: 11rem; }
+	.dup { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+	.dup .side { border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem; min-width: 0; overflow-wrap: anywhere; }
+	@media (max-width: 560px) { .dup { grid-template-columns: 1fr; } }
 	.pill.plain { background: var(--panel); color: var(--muted); border: 1px solid var(--border); }
 	td select { width: 100%; max-width: 280px; }
 	textarea, .grid input, .grid select { width: 100%; }
@@ -95,6 +102,7 @@
 	<button data-tab="review">Statements</button>
 	<button data-tab="bills">Bills</button>
 	<button data-tab="receipts">Receipts</button>
+	<button data-tab="duplicates">Duplicates<span id="dup-count" class="badge hidden"></span></button>
 	<button data-tab="rules">Learned rules</button>
 	<button data-tab="settings">Status</button>
 </nav>
@@ -130,6 +138,10 @@
 				<button class="btn hidden" id="d-account-cancel">Cancel</button>
 			</div>
 			<p class="muted small" id="d-account-note"></p>
+			<div id="d-account-new" class="hidden">
+				<p class="small" style="margin-bottom:0">Not in your chart of accounts yet? Create it (change anything first):</p>
+				<div id="d-account-new-form"></div>
+			</div>
 		</div>
 		<p class="err" id="d-error"></p>
 		<p class="small hidden" id="d-change-wrap"><a href="#" id="d-change">Change the statement's account</a></p>
@@ -141,6 +153,7 @@
 					<option value="confident">Confident</option>
 					<option value="posted">Posted</option>
 					<option value="skipped">Skipped</option>
+					<option value="merged">Merged duplicates</option>
 					<option value="all">All</option>
 				</select>
 			</label>
@@ -284,6 +297,23 @@
 			<tbody></tbody>
 		</table>
 	</div>
+
+	<div id="files-box" class="hidden">
+		<h2>Sent by other modules</h2>
+		<p class="muted small">Statements, bills and receipts other Ledger modules handed to <span class="mod-name">Auto sort</span>. They're sorted the same way as email; nothing is posted until you approve it.</p>
+		<div class="table-wrap">
+			<table id="files-log" class="stack">
+				<thead><tr><th>When</th><th>From</th><th>File</th><th>Result</th></tr></thead>
+				<tbody></tbody>
+			</table>
+		</div>
+	</div>
+</section>
+
+<!-- Duplicates: the same transaction staged twice, or already in the journal -->
+<section id="tab-duplicates" class="hidden">
+	<p class="muted small">Transactions that look like the same payment: uploaded twice (for example a CSV and an OFX export of the same month, or a pending and a posted copy a day apart), or already entered in the journal. <strong>Merge</strong> keeps one and never posts the other; you can unmerge it from its statement (Show: Merged duplicates). Same account, same amount, within 3 days.</p>
+	<div id="dup-list"></div>
 </section>
 
 <!-- Rules -->
@@ -308,6 +338,8 @@
 			<button class="btn" type="button" id="st-test">Test email connection</button>
 			<span id="st-msg" class="muted small"></span>
 		</div>
+		<h2>Organization</h2>
+		<p id="st-org" class="small"></p>
 		<h2>Options</h2>
 		<p class="small">Review threshold, batch size, where bills come from, the Gmail search, keywords and the accounts payable account are set under <strong>Settings → <span class="mod-name">Auto sort</span></strong> in Ledger.</p>
 		<p id="st-options" class="muted small"></p>
@@ -361,7 +393,7 @@
 		document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
 		// Bills and Receipts are the same list, of one kind each.
 		const section = name === "receipts" ? "bills" : name;
-		for (const t of ["import", "review", "bills", "rules", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== section);
+		for (const t of ["import", "review", "bills", "duplicates", "rules", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== section);
 		activeTab = name;
 		if (section === "bills") {
 			const kind = name === "receipts" ? "receipt" : "bill";
@@ -373,6 +405,7 @@
 		if (name === "import") { loadImport().catch(fail); loadUploadAccounts().catch(fail); }
 		if (name === "review") loadStatements().catch(fail);
 		if (name === "rules") loadRules().catch(fail);
+		if (name === "duplicates") loadDuplicates().catch(fail);
 		if (name === "settings") loadStatus().catch(fail);
 	}
 	document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => { closeDetail(); showTab(b.dataset.tab); }));
@@ -387,6 +420,33 @@
 		const a = accounts.find((x) => x.code === code);
 		return a ? `${a.code} · ${a.name}` : code;
 	}
+	// A new account, suggested by the AI (or started by you) and editable before it's created.
+	const ACCOUNT_TYPES = ["asset", "liability", "equity", "revenue", "expense"];
+	const TYPE_START = { asset: 1000, liability: 2000, equity: 3000, revenue: 4000, expense: 5000 };
+	function proposeCode(type) {
+		const used = new Set(accounts.map((a) => a.code));
+		const same = accounts.filter((a) => a.type === type && /^\d+$/.test(a.code)).map((a) => Number(a.code));
+		let n = same.length ? Math.floor(Math.max(...same) / 10) * 10 + 10 : TYPE_START[type] ?? 9000;
+		while (used.has(String(n))) n += 10;
+		return String(n);
+	}
+	function newAccountForm({ code, name, type, button = "Create account", onCreate, onCancel = null }) {
+		const codeIn = el("input", { value: code, "aria-label": "Code", title: "Account code" });
+		const nameIn = el("input", { class: "name", value: name, placeholder: "Account name", "aria-label": "Name" });
+		const typeSel = el("select", { "aria-label": "Type" }, ...ACCOUNT_TYPES.map((t) => el("option", { value: t, selected: t === type }, t)));
+		let codeEdited = false;
+		codeIn.oninput = () => (codeEdited = true);
+		typeSel.onchange = () => { if (!codeEdited) codeIn.value = proposeCode(typeSel.value); };
+		const go = el("button", { class: "btn primary", type: "button" }, button);
+		go.onclick = async () => {
+			const body = { code: codeIn.value.trim(), name: nameIn.value.trim(), type: typeSel.value };
+			if (!body.code || !body.name) return toast("Fill in the code and the name.");
+			go.disabled = true;
+			try { await onCreate(body); } catch (e) { fail(e); } finally { go.disabled = false; }
+		};
+		return el("div", { class: "newacct" }, codeIn, nameIn, typeSel, go, onCancel ? el("button", { class: "btn", type: "button", onclick: onCancel }, "Cancel") : null);
+	}
+
 	function accountOptions(select, list, { selected = null, placeholder = null } = {}) {
 		select.replaceChildren();
 		if (placeholder !== null) select.append(el("option", { value: "" }, placeholder));
@@ -534,6 +594,21 @@
 		syncFlip();
 		$("d-account-cancel").classList.toggle("hidden", needs);
 		$("d-account-note").textContent = s.source === "email" ? "Next time a statement comes from this sender for this account number, it goes to this account by itself." : "";
+		const sug = current.suggested_account;
+		$("d-account-new").classList.toggle("hidden", !(needs && sug));
+		if (needs && sug) {
+			$("d-account-new-form").replaceChildren(newAccountForm({
+				...sug,
+				button: "Create and use it",
+				onCreate: async (body) => {
+					await api("/accounts", { method: "POST", body: JSON.stringify({ ...body, currency: sug.currency }) });
+					await loadAccounts();
+					const r = await api(`/statements/${current.statement.id}/account`, { method: "POST", body: JSON.stringify({ account_code: body.code, flip_signs: $("d-account-flip").checked }) });
+					toast(`Created ${body.code} · ${body.name}${r.duplicates ? `; ${r.duplicates} already-uploaded transactions dropped` : ""}. Suggestions are on their way.`);
+					await refresh();
+				},
+			}));
+		}
 	}
 	$("d-change").onclick = (e) => { e.preventDefault(); changingAccount = true; renderDetail(); };
 	$("d-account-cancel").onclick = () => { changingAccount = false; renderDetail(); };
@@ -574,13 +649,43 @@
 				const open = t.status === "new";
 				const sel = el("select", { disabled: !open || busy });
 				accountOptions(sel, candidates, { selected: t.account_code, placeholder: "Choose account…" });
-				sel.onchange = () => setAccount([t.id], sel.value || null);
-				const cb = el("input", { type: "checkbox", disabled: t.status === "posted" });
+				sel.append(el("option", { value: "__new" }, "＋ New account…"));
+				sel.onchange = () => {
+					if (sel.value === "__new") { newFormFor.add(t.id); return renderDetail(); }
+					setAccount([t.id], sel.value || null);
+				};
+				// The AI's proposed account (none of yours fitted), or one you started: editable, then created.
+				let proposal = null;
+				const p = t.new_account;
+				if (open && !busy && (newFormFor.has(t.id) || (!t.account_code && p))) {
+					const own = newFormFor.has(t.id) || !p;
+					const type = own ? (t.amount_cents > 0 ? "revenue" : "expense") : p.type;
+					const already = !own && accounts.some((a) => a.code === p.code);
+					proposal = el("div", {},
+						el("div", { class: "reason" }, own ? "New account for this transaction:" : `None of your accounts fits; suggested new account${already ? " (that code is taken now; pick another)" : ""}:`),
+						newAccountForm({
+							code: own || already ? proposeCode(type) : p.code,
+							name: own ? "" : p.name,
+							type,
+							onCreate: async (body) => {
+								const r = await api("/accounts", { method: "POST", body: JSON.stringify({ ...body, transaction_ids: [t.id], proposal: own ? undefined : p.name }) });
+								newFormFor.delete(t.id);
+								await loadAccounts();
+								toast(`Created ${body.code} · ${body.name}; ${r.assigned} transaction${r.assigned === 1 ? "" : "s"} use${r.assigned === 1 ? "s" : ""} it.`);
+								await refresh();
+							},
+							onCancel: own ? () => { newFormFor.delete(t.id); renderDetail(); } : null,
+						}));
+				}
+				const cb = el("input", { type: "checkbox", disabled: t.status === "posted" || t.status === "merged" });
 				cb.checked = selected.has(t.id);
 				cb.onchange = () => { cb.checked ? selected.add(t.id) : selected.delete(t.id); updateButtons(); };
 				let conf;
 				if (t.status === "posted") conf = el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`, t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : "");
 				else if (t.status === "skipped") conf = el("span", { class: "pill plain" }, "Skipped");
+				else if (t.status === "merged") conf = el("span", {},
+					el("span", { class: "pill plain" }, t.duplicate_entry_id ? `Duplicate of entry #${t.duplicate_entry_id}` : `Duplicate of row #${t.duplicate_of ?? "?"}`),
+					" ", el("button", { class: "btn small", onclick: () => unmerge(t.id) }, "Unmerge"));
 				else if (t.chosen_code) conf = el("span", { class: "pill good" }, "Your choice");
 				else if (t.source === "error") conf = el("span", { class: "pill bad" }, "Failed");
 				else if (t.source === "transfer") {
@@ -602,7 +707,7 @@
 					el("td", { class: "nowrap" }, t.date),
 					el("td", { class: "desc wide" }, t.description, t.memo ? el("div", { class: "reason" }, t.memo) : null),
 					el("td", { class: `num ${t.amount_cents < 0 ? "neg" : "pos"}` }, `${money(t.amount_cents)} ${cur}`),
-					el("td", { class: "wide" }, sel, t.chosen_code && t.suggested_code && t.chosen_code !== t.suggested_code ? el("div", { class: "reason" }, `Suggested: ${accountLabel(t.suggested_code)}`) : null),
+					el("td", { class: "wide" }, sel, t.chosen_code && t.suggested_code && t.chosen_code !== t.suggested_code ? el("div", { class: "reason" }, `Suggested: ${accountLabel(t.suggested_code)}`) : null, proposal),
 					el("td", { class: "wide" }, conf, t.reason && t.status === "new" ? el("div", { class: t.source === "error" ? "err" : "reason" }, t.reason) : null, t.error ? el("div", { class: "err" }, t.error) : null,
 						open && (t.transfer_tx_id || t.transfer_entry_id) ? el("button", { class: "btn", style: "margin-top:4px", onclick: () => notTransfer(t.id) }, "Not a transfer") : null,
 						t.status === "posted" && t.reason.startsWith("recorded with the transfer") ? el("div", { class: "reason" }, t.reason) : null),
@@ -629,6 +734,16 @@
 	};
 	$("sel-confident").onclick = () => { for (const t of current.transactions) if (isConfident(t)) selected.add(t.id); renderDetail(); };
 	$("sel-none").onclick = () => { selected = new Set(); renderDetail(); };
+
+	const newFormFor = new Set();
+	async function unmerge(id) {
+		try {
+			await api(`/transactions/${id}/unmerge`, { method: "POST" });
+			toast("Unmerged: the row is back to be reviewed and posted.");
+			await refresh();
+			loadDupCount();
+		} catch (e) { fail(e); }
+	}
 
 	async function notTransfer(id) {
 		try {
@@ -994,6 +1109,7 @@
 	};
 	const SORTED = ["bill", "receipt", "statement"];
 	async function loadImport() {
+		loadFiles().catch(fail);
 		const [log, mail] = await Promise.all([api("/mail/log?limit=200"), api("/mail/status")]);
 		$("b-mail-status").textContent = mailStatusText(mail);
 		const f = $("imp-filter").value;
@@ -1025,6 +1141,94 @@
 	}
 	$("imp-filter").onchange = () => loadImport().catch(fail);
 
+	// Files from other modules (Ledger's ctx.files): shown only once there are some.
+	const FILE_KIND = { statement: "Statement", transaction: "Transactions", bill: "Bill", receipt: "Receipt" };
+	const FILE_OUTCOME = {
+		statement: ["good", "Statement"],
+		bill: ["good", "Bill"],
+		receipt: ["good", "Receipt"],
+		duplicate: ["plain", "Already here"],
+		rejected: ["bad", "Couldn't be read"],
+	};
+	async function loadFiles() {
+		const { data } = await api("/files?limit=100");
+		$("files-box").classList.toggle("hidden", data.length === 0);
+		if (data.length === 0) return;
+		$("files-log").tBodies[0].replaceChildren(
+			...data.map((f) => {
+				const [cls, label] = f.outcome ? FILE_OUTCOME[f.outcome] || ["plain", f.outcome] : ["plain", f.status === "new" ? "Waiting" : "Working on it…"];
+				const extra = [];
+				if (f.bill_id) {
+					extra.push(el("a", { href: "#", onclick: (e) => { e.preventDefault(); openBill(f.bill_id); } }, `Open in ${f.bill_kind === "receipt" ? "Receipts" : "Bills"}${f.bill_vendor ? `: ${f.bill_vendor}` : ""}`));
+				} else if (f.statement_id) {
+					extra.push(el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(f.statement_id); } }, "Open in Statements"));
+				}
+				if (f.outcome === "rejected") {
+					extra.push(el("span", { class: "muted" }, ` ${f.result || ""} `));
+					extra.push(el("button", { class: "btn small", onclick: async () => {
+						try { await api(`/files/${f.id}/retry`, { method: "POST" }); } catch (err) { fail(err); }
+						loadFiles().catch(fail);
+					} }, "Try again"));
+				}
+				return el("tr", {},
+					el("td", { class: "nowrap small" }, new Date(f.created_at).toLocaleString()),
+					el("td", { class: "small" }, f.sender, f.sent_by ? el("div", { class: "muted" }, f.sent_by) : null),
+					el("td", { class: "desc wide" }, `${FILE_KIND[f.kind] || f.kind}: ${f.filename}`, f.note ? el("div", { class: "muted small" }, f.note) : null),
+					el("td", { class: "wide" }, el("span", { class: `pill ${cls}` }, label), extra.length ? el("div", { class: "small" }, ...extra) : null),
+				);
+			}),
+		);
+	}
+
+	// ---------------------------------------------------------------- duplicates
+	function setDupCount(n) {
+		$("dup-count").textContent = String(n);
+		$("dup-count").classList.toggle("hidden", !n);
+	}
+	function loadDupCount() { api("/duplicates").then((d) => setDupCount(d.count)).catch(() => {}); }
+	function dupSide(title, t, extra = null) {
+		return el("div", { class: "side" },
+			el("div", { class: "small muted" }, title),
+			el("div", {}, el("strong", {}, t.date), " · ", el("span", { class: `num ${t.amount_cents < 0 ? "neg" : "pos"}` }, money(t.amount_cents))),
+			el("div", { class: "desc" }, t.description),
+			t.memo ? el("div", { class: "reason" }, t.memo) : null,
+			extra);
+	}
+	const rowInfo = (t) => el("div", { class: "small muted" },
+		`${t.filename} · ${accountLabel(t.account_code)} · `,
+		t.status === "posted" ? "posted" : t.category ? `→ ${accountLabel(t.category)}` : "no account yet", " · ",
+		el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "open statement"));
+	async function dupAction(path, body, msg) {
+		try {
+			await api(path, { method: "POST", body: JSON.stringify(body) });
+			toast(msg);
+			await loadDuplicates();
+		} catch (e) { fail(e); }
+	}
+	async function loadDuplicates() {
+		if (accounts.length === 0) await loadAccounts();
+		const d = await api("/duplicates");
+		setDupCount(d.count);
+		const items = [
+			...d.pairs.map((p) => el("div", { class: "panel" },
+				el("div", { class: "small", style: "margin-bottom:0.4rem" }, el("span", { class: `pill ${p.score >= 0.85 ? "warn" : "plain"}` }, `${Math.round(p.score * 100)}% alike`), " Uploaded twice?"),
+				el("div", { class: "dup" }, dupSide(p.keep.status === "posted" ? "Keep (already posted)" : "Keep", p.keep, rowInfo(p.keep)), dupSide("Merge away", p.merge, rowInfo(p.merge))),
+				el("div", { class: "row", style: "margin-top:0.5rem" },
+					el("button", { class: "btn primary", onclick: () => dupAction("/duplicates/merge", { merge_id: p.merge.id, keep_id: p.keep.id }, "Merged.") }, "Merge"),
+					p.keep.status === "new" ? el("button", { class: "btn", onclick: () => dupAction("/duplicates/merge", { merge_id: p.keep.id, keep_id: p.merge.id }, "Merged; the other copy is kept.") }, "Merge, keep the other copy") : null,
+					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, other_id: p.keep.id }, "Marked as not duplicates.") }, "Not duplicates")))),
+			...d.entries.map((p) => el("div", { class: "panel" },
+				el("div", { class: "small", style: "margin-bottom:0.4rem" }, el("span", { class: `pill ${p.score >= 0.85 ? "warn" : "plain"}` }, `${Math.round(p.score * 100)}% alike`), " Already in the journal?"),
+				el("div", { class: "dup" },
+					dupSide(`In the journal: entry #${p.entry.id}`, { ...p.entry, memo: p.entry.lines.length ? `Accounts: ${[...new Set(p.entry.lines)].map(accountLabel).join(", ")}` : "" }),
+					dupSide("Staged, not posted", p.merge, rowInfo(p.merge))),
+				el("div", { class: "row", style: "margin-top:0.5rem" },
+					el("button", { class: "btn primary", onclick: () => dupAction("/duplicates/merge", { merge_id: p.merge.id, entry_id: p.entry.id }, "Merged into the journal entry; the staged row won't be posted.") }, "Merge into the entry"),
+					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, entry_id: p.entry.id }, "Marked as not duplicates.") }, "Not duplicates")))),
+		];
+		$("dup-list").replaceChildren(...(items.length ? items : [el("p", { class: "muted" }, "No duplicates found among the transactions waiting to be posted.")]));
+	}
+
 	// ---------------------------------------------------------------- status (Ledger's AI and Gmail)
 	const statusLine = (ok, text) => [el("span", { class: `pill ${ok ? "good" : "warn"}` }, ok ? "Ready" : "Not set up"), " ", text];
 	async function loadStatus() {
@@ -1045,6 +1249,11 @@
 		$("st-mail").replaceChildren(...mailText, mail.ready ? el("div", { class: "muted small", style: "margin-top:4px" }, mailStatusText(mail)) : "");
 		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${mail.ap_account || "none (bills are only tracked)"} · statements in email: ${mail.email_statements === "review" ? "staged for review" : "ignored"}.`;
 		$("st-version").textContent = `Module ${st.version} on Ledger ${st.ledger}.`;
+		const org = st.organization;
+		const others = st.organizations.filter((o) => o.id !== org.id);
+		$("st-org").textContent = `These are ${org.name}'s books (organization ${org.id}). Statements, bills and rules here are kept apart from other organizations'.`
+			+ (mail.mail_organization ? ` Email goes into organization ${mail.mail_organization}${mail.mail_organization === org.id ? " (this one)" : ""}; change it with “Organization for email” under Settings → ${moduleName}.` : "")
+			+ (others.length ? ` Other organizations: ${others.map((o) => `${o.name} (${o.id})`).join(", ")}.` : "");
 	}
 	$("st-test").onclick = async () => {
 		$("st-msg").textContent = "Connecting…";
@@ -1062,6 +1271,8 @@
 	function openFromLink() {
 		let params;
 		try { params = new URLSearchParams(window.parent.location.search); } catch { return false; }
+		const tab = params.get("tab");
+		if (tab && ["import", "review", "bills", "receipts", "duplicates", "rules", "settings"].includes(tab)) { showTab(tab); return true; }
 		const bill = params.get("bill");
 		const statement = params.get("statement");
 		if (bill && /^\d+$/.test(bill)) { showTab("bills"); openBill(Number(bill)); return true; }
@@ -1078,6 +1289,7 @@
 	}).catch(() => {});
 
 	if (!openFromLink()) showTab("import");
+	loadDupCount();
 </script>
 </body>
 </html>

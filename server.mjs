@@ -18,7 +18,9 @@ import { createHash } from "node:crypto";
 import { registerBills } from "./lib/bill-routes.mjs";
 import { dashboard } from "./lib/dashboard.mjs";
 import { registerTransfers } from "./lib/transfer-sync.mjs";
-import { candidateAccounts, examplesFromEntries, suggest } from "./lib/categorize.mjs";
+import { registerReceivedFiles } from "./lib/received-files.mjs";
+import { registerDuplicates } from "./lib/duplicate-routes.mjs";
+import { candidateAccounts, examplesFromEntries, proposeCode, suggest } from "./lib/categorize.mjs";
 import { ParseError, parseAmount, parseDate, parseStatement, payeeKey } from "./lib/parse.mjs";
 
 const MAX_CONTENT_CHARS = 1_000_000;
@@ -182,15 +184,19 @@ export default async function register(ctx) {
 			});
 			const ids = [...out.keys()].map(String);
 			const v = [...out.values()];
+			const proposals = proposedAccounts(v, accounts, account.currency);
 			await q(
 				`UPDATE ${T("transactions")} t
-				    SET suggested_code = u.code, confidence = u.confidence, reason = u.reason, source = u.source, error = NULL
-				   FROM unnest($1::bigint[], $2::text[], $3::real[], $4::text[], $5::text[]) AS u(id, code, confidence, reason, source)
+				    SET suggested_code = u.code, confidence = u.confidence, reason = u.reason, source = u.source, error = NULL,
+				        new_account = u.new_account::jsonb
+				   FROM unnest($1::bigint[], $2::text[], $3::real[], $4::text[], $5::text[], $6::text[]) AS u(id, code, confidence, reason, source, new_account)
 				  WHERE t.id = u.id AND t.status = 'new'`,
-				[ids, v.map((s) => s.code), v.map((s) => s.confidence), v.map((s) => s.reason), v.map((s) => s.source)],
+				[ids, v.map((s) => proposals.codeFor(s)), v.map((s) => s.confidence), v.map((s) => s.reason), v.map((s) => s.source), v.map((s) => proposals.jsonFor(s))],
 			);
 			// Rows that are one side of a transfer between your own accounts.
 			await transfers.matchTransfers();
+			// The same transactions uploaded twice, or already in the journal.
+			await duplicates.refresh().catch((err) => ctx.log.warn("duplicate check failed", { err: String(err?.message || err) }));
 			const failed = v.filter((s) => s.source === "error");
 			const error = failed.length > 0 ? `${failed.length} of ${v.length} transactions could not be categorised: ${failed[0].reason}` : null;
 			await q(`UPDATE ${T("statements")} SET status = 'ready', error = $2, categorized_at = now() WHERE id = $1`, [id, error]);
@@ -202,6 +208,34 @@ export default async function register(ctx) {
 			await syncStatementNotice(id);
 			throw err;
 		}
+	}
+
+	/**
+	 * Accounts the model proposed creating. A proposal named like an existing account uses that account;
+	 * the same name in one run gets one code; codes follow the chart's numbering (proposeCode).
+	 */
+	function proposedAccounts(results, accounts, currency) {
+		const byName = new Map(accounts.filter((a) => a.is_active && a.currency === currency).map((a) => [a.name.trim().toLowerCase(), a]));
+		const planned = new Map();
+		const taken = new Set();
+		const plan = (s) => {
+			if (!s.newAccount) return null;
+			const key = s.newAccount.name.toLowerCase();
+			if (byName.has(key)) return { existing: byName.get(key).code };
+			if (!planned.has(key)) {
+				const code = proposeCode(accounts, s.newAccount.type, taken);
+				taken.add(code);
+				planned.set(key, { code, name: s.newAccount.name, type: s.newAccount.type, currency });
+			}
+			return planned.get(key);
+		};
+		return {
+			codeFor: (s) => plan(s)?.existing ?? s.code,
+			jsonFor: (s) => {
+				const p = plan(s);
+				return p && !p.existing ? JSON.stringify(p) : null;
+			},
+		};
 	}
 
 	/** Fingerprints identify a transaction across overlapping uploads (per account). */
@@ -223,7 +257,7 @@ export default async function register(ctx) {
 	 * account are skipped. Returns { id, transactions, duplicates }; with no new transactions the
 	 * statement isn't kept (id null).
 	 */
-	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null }) {
+	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null, source = mail ? "email" : "upload" }) {
 		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -t.amount_cents : t.amount_cents }));
 		const code = account?.code ?? "";
 		const { rows } = await q(
@@ -235,7 +269,7 @@ export default async function register(ctx) {
 				parsed.format,
 				uploadedBy,
 				account ? "queued" : "needs_account",
-				mail ? "email" : "upload",
+				source,
 				mail?.messageId ?? null,
 				(mail?.from ?? "").slice(0, 300),
 				(mail?.subject ?? "").slice(0, 500),
@@ -269,7 +303,7 @@ export default async function register(ctx) {
 		await q(`UPDATE ${T("statements")} SET duplicates = $2 WHERE id = $1`, [id, duplicates]);
 		if (account) enqueue(id);
 		else await syncStatementNotice(id);
-		ctx.log.info("statement staged", { statement: String(id), account: code || "(to choose)", source: mail ? "email" : "upload", transactions: rowCount, duplicates, by: uploadedBy });
+		ctx.log.info("statement staged", { statement: String(id), account: code || "(to choose)", source, transactions: rowCount, duplicates, by: uploadedBy });
 		return { id, transactions: rowCount, duplicates };
 	}
 
@@ -281,16 +315,23 @@ export default async function register(ctx) {
 	};
 	const bills = registerBills(ctx, { q, T, bad, ai, requeue, stageStatement });
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
+	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue });
 
 	await migrateOldSettings().catch((err) => ctx.log.error("moving old settings failed", { err: String(err?.message || err) }));
 
-	// Resume work interrupted by a restart (not awaited: register must finish quickly).
-	const { rows: unfinished } = await q(`SELECT id FROM ${T("statements")} WHERE status IN ('queued', 'categorizing') ORDER BY id`);
-	for (const r of unfinished) enqueue(r.id);
-	await q(
-		`UPDATE ${T("transactions")} SET status = 'new', error = 'interrupted while posting; check the journal for this transaction before posting it again'
-		  WHERE status = 'posting'`,
-	);
+	// Resume work interrupted by a restart, in every organization's books (startup runs in the main
+	// books otherwise). The categorising itself isn't awaited: register must finish quickly.
+	let resumed = 0;
+	await ctx.orgs.forEach(async () => {
+		const { rows: unfinished } = await q(`SELECT id FROM ${T("statements")} WHERE status IN ('queued', 'categorizing') ORDER BY id`);
+		for (const r of unfinished) enqueue(r.id);
+		resumed += unfinished.length;
+		await q(
+			`UPDATE ${T("transactions")} SET status = 'new', error = 'interrupted while posting; check the journal for this transaction before posting it again'
+			  WHERE status = 'posting'`,
+		);
+	});
+	registerReceivedFiles(ctx, { q, T, bills });
 
 	// -----------------------------------------------------------------------
 	// Routes: settings
@@ -299,7 +340,11 @@ export default async function register(ctx) {
 	// GET /status: whether Ledger's AI and Gmail are available to this module, for the page.
 	ctx.route("GET", "/status", async (req) => {
 		const [llm, gmail, cfg] = await Promise.all([ctx.llm.status(), ctx.gmail.status(), readSettings()]);
-		return { name: ctx.name, llm, gmail, settings: cfg, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version };
+		// Organizations (separate books): which one this request works in; the full list only for
+		// admins, who choose the one email goes into.
+		const organization = await ctx.orgs.current();
+		const organizations = req.user.role === "admin" ? await ctx.orgs.list() : [];
+		return { name: ctx.name, llm, gmail, settings: cfg, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version, organization, organizations };
 	});
 
 	// POST /sort-now: do now what otherwise happens on the schedule. Read new bills from email (when
@@ -320,6 +365,60 @@ export default async function register(ctx) {
 	ctx.route("GET", "/accounts", async () => {
 		const accounts = await ctx.ledger.listAccounts();
 		return { data: accounts.map((a) => ({ code: a.code, name: a.name, type: a.type, currency: a.currency })) };
+	});
+
+	/**
+	 * A bank or card account to create for a statement whose account isn't in the chart yet: named
+	 * after the sender (or file) and the account number's last digits, a card if it says so.
+	 */
+	async function suggestStatementAccount(statement) {
+		const accounts = await ctx.ledger.listAccounts({ includeInactive: true });
+		const hint = String(statement.source_key ?? "").split("|")[1] ?? "";
+		const display = /^\s*"?([^"<]+?)"?\s*</.exec(statement.mail_from ?? "")?.[1]?.trim();
+		const domain = /@([a-z0-9-]+)\./i.exec(statement.mail_from ?? "")?.[1];
+		const sender = String(statement.mail_from ?? "").startsWith("module:") ? "" : display || (domain ? domain.toUpperCase() : "");
+		const base = sender || statement.filename.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ").trim() || "Bank account";
+		const card = /visa|master ?card|amex|american express|credit|card/i.test(`${statement.filename} ${statement.mail_subject ?? ""} ${statement.mail_from ?? ""}`);
+		const type = card ? "liability" : "asset";
+		const name = `${base}${card && !/card|visa|master|amex/i.test(base) ? " card" : ""}${hint && hint !== "-" ? ` ••${hint}` : ""}`.slice(0, 100);
+		return { code: proposeCode(accounts, type), name, type, currency: "CAD" };
+	}
+
+	// POST /accounts {code, name, type, currency?, description?, transaction_ids?, proposal?}: creates an
+	// account in Ledger (a suggested one, as edited), then books the given rows, or every unposted row
+	// the AI proposed it for (proposal: the proposed name), to it.
+	ctx.route("POST", "/accounts", async (req) => {
+		const b = req.body ?? {};
+		const str = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+		const code = str(b.code, 32);
+		const name = str(b.name, 100);
+		if (!code) throw bad("code is required");
+		if (!name) throw bad("name is required");
+		if (!["asset", "liability", "equity", "revenue", "expense"].includes(b.type)) throw bad("type must be asset, liability, equity, revenue or expense");
+		const ids = Array.isArray(b.transaction_ids) ? b.transaction_ids.map(String) : [];
+		if (ids.some((x) => !/^\d+$/.test(x)) || ids.length > 1000) throw bad("transaction_ids must be up to 1000 transaction ids");
+		const proposal = str(b.proposal, 100);
+		let currency = b.currency;
+		if (currency === undefined && ids.length > 0) {
+			const { rows } = await q(`SELECT account_code FROM ${T("transactions")} WHERE id = $1`, [ids[0]]);
+			if (rows[0]?.account_code) currency = (await ctx.ledger.getAccount(rows[0].account_code).catch(() => null))?.currency;
+		}
+		currency ??= "CAD";
+		if (!["CAD", "USD"].includes(currency)) throw bad("currency must be CAD or USD");
+		if ((await ctx.ledger.listAccounts({ includeInactive: true })).some((a) => a.code === code)) throw new ctx.HttpError(409, `account ${code} already exists; choose another code`);
+		const account = await ctx.ledger.createAccount({ code, name, type: b.type, currency, description: str(b.description, 500) });
+		let assigned = 0;
+		if (ids.length > 0 || proposal) {
+			const { rowCount } = await q(
+				`UPDATE ${T("transactions")} t SET chosen_code = $1, new_account = NULL
+				  WHERE t.status = 'new' AND t.account_code <> $1
+				    AND (t.id = ANY($2::bigint[]) OR ($3 <> '' AND lower(t.new_account->>'name') = lower($3) AND t.chosen_code IS NULL))`,
+				[code, ids, proposal],
+			);
+			assigned = rowCount;
+		}
+		ctx.log.info("account created", { code, name, type: b.type, assigned, by: req.user.username });
+		return ctx.response(201, { account: { code: account.code, name: account.name, type: account.type, currency: account.currency }, assigned });
 	});
 
 	ctx.route("GET", "/rules", async () => ({ data: await q(`SELECT payee_key, account_code, example, hits, updated_by, updated_at FROM ${T("rules")} ORDER BY payee_key`).then((r) => r.rows) }));
@@ -381,6 +480,7 @@ export default async function register(ctx) {
 		const { rows } = await q(
 			`SELECT t.id, t.line_no, t.tx_date::text AS date, t.description, t.memo, t.amount_cents, t.fitid, t.suggested_code, t.confidence, t.reason, t.source,
 			        t.chosen_code, COALESCE(t.chosen_code, t.suggested_code) AS account_code, t.status, t.journal_entry_id, t.error, t.posted_by, t.posted_at,
+			        t.new_account, t.duplicate_of, t.duplicate_entry_id,
 			        t.bill_id, b.vendor AS bill_vendor, b.status AS bill_status,
 			        t.transfer_tx_id, t.transfer_entry_id, o.account_code AS transfer_account, o.tx_date::text AS transfer_date,
 			        o.description AS transfer_description, o.status AS transfer_status, o.statement_id AS transfer_statement_id
@@ -392,7 +492,8 @@ export default async function register(ctx) {
 		const { review_threshold } = await readSettings();
 		// Card exports that show purchases as positive: offered as "flip signs" when choosing a card account.
 		const flip_hint = statement.format === "csv" && rows.length > 0 && rows.filter((t) => t.amount_cents > 0n).length / rows.length > 0.6;
-		return { statement, transactions: rows, review_threshold, flip_hint };
+		const suggested_account = statement.status === "needs_account" ? await suggestStatementAccount(statement) : null;
+		return { statement, transactions: rows, review_threshold, flip_hint, suggested_account };
 	});
 
 	ctx.route("POST", "/statements/:id/categorize", async (req) => {
@@ -629,7 +730,15 @@ export default async function register(ctx) {
 		return {
 			data: txs.map((t) => {
 				const s = out.get(t.id);
-				return { index: t.id, account_code: s.code, confidence: s.confidence, reason: s.reason, source: s.source, needs_review: s.code === null || s.confidence < cfg.review_threshold };
+				return {
+					index: t.id,
+					account_code: s.code,
+					confidence: s.confidence,
+					reason: s.reason,
+					source: s.source,
+					new_account: s.newAccount ?? null,
+					needs_review: s.code === null || s.confidence < cfg.review_threshold,
+				};
 			}),
 		};
 	});
@@ -672,5 +781,5 @@ export default async function register(ctx) {
 		].slice(0, limit);
 	});
 
-	ctx.log.info("module ready", { resumed: unfinished.length });
+	ctx.log.info("module ready", { resumed });
 }

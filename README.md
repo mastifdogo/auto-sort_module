@@ -375,6 +375,13 @@ Ledger's module docs. `npm test` runs the unit tests (Node 22+). To try it witho
 credit, point Ledger's AI (Settings → LLM API, Server URL) at a local stub that answers like the
 Messages API.
 
+**Releasing:** bump `version` in `ledger-module.json` and merge to `main`. The Release workflow
+(`.github/workflows/release.yml`) then tags `v<version>` and publishes the GitHub Release that
+Ledger installs; it does nothing for a version that's already released. To release the current
+version without a change, run it from Actions → Release → Run workflow. If it fails with "Resource
+not accessible by integration", allow it under Settings → Actions → General → Workflow permissions
+→ "Read and write permissions".
+
 ## Changes
 
 - **0.6.0:** **Auto sort** button on statements, bills and receipts: Ledger's LLM API looks for the

@@ -142,9 +142,23 @@ add Gmail or IMAP reading back without the user asking).
 - Options are the manifest's `settings.fields` (review threshold, batch
   size, payables account), per organization: read with `ctx.settings.get()`
   where used.
-- Tabs: **Import** (uploads, files from modules, Sort now) feeds
-  **Statements**, **Bills** and **Receipts** (`/bills?kind=`); **Duplicates**
-  lists duplicates and things already in the journal.
+- Tabs (no Import tab since 0.7.0): **Statements** (upload, Sort now, Create
+  bill), **Bills** and **Receipts** (`/bills?kind=`; upload, split, billable
+  + customer), **Duplicates** (duplicates, journal matches, Recheck by
+  period), **Status** (files from modules).
+- Account dropdowns end with "+ New account…" through `withNewAccount()` in
+  the UI, which opens Ledger's dialog (`ledger-new-account` message, Ledger ≥
+  0.11.3); never build an account form of our own.
+- Split bills: `bill_lines` (add up to the bill's amount). Posting a payment
+  row matched to a split bill (not posted to payables) books its lines
+  (`splitLinesFor()` in server.mjs); approval into payables books them too.
+  LLM proposals (`/bills/:id/split-draft`, `/statements/:id/bill-draft`) are
+  never saved by themselves: the user edits and saves.
+- Customers: `bills.customer_name` + `customer_ref` ("sales:<id>" for the
+  Sales module's customers, which the page reads from the Sales module's own
+  API in the browser; never its tables).
+- Overdue: `syncBillTodos()` titles overdue to-dos "Overdue: …" with level
+  `danger`, refreshed hourly in every organization.
 - Journal matches (no AI): staged rows in the journal come from
   `duplicate-routes.mjs` (`scan()`, `merge()`); bills in the journal from
   `findBillEntryMatches()` (`GET /journal-matches`). Linking is a person's

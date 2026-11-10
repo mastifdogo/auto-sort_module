@@ -101,8 +101,7 @@
 </head>
 <body>
 <nav class="tabs">
-	<button data-tab="import" class="active">Import</button>
-	<button data-tab="review">Statements</button>
+	<button data-tab="review" class="active">Statements</button>
 	<button data-tab="bills">Bills</button>
 	<button data-tab="receipts">Receipts</button>
 	<button data-tab="duplicates">Duplicates<span id="dup-count" class="badge hidden"></span></button>
@@ -113,6 +112,33 @@
 <!-- Statements list + review -->
 <section id="tab-review" class="hidden">
 	<div id="list-view">
+		<div class="panel row">
+			<button class="btn primary" id="up-toggle">Upload a statement</button>
+			<button class="btn" id="b-sort" title="Match bills, receipts and transfers to statement transactions waiting to be posted, and look for them in the journal">Sort now</button>
+			<span id="b-sort-status" class="muted small"></span>
+		</div>
+	<form id="upload" class="panel hidden">
+		<strong>Upload a statement</strong> (CSV, OFX, QFX, QBO)
+		<div class="grid">
+			<label>File
+				<input type="file" id="file" accept=".csv,.txt,.ofx,.qfx,.qbo,text/csv" required>
+			</label>
+			<label>Bank or card account
+				<select id="up-account" required></select>
+			</label>
+			<label>Dates like 03/04/2026 are
+				<select id="up-date">
+					<option value="auto">Detect</option>
+					<option value="mdy">Month/Day/Year</option>
+					<option value="dmy">Day/Month/Year</option>
+				</select>
+			</label>
+		</div>
+		<p><label class="inline"><input type="checkbox" id="up-flip"> Purchases show as positive amounts (common for credit-card exports) — flip signs</label></p>
+		<p class="muted small">Transactions already uploaded for this account are skipped, so overlapping statements are fine. Nothing is posted until you review and press <em>Post</em>.</p>
+		<button class="btn primary" id="up-btn">Upload and categorise</button>
+		<span id="up-msg" class="muted"></span>
+	</form>
 		<div class="row"><span class="muted" id="list-empty">No statements yet. Upload one to get suggestions.</span></div>
 		<div class="table-wrap">
 			<table id="statements" class="stack hidden">
@@ -128,6 +154,7 @@
 			<strong id="d-title"></strong>
 			<span id="d-status"></span>
 			<span class="spacer"></span>
+			<button class="btn" id="d-makebill" title="Ledger's LLM API reads what the statement says is owed (balance, due date); you check it, then create the bill">Create bill</button>
 			<button class="btn primary" id="d-autosort" title="Ask Ledger's LLM API whether each unposted line is already in the journal, on another statement, or a bill's payment. You approve each match.">Auto sort</button>
 			<button class="btn" id="rerun" title="Ask the model again for every transaction that isn't posted">Re-run suggestions</button>
 			<button class="btn danger" id="discard" title="Remove the transactions that aren't posted">Discard unposted</button>
@@ -148,6 +175,7 @@
 			</div>
 		</div>
 		<p class="err" id="d-error"></p>
+		<div id="d-bill" class="panel hidden" style="margin: 0.5rem 0"></div>
 		<p class="small hidden" id="d-change-wrap"><a href="#" id="d-change">Change the statement's account</a></p>
 		<div class="panel row" style="margin: 0.5rem 0">
 			<label class="inline">Show
@@ -195,6 +223,7 @@
 			</select>
 		</label>
 		<span class="spacer"></span>
+		<label class="btn" style="font-weight:normal" title="A PDF, a photo or a saved email (.eml); Ledger's LLM API reads it"><span id="b-upload-label">Upload a bill</span><input type="file" id="b-file" accept=".pdf,.eml,.jpg,.jpeg,.png,.webp,.gif,application/pdf,message/rfc822,image/jpeg,image/png,image/webp,image/gif" class="hidden"></label>
 		<button class="btn" id="b-add">Add by hand</button>
 	</div>
 	<p class="muted small" id="b-hint"></p>
@@ -222,8 +251,12 @@
 			<label>Amount <input id="bd-amount" inputmode="decimal" placeholder="0.00"></label>
 			<label>Currency <select id="bd-currency"><option>CAD</option><option>USD</option></select></label>
 			<label>Account <select id="bd-account"></select></label>
+			<label>Customer <input id="bd-customer" list="customers" maxlength="200" placeholder="(none)"></label>
+			<label class="inline" style="align-self:end"><input type="checkbox" id="bd-billable"> Billable to the customer</label>
 		</form>
+		<datalist id="customers"></datalist>
 		<p class="muted small" id="bd-summary"></p>
+		<div id="bd-split"></div>
 		<div class="row" style="margin: 0.75rem 0">
 			<button class="btn" id="bd-save">Save changes</button>
 			<button class="btn primary" id="bd-approve">Approve</button>
@@ -247,60 +280,24 @@
 	</div>
 </section>
 
-<!-- Import: uploads, files from other modules, Sort now -->
-<section id="tab-import">
-	<div class="panel row">
-		<button class="btn primary" id="b-sort" title="Match bills, receipts and transfers to statement transactions waiting to be posted, and look for them in the journal">Sort now</button>
-		<span id="b-sort-status" class="muted small"></span>
-	</div>
-	<p class="muted small">Upload statements, bills and receipts here, or let other Ledger modules send them. They're sorted into <strong>Statements</strong>, <strong>Bills</strong> and <strong>Receipts</strong>; categorise them on those tabs. <em>Sort now</em> matches payments to bills, links transfers and finds what's already in the journal; <em>Auto sort</em> on an open statement, bill or receipt asks the LLM.</p>
 
-	<h2>Upload a file</h2>
-	<div class="grid">
-	<form id="upload" class="panel">
-		<strong>Statement</strong> (CSV, OFX, QFX, QBO)
-		<div class="grid">
-			<label>File
-				<input type="file" id="file" accept=".csv,.txt,.ofx,.qfx,.qbo,text/csv" required>
-			</label>
-			<label>Bank or card account
-				<select id="up-account" required></select>
-			</label>
-			<label>Dates like 03/04/2026 are
-				<select id="up-date">
-					<option value="auto">Detect</option>
-					<option value="mdy">Month/Day/Year</option>
-					<option value="dmy">Day/Month/Year</option>
-				</select>
-			</label>
-		</div>
-		<p><label class="inline"><input type="checkbox" id="up-flip"> Purchases show as positive amounts (common for credit-card exports) — flip signs</label></p>
-		<p class="muted small">Transactions already uploaded for this account are skipped, so overlapping statements are fine. Nothing is posted until you review and press <em>Post</em>.</p>
-		<button class="btn primary" id="up-btn">Upload and categorise</button>
-		<span id="up-msg" class="muted"></span>
-	</form>
-		<div class="panel">
-			<strong>Bill or receipt</strong> (PDF, photo or a saved email, .eml)
-			<p class="muted small">Ledger's AI reads it and puts it on the Bills or Receipts tab.</p>
-			<label class="btn" style="display:inline-block; font-weight:normal">Choose a file<input type="file" id="b-file" accept=".pdf,.eml,.jpg,.jpeg,.png,.webp,.gif,application/pdf,message/rfc822,image/jpeg,image/png,image/webp,image/gif" class="hidden"></label>
-		</div>
-	</div>
-
-	<div id="files-box" class="hidden">
-		<h2>Sent by other modules</h2>
-		<p class="muted small">Statements, bills and receipts other Ledger modules handed to <span class="mod-name">Auto sort</span>. Nothing is posted until you approve it.</p>
-		<div class="table-wrap">
-			<table id="files-log" class="stack">
-				<thead><tr><th>When</th><th>From</th><th>File</th><th>Result</th></tr></thead>
-				<tbody></tbody>
-			</table>
-		</div>
-	</div>
-</section>
 
 <!-- Duplicates: the same transaction staged twice, or already in the journal -->
 <section id="tab-duplicates" class="hidden">
 	<p class="muted small">Bills and receipts already entered in the journal (link them so they count as recorded), and transactions that look like the same payment: uploaded twice (for example a CSV and an OFX export of the same month, or a pending and a posted copy a day apart), or already entered in the journal. <strong>Merge</strong> keeps one and never posts the other; you can unmerge it from its statement (Show: Merged duplicates). Same account, same amount, within 3 days.</p>
+	<div class="panel row">
+		<label class="inline">Look at
+			<select id="dup-period">
+				<option value="">Transactions waiting to be posted</option>
+				<option value="week">Last week (posted too)</option>
+				<option value="month">Last month (posted too)</option>
+				<option value="year">Last year (posted too)</option>
+				<option value="all">All time (posted too)</option>
+			</select>
+		</label>
+		<button class="btn primary" id="dup-recheck">Recheck</button>
+		<span id="dup-status" class="muted small"></span>
+	</div>
 	<div id="dup-list"></div>
 </section>
 
@@ -326,6 +323,16 @@
 		<p class="small">Review threshold, batch size and the accounts payable account are set under <strong>Settings → <span class="mod-name">Auto sort</span></strong> in Ledger.</p>
 		<p id="st-options" class="muted small"></p>
 		<p id="st-version" class="muted small"></p>
+	<div id="files-box" class="hidden">
+			<h2>Files from other modules</h2>
+			<p class="muted small">Statements, bills and receipts other Ledger modules handed to <span class="mod-name">Auto sort</span>. Nothing is posted until you approve it.</p>
+			<div class="table-wrap">
+				<table id="files-log" class="stack">
+					<thead><tr><th>When</th><th>From</th><th>File</th><th>Result</th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
+		</div>
 	</div>
 </section>
 
@@ -368,14 +375,14 @@
 	const TYPE_ORDER = ["expense", "revenue", "asset", "liability", "equity"];
 
 	// ---------------------------------------------------------------- tabs
-	let activeTab = "import";
+	let activeTab = "review";
 	let billKind = "bill"; // which kind the Bills tab shows: "bill" (Bills) or "receipt" (Receipts)
 
 	function showTab(name) {
 		document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
 		// Bills and Receipts are the same list, of one kind each.
 		const section = name === "receipts" ? "bills" : name;
-		for (const t of ["import", "review", "bills", "duplicates", "rules", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== section);
+		for (const t of ["review", "bills", "duplicates", "rules", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== section);
 		activeTab = name;
 		if (section === "bills") {
 			const kind = name === "receipts" ? "receipt" : "bill";
@@ -384,11 +391,10 @@
 			setBillLabels();
 			loadBills().catch(fail);
 		}
-		if (name === "import") { loadImport().catch(fail); loadUploadAccounts().catch(fail); }
-		if (name === "review") loadStatements().catch(fail);
+		if (name === "review") { loadStatements().catch(fail); loadUploadAccounts().catch(fail); }
 		if (name === "rules") loadRules().catch(fail);
 		if (name === "duplicates") loadDuplicates().catch(fail);
-		if (name === "settings") loadStatus().catch(fail);
+		if (name === "settings") { loadStatus().catch(fail); loadFiles().catch(fail); }
 	}
 	document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => { closeDetail(); showTab(b.dataset.tab); }));
 
@@ -402,7 +408,72 @@
 		const a = accounts.find((x) => x.code === code);
 		return a ? `${a.code} · ${a.name}` : code;
 	}
-	// A new account, suggested by the AI (or started by you) and editable before it's created.
+	// "+ New account…" (Ledger ≥ 0.11.3): Ledger opens its New account dialog over this page and
+	// answers with the account (or null when cancelled, or for viewers).
+	let role = "bookkeeper";
+	function newAccount(defaults = {}) {
+		const id = crypto.randomUUID();
+		return new Promise((resolve) => {
+			addEventListener("message", function on(e) {
+				if (e.origin !== location.origin || e.data?.type !== "ledger-new-account-result" || e.data.id !== id) return;
+				removeEventListener("message", on);
+				resolve(e.data.account ?? null);
+			});
+			parent.postMessage({ type: "ledger-new-account", id, defaults }, location.origin);
+		});
+	}
+	/** Ends an account dropdown with "+ New account…"; onCreated(account) after Ledger made one. */
+	function withNewAccount(select, defaults = {}, onCreated = null) {
+		if (role === "viewer") return;
+		select.append(el("option", { value: "__ledger_new" }, "+ New account…"));
+		// Dropdowns that are filled again keep one listener; the latest defaults and callback apply.
+		select._newAccount = { defaults, onCreated };
+		if (select._newAccountListening) return;
+		select._newAccountListening = true;
+		let previous = select.value;
+		select.addEventListener("focus", () => (previous = select.value));
+		select.addEventListener("change", async (e) => {
+			if (select.value !== "__ledger_new") { previous = select.value; return; }
+			e.stopImmediatePropagation();
+			select.value = previous;
+			const { defaults, onCreated } = select._newAccount;
+			const acc = await newAccount(typeof defaults === "function" ? defaults() : defaults);
+			if (!acc) return;
+			if (!accounts.some((a) => a.code === acc.code)) accounts.push({ code: acc.code, name: acc.name, type: acc.type, currency: acc.currency });
+			const opt = el("option", { value: acc.code }, `${acc.code} · ${acc.name}`);
+			select.insertBefore(opt, select.lastElementChild);
+			select.value = acc.code;
+			previous = acc.code;
+			if (onCreated) await onCreated(acc);
+			else select.dispatchEvent(new Event("change"));
+		}, true);
+	}
+
+	// Customers for bills and receipts: the Sales module's (when it's installed) and names used before.
+	const customerRefs = new Map();
+	let customersLoaded = false;
+	async function loadCustomers() {
+		if (customersLoaded) return;
+		customersLoaded = true;
+		const [own, sales] = await Promise.all([
+			api("/customers").catch(() => ({ data: [] })),
+			fetch("/api/v1/m/sales/customers").then((r) => (r.ok ? r.json() : { data: [] })).catch(() => ({ data: [] })),
+		]);
+		const names = new Map();
+		for (const c of sales.data ?? []) {
+			if (c.archived) continue;
+			const name = String(c.company || c.name || "").trim();
+			if (!name) continue;
+			names.set(name.toLowerCase(), name);
+			customerRefs.set(name.toLowerCase(), `sales:${c.id}`);
+		}
+		for (const c of own.data) {
+			if (!names.has(c.customer_name.toLowerCase())) names.set(c.customer_name.toLowerCase(), c.customer_name);
+			if (c.customer_ref && !customerRefs.has(c.customer_name.toLowerCase())) customerRefs.set(c.customer_name.toLowerCase(), c.customer_ref);
+		}
+		$("customers").replaceChildren(...[...names.values()].sort((a, b) => a.localeCompare(b)).map((n) => el("option", { value: n })));
+	}
+
 	const ACCOUNT_TYPES = ["asset", "liability", "equity", "revenue", "expense"];
 	const TYPE_START = { asset: 1000, liability: 2000, equity: 3000, revenue: 4000, expense: 5000 };
 	function proposeCode(type) {
@@ -412,23 +483,6 @@
 		while (used.has(String(n))) n += 10;
 		return String(n);
 	}
-	function newAccountForm({ code, name, type, button = "Create account", onCreate, onCancel = null }) {
-		const codeIn = el("input", { value: code, "aria-label": "Code", title: "Account code" });
-		const nameIn = el("input", { class: "name", value: name, placeholder: "Account name", "aria-label": "Name" });
-		const typeSel = el("select", { "aria-label": "Type" }, ...ACCOUNT_TYPES.map((t) => el("option", { value: t, selected: t === type }, t)));
-		let codeEdited = false;
-		codeIn.oninput = () => (codeEdited = true);
-		typeSel.onchange = () => { if (!codeEdited) codeIn.value = proposeCode(typeSel.value); };
-		const go = el("button", { class: "btn primary", type: "button" }, button);
-		go.onclick = async () => {
-			const body = { code: codeIn.value.trim(), name: nameIn.value.trim(), type: typeSel.value };
-			if (!body.code || !body.name) return toast("Fill in the code and the name.");
-			go.disabled = true;
-			try { await onCreate(body); } catch (e) { fail(e); } finally { go.disabled = false; }
-		};
-		return el("div", { class: "newacct" }, codeIn, nameIn, typeSel, go, onCancel ? el("button", { class: "btn", type: "button", onclick: onCancel }, "Cancel") : null);
-	}
-
 	function accountOptions(select, list, { selected = null, placeholder = null } = {}) {
 		select.replaceChildren();
 		if (placeholder !== null) select.append(el("option", { value: "" }, placeholder));
@@ -455,6 +509,7 @@
 	function localStorageGet(k) { try { return localStorage.getItem("categorizer:" + k); } catch { return null; } }
 	function localStorageSet(k, v) { try { localStorage.setItem("categorizer:" + k, v); } catch {} }
 
+	$("up-toggle").onclick = () => $("upload").classList.toggle("hidden");
 	$("upload").onsubmit = async (e) => {
 		e.preventDefault();
 		const file = $("file").files[0];
@@ -470,6 +525,7 @@
 			});
 			localStorageSet("upload-account", $("up-account").value);
 			$("upload").reset();
+			$("upload").classList.add("hidden");
 			$("up-msg").textContent = "";
 			toast(`${r.transactions} transactions staged${r.duplicates ? `, ${r.duplicates} already uploaded before were skipped` : ""}.` + (r.warnings.length ? `\n${r.warnings.slice(0, 3).join("\n")}` : ""));
 			showTab("review");
@@ -600,17 +656,18 @@
 		const sug = current.suggested_account;
 		$("d-account-new").classList.toggle("hidden", !(needs && sug));
 		if (needs && sug) {
-			$("d-account-new-form").replaceChildren(newAccountForm({
-				...sug,
-				button: "Create and use it",
-				onCreate: async (body) => {
-					await api("/accounts", { method: "POST", body: JSON.stringify({ ...body, currency: sug.currency }) });
-					await loadAccounts();
-					const r = await api(`/statements/${current.statement.id}/account`, { method: "POST", body: JSON.stringify({ account_code: body.code, flip_signs: $("d-account-flip").checked }) });
-					toast(`Created ${body.code} · ${body.name}${r.duplicates ? `; ${r.duplicates} already-uploaded transactions dropped` : ""}. Suggestions are on their way.`);
-					await refresh();
-				},
-			}));
+			$("d-account-new-form").replaceChildren(el("div", { class: "match ai" },
+				el("strong", {}, "Suggested: "), `${sug.code} · ${sug.name} (${sug.type}, ${sug.currency})`,
+				el("button", { class: "btn primary", onclick: async () => {
+					const acc = await newAccount(sug);
+					if (!acc) return;
+					try {
+						await loadAccounts();
+						const r = await api(`/statements/${current.statement.id}/account`, { method: "POST", body: JSON.stringify({ account_code: acc.code, flip_signs: $("d-account-flip").checked }) });
+						toast(`Created ${acc.code} · ${acc.name}${r.duplicates ? `; ${r.duplicates} already-uploaded transactions dropped` : ""}. Suggestions are on their way.`);
+						await refresh();
+					} catch (e) { fail(e); }
+				} }, "Create and use it…")));
 		}
 	}
 	$("d-change").onclick = (e) => { e.preventDefault(); changingAccount = true; renderDetail(); };
@@ -638,12 +695,15 @@
 			(s.duplicates ? ` · ${s.duplicates} skipped at upload as already seen` : "");
 		$("d-error").textContent = s.error || "";
 		renderAccountPanel(s);
+		$("d-makebill").textContent = s.bill_id ? `Bill #${s.bill_id}` : "Create bill";
+		$("d-makebill").title = s.bill_id ? "Open the bill made from this statement" : "Ledger's LLM API reads what the statement says is owed (balance, due date); you check it, then create the bill";
 		const busy = ["queued", "categorizing", "needs_account"].includes(s.status);
 		$("rerun").disabled = busy;
 
 		const candidates = accounts.filter((a) => a.code !== s.account_code && (!stmtAccount || a.currency === stmtAccount.currency));
 		const cur = stmtAccount?.currency ?? "";
 		accountOptions($("bulk-account"), candidates, { placeholder: "—" });
+		withNewAccount($("bulk-account"), { type: "expense", currency: cur });
 		$("bulk-account").value = "";
 
 		const rows = shown();
@@ -652,33 +712,24 @@
 				const open = t.status === "new";
 				const sel = el("select", { disabled: !open || busy });
 				accountOptions(sel, candidates, { selected: t.account_code, placeholder: "Choose account…" });
-				sel.append(el("option", { value: "__new" }, "＋ New account…"));
-				sel.onchange = () => {
-					if (sel.value === "__new") { newFormFor.add(t.id); return renderDetail(); }
-					setAccount([t.id], sel.value || null);
-				};
-				// The AI's proposed account (none of yours fitted), or one you started: editable, then created.
+				sel.onchange = () => setAccount([t.id], sel.value || null);
+				withNewAccount(sel, { type: t.amount_cents > 0 ? "revenue" : "expense", currency: cur }, (acc) => setAccount([t.id], acc.code));
+				// The AI's proposed account (none of yours fitted): Ledger's New account dialog, prefilled
+				// and editable; every row of this statement it was proposed for then uses it.
 				let proposal = null;
 				const p = t.new_account;
-				if (open && !busy && (newFormFor.has(t.id) || (!t.account_code && p))) {
-					const own = newFormFor.has(t.id) || !p;
-					const type = own ? (t.amount_cents > 0 ? "revenue" : "expense") : p.type;
-					const already = !own && accounts.some((a) => a.code === p.code);
-					proposal = el("div", {},
-						el("div", { class: "reason" }, own ? "New account for this transaction:" : `None of your accounts fits; suggested new account${already ? " (that code is taken now; pick another)" : ""}:`),
-						newAccountForm({
-							code: own || already ? proposeCode(type) : p.code,
-							name: own ? "" : p.name,
-							type,
-							onCreate: async (body) => {
-								const r = await api("/accounts", { method: "POST", body: JSON.stringify({ ...body, transaction_ids: [t.id], proposal: own ? undefined : p.name }) });
-								newFormFor.delete(t.id);
-								await loadAccounts();
-								toast(`Created ${body.code} · ${body.name}; ${r.assigned} transaction${r.assigned === 1 ? "" : "s"} use${r.assigned === 1 ? "s" : ""} it.`);
-								await refresh();
-							},
-							onCancel: own ? () => { newFormFor.delete(t.id); renderDetail(); } : null,
-						}));
+				if (open && !busy && !t.account_code && p && role !== "viewer") {
+					const taken = accounts.some((a) => a.code === p.code);
+					proposal = el("div", { class: "match ai" },
+						el("strong", {}, "Suggested new account: "), `${taken ? "" : `${p.code} · `}${p.name} (${p.type})`,
+						el("button", { class: "btn primary", onclick: async () => {
+							const acc = await newAccount({ code: taken ? proposeCode(p.type) : p.code, name: p.name, type: p.type, currency: p.currency || cur });
+							if (!acc) return;
+							await loadAccounts();
+							const ids = current.transactions.filter((x) => x.status === "new" && !x.account_code && x.new_account?.name?.toLowerCase() === p.name.toLowerCase()).map((x) => x.id);
+							await setAccount(ids, acc.code);
+							toast(`Created ${acc.code} · ${acc.name}; ${ids.length} transaction${ids.length === 1 ? "" : "s"} use${ids.length === 1 ? "s" : ""} it.`);
+						} }, "Create…"));
 				}
 				const cb = el("input", { type: "checkbox", disabled: t.status === "posted" || t.status === "merged" });
 				cb.checked = selected.has(t.id);
@@ -739,7 +790,6 @@
 	$("sel-confident").onclick = () => { for (const t of current.transactions) if (isConfident(t)) selected.add(t.id); renderDetail(); };
 	$("sel-none").onclick = () => { selected = new Set(); renderDetail(); };
 
-	const newFormFor = new Set();
 
 	// ---------------------------------------------------------------- matches (journal, Auto sort)
 	function targetLabel(tg) {
@@ -788,6 +838,52 @@
 		for (const x of current.suggestions?.get(String(t.id)) ?? []) out.push(suggestionNote(x, () => refresh()));
 		return out;
 	}
+	// Create bill: the LLM reads the statement's balance owed and due date; you edit, then create.
+	$("d-makebill").onclick = async () => {
+		const s = current.statement;
+		if (s.bill_id) { showTab("bills"); return openBill(s.bill_id); }
+		const box = $("d-bill");
+		const btn = $("d-makebill");
+		btn.disabled = true;
+		toast("Reading the statement…");
+		try {
+			const d = await api(`/statements/${s.id}/bill-draft`, { method: "POST" });
+			const f = {
+				vendor: el("input", { value: d.vendor, maxlength: 200 }),
+				invoice_number: el("input", { value: d.invoice_number, maxlength: 100 }),
+				bill_date: el("input", { type: "date", value: d.bill_date ?? "" }),
+				due_date: el("input", { type: "date", value: d.due_date ?? "" }),
+				amount: el("input", { inputmode: "decimal", value: d.amount_cents == null ? "" : (Number(d.amount_cents) / 100).toFixed(2), placeholder: "0.00" }),
+				account_code: el("select"),
+			};
+			accountOptions(f.account_code, accounts.filter((a) => a.currency === d.currency), { selected: d.account_code, placeholder: "Choose account…" });
+			withNewAccount(f.account_code, { type: "liability", currency: d.currency });
+			const create = el("button", { class: "btn primary" }, "Create bill");
+			create.onclick = async () => {
+				create.disabled = true;
+				try {
+					const b = await api("/bills", { method: "POST", body: JSON.stringify({
+						kind: "bill", statement_id: s.id, currency: d.currency,
+						vendor: f.vendor.value, invoice_number: f.invoice_number.value, bill_date: f.bill_date.value || null, due_date: f.due_date.value || null,
+						amount: f.amount.value.trim() || null, account_code: f.account_code.value || null,
+					}) });
+					box.classList.add("hidden");
+					toast(`Bill #${b.id} created; approve it on the Bills tab.`);
+					showTab("bills");
+					openBill(b.id);
+				} catch (e) { fail(e); } finally { create.disabled = false; }
+			};
+			const lab = (t, input) => el("label", {}, t, input);
+			box.replaceChildren(
+				el("strong", {}, "New bill from this statement"),
+				el("p", { class: "muted small" }, `Read from the ${d.read_from === "pdf" ? "PDF" : d.read_from === "file" ? "statement file" : "transactions (no file kept for this statement; check the amount)"} with ${Math.round(d.confidence * 100)}% confidence.${d.minimum_cents ? ` Minimum payment: ${money(d.minimum_cents)}.` : ""}${d.summary ? ` ${d.summary.replace(/[.!?]?$/, ".")}` : ""} Paying it books to the account below (for a card, the card itself).`),
+				el("div", { class: "grid" }, lab("Vendor", f.vendor), lab("Reference", f.invoice_number), lab("Statement date", f.bill_date), lab("Due date", f.due_date), lab(`Amount owed (${d.currency})`, f.amount), lab("Account", f.account_code)),
+				el("div", { class: "row", style: "margin-top:0.5rem" }, create, el("button", { class: "btn", onclick: () => box.classList.add("hidden") }, "Cancel")),
+			);
+			box.classList.remove("hidden");
+		} catch (e) { fail(e); } finally { btn.disabled = false; }
+	};
+
 	$("d-autosort").onclick = async () => {
 		const btn = $("d-autosort");
 		btn.disabled = true;
@@ -908,6 +1004,7 @@
 			? "Receipts are purchases already paid (order confirmations, payment receipts). Check the account, then Approve. The matching bank or card transaction gets the receipt's account."
 			: "Bills are amounts you still have to pay. Check the details and account, then Approve. When a statement contains the payment, the transaction is matched to the bill automatically, and posting it marks the bill paid.";
 		$("b-add").textContent = receipt ? "Add a receipt by hand" : "Add a bill by hand";
+		$("b-upload-label").textContent = receipt ? "Upload a receipt" : "Upload a bill";
 		$("b-col-date").textContent = receipt ? "Date" : "Due";
 		$("b-col-invoice").textContent = receipt ? "Order" : "Invoice";
 	}
@@ -932,7 +1029,9 @@
 					: el("span", { class: "muted" }, b.kind === "receipt" ? "Not matched" : "—");
 				return el("tr", { class: `clickable ${currentBill?.id === b.id ? "selected" : ""}`, onclick: () => openBill(b.id) },
 					el("td", { class: `nowrap ${overdue ? "neg" : ""}` }, b.kind === "receipt" ? b.bill_date || b.due_date || "—" : b.due_date || (b.bill_date ? `(${b.bill_date})` : "—")),
-					el("td", { class: "wide" }, b.vendor || el("span", { class: "muted" }, b.mail_subject || "(unknown)")),
+					el("td", { class: "wide" }, b.vendor || el("span", { class: "muted" }, b.mail_subject || "(unknown)"),
+						b.line_count ? el("span", { class: "pill plain", style: "margin-left:6px" }, `split ×${b.line_count}`) : null,
+						b.billable ? el("span", { class: "pill warn", style: "margin-left:6px" }, `billable${b.customer_name ? ` · ${b.customer_name}` : ""}`) : b.customer_name ? el("span", { class: "pill plain", style: "margin-left:6px" }, b.customer_name) : null),
 					el("td", {}, b.invoice_number),
 					el("td", { class: "num" }, b.amount_cents == null ? "—" : `${money(b.amount_cents)} ${b.currency}`),
 					el("td", {}, b.account_code ? accountLabel(b.account_code) : el("span", { class: "muted" }, "—")),
@@ -1010,10 +1109,98 @@
 		if (activeTab !== tab) showTab(tab);
 		currentBill = r.bill;
 		renderBill(r.bill, r.payments);
+		renderSplit(r.bill, r.payments, r.lines ?? []);
 		document.querySelectorAll("#bills tbody tr").forEach((tr, i) => tr.classList.toggle("selected", billsList[i]?.id === id));
 		$("bill-detail").classList.remove("hidden");
 		$("bill-detail").scrollIntoView({ behavior: "smooth", block: "start" });
 	}
+	// ---------------------------------------------------------------- split into lines
+	/** A receipt (or bill) for several things: its lines, each booked to its own account. */
+	function renderSplit(b, payments, lines) {
+		const box = $("bd-split");
+		const locked = !!b.journal_entry_id || !!b.paid_entry_id || payments.some((t) => t.status === "posted");
+		const what = b.kind === "receipt" ? "receipt" : "bill";
+		if (lines.length === 0) {
+			box.replaceChildren(locked || b.amount_cents == null || role === "viewer" ? "" :
+				el("p", { class: "small" }, el("button", { class: "btn", onclick: () => editSplit(b, []) }, "Split into lines…"),
+					el("span", { class: "muted" }, ` For a ${what} with things booked to different accounts (e.g. groceries and household).`)));
+			return;
+		}
+		box.replaceChildren(
+			el("h2", {}, "Split"),
+			el("table", { class: "stack" }, el("tbody", {}, ...lines.map((l) => el("tr", {},
+				el("td", { class: "wide" }, l.description || el("span", { class: "muted" }, "—")),
+				el("td", { class: "num" }, `${money(l.amount_cents)} ${b.currency}`),
+				el("td", {}, accountLabel(l.account_code)))))),
+			locked ? el("p", { class: "muted small" }, `Posted: the split is in the journal.`) :
+				el("div", { class: "row", style: "margin:0.4rem 0" },
+					el("button", { class: "btn", onclick: () => editSplit(b, lines) }, "Edit split"),
+					el("button", { class: "btn danger", onclick: async () => {
+						try { await api(`/bills/${b.id}/lines`, { method: "DELETE" }); await openBill(b.id); } catch (e) { fail(e); }
+					} }, "Remove split")),
+			el("p", { class: "muted small" }, b.journal_entry_id || (b.kind === "bill" && b.ap_account) ? "" : `When its payment is posted, each line is booked to its account.`),
+		);
+	}
+	function editSplit(b, lines) {
+		const box = $("bd-split");
+		const options = accounts.filter((a) => a.currency === b.currency);
+		const rows = [];
+		const tbody = el("tbody");
+		const sumEl = el("span", { class: "small" });
+		const total = BigInt(b.amount_cents);
+		const parse = (v) => { const n = Number(String(v).replace(/[$,\s]/g, "")); return Number.isFinite(n) ? BigInt(Math.round(n * 100)) : null; };
+		const updateSum = () => {
+			const sum = rows.reduce((t, r) => t + (parse(r.amount.value) ?? 0n), 0n);
+			sumEl.textContent = `Lines: ${money(sum)} of ${money(total)} ${b.currency}${sum === total ? "" : ` (${money(total - sum)} left)`}`;
+			sumEl.className = `small ${sum === total ? "" : "err"}`;
+		};
+		const addRow = (l = {}) => {
+			const r = {
+				description: el("input", { value: l.description ?? "", placeholder: "What it was", maxlength: 200 }),
+				amount: el("input", { value: l.amount_cents != null ? (Number(l.amount_cents) / 100).toFixed(2) : "", inputmode: "decimal", placeholder: "0.00", style: "width:7rem" }),
+				account: el("select"),
+			};
+			accountOptions(r.account, options, { selected: l.account_code ?? b.account_code ?? null, placeholder: "Choose account…" });
+			withNewAccount(r.account, { type: "expense", currency: b.currency });
+			r.amount.oninput = updateSum;
+			const tr = el("tr", {}, el("td", { class: "wide" }, r.description), el("td", {}, r.amount), el("td", {}, r.account),
+				el("td", {}, el("button", { class: "btn", type: "button", title: "Remove this line", onclick: () => { rows.splice(rows.indexOf(r), 1); tr.remove(); updateSum(); } }, "✕")));
+			rows.push(r);
+			tbody.append(tr);
+		};
+		for (const l of lines.length ? lines : [{ amount_cents: b.amount_cents }, {}]) addRow(l);
+		updateSum();
+		const suggest = el("button", { class: "btn primary", type: "button" }, "Suggest lines with the LLM");
+		suggest.onclick = async () => {
+			suggest.disabled = true;
+			toast("Reading the document…");
+			try {
+				const d = await api(`/bills/${b.id}/split-draft`, { method: "POST" });
+				if (d.lines.length === 0) { toast("No line items found; enter them by hand."); return; }
+				rows.length = 0;
+				tbody.replaceChildren();
+				for (const l of d.lines) addRow(l);
+				updateSum();
+				toast(d.matches_amount ? `${d.lines.length} lines found. Check them, then save.` : `${d.lines.length} lines found, but they add up to ${money(d.sum_cents)}, not ${money(total)}. Adjust them before saving.`);
+			} catch (e) { fail(e); } finally { suggest.disabled = false; }
+		};
+		const save = el("button", { class: "btn primary", type: "button" }, "Save split");
+		save.onclick = async () => {
+			try {
+				await api(`/bills/${b.id}/lines`, { method: "PUT", body: JSON.stringify({ lines: rows.map((r) => ({ description: r.description.value, amount: r.amount.value.trim(), account_code: r.account.value })) }) });
+				toast("Split saved.");
+				await openBill(b.id);
+			} catch (e) { fail(e); }
+		};
+		box.replaceChildren(
+			el("h2", {}, "Split"),
+			el("p", { class: "muted small" }, "Each line is booked to its own account; together they must add up to the total. The LLM reads the document's line items; nothing is saved until you press Save."),
+			el("div", { class: "row", style: "margin-bottom:0.4rem" }, b.has_document || b.body_text ? suggest : "", el("button", { class: "btn", type: "button", onclick: () => { addRow(); updateSum(); } }, "Add a line"), sumEl),
+			el("table", { class: "stack" }, tbody),
+			el("div", { class: "row", style: "margin:0.5rem 0" }, save, el("button", { class: "btn", type: "button", onclick: () => openBill(b.id) }, "Cancel")),
+		);
+	}
+
 	/** Already in the journal (no AI), Auto sort's matches to approve, or the entry it's linked to. */
 	function renderBillMatches(b, payments) {
 		const box = $("bd-matches");
@@ -1061,7 +1248,11 @@
 		$("bd-due").value = b.due_date || "";
 		$("bd-amount").value = b.amount_cents == null ? "" : (Number(b.amount_cents) / 100).toFixed(2);
 		$("bd-currency").value = b.currency;
+		$("bd-billable").checked = !!b.billable;
+		$("bd-customer").value = b.customer_name || "";
+		loadCustomers();
 		accountOptions($("bd-account"), accounts.filter((a) => a.currency === b.currency), { selected: b.account_code, placeholder: "Choose account…" });
+		withNewAccount($("bd-account"), () => ({ type: "expense", currency: $("bd-currency").value }));
 		const locked = !!b.journal_entry_id;
 		for (const id of ["bd-kind", "bd-date", "bd-amount", "bd-currency", "bd-account"]) $(id).disabled = locked || b.status === "paid";
 		const summary = b.summary && !/[.!?]$/.test(b.summary) ? `${b.summary}.` : b.summary;
@@ -1142,6 +1333,8 @@
 			amount: $("bd-amount").value.trim() || null,
 			currency: $("bd-currency").value,
 			account_code: $("bd-account").value || null,
+			billable: $("bd-billable").checked,
+			customer_name: $("bd-customer").value.trim(),
 		};
 	}
 	function changedFields() {
@@ -1149,8 +1342,11 @@
 		const b = currentBill;
 		const out = {};
 		const cur = { kind: b.kind, vendor: b.vendor, invoice_number: b.invoice_number, bill_date: b.bill_date, due_date: b.due_date,
-			amount: b.amount_cents == null ? null : (Number(b.amount_cents) / 100).toFixed(2), currency: b.currency, account_code: b.account_code };
+			amount: b.amount_cents == null ? null : (Number(b.amount_cents) / 100).toFixed(2), currency: b.currency, account_code: b.account_code,
+			billable: b.billable, customer_name: b.customer_name };
 		for (const k of Object.keys(f)) if ((f[k] ?? null) !== (cur[k] ?? null) && !(k === "amount" && f[k] && cur[k] && Number(f[k].replace(/[$,]/g, "")) === Number(cur[k]))) out[k] = f[k];
+		// A customer from the Sales module keeps its reference.
+		if ("customer_name" in out) out.customer_ref = customerRefs.get(out.customer_name.toLowerCase()) ?? "";
 		return out;
 	}
 	async function billAction(action, body = {}) {
@@ -1165,7 +1361,10 @@
 			return r;
 		} catch (e) { fail(e); }
 	}
-	$("bd-currency").onchange = () => accountOptions($("bd-account"), accounts.filter((a) => a.currency === $("bd-currency").value), { selected: $("bd-account").value, placeholder: "Choose account…" });
+	$("bd-currency").onchange = () => {
+		accountOptions($("bd-account"), accounts.filter((a) => a.currency === $("bd-currency").value), { selected: $("bd-account").value, placeholder: "Choose account…" });
+		withNewAccount($("bd-account"), () => ({ type: "expense", currency: $("bd-currency").value }));
+	};
 	$("bd-save").onclick = async () => {
 		const f = changedFields();
 		if (Object.keys(f).length === 0) return toast("Nothing changed.");
@@ -1182,10 +1381,6 @@
 	$("bd-ignore").onclick = () => billAction("save", { status: "ignored" });
 	$("bd-delete").onclick = () => confirm("Delete this bill?") && billAction("delete");
 
-	// ---------------------------------------------------------------- import
-	async function loadImport() {
-		await loadFiles();
-	}
 
 	// Files from other modules (Ledger's ctx.files): shown only once there are some.
 	const FILE_KIND = { statement: "Statement", transaction: "Transactions", bill: "Bill", receipt: "Receipt" };
@@ -1239,6 +1434,8 @@
 	}
 
 	// ---------------------------------------------------------------- duplicates
+	$("dup-recheck").onclick = () => { $("dup-status").textContent = "Checking…"; loadDuplicates().catch(fail); };
+	$("dup-period").onchange = () => loadDuplicates().catch(fail);
 	function setDupCount(n) {
 		$("dup-count").textContent = String(n);
 		$("dup-count").classList.toggle("hidden", !n);
@@ -1267,12 +1464,17 @@
 	}
 	async function loadDuplicates() {
 		if (accounts.length === 0) await loadAccounts();
-		const [d, jm] = await Promise.all([api("/duplicates"), api("/journal-matches")]);
-		setDupCount(d.count + jm.data.length);
+		const period = $("dup-period").value;
+		const [d, jm] = await Promise.all([api(`/duplicates${period ? `?period=${period}` : ""}`), api("/journal-matches")]);
+		if (!period) setDupCount(d.count + jm.data.length);
+		$("dup-status").textContent = d.range ? `Checked ${d.range.from} to ${d.range.to}: ${d.pairs.length} pair${d.pairs.length === 1 ? "" : "s"}, ${d.entries.length} already in the journal.` : "";
 		const items = [
 			...d.pairs.map((p) => el("div", { class: "panel" },
-				el("div", { class: "small", style: "margin-bottom:0.4rem" }, el("span", { class: `pill ${p.score >= 0.85 ? "warn" : "plain"}` }, `${Math.round(p.score * 100)}% alike`), " Uploaded twice?"),
-				el("div", { class: "dup" }, dupSide(p.keep.status === "posted" ? "Keep (already posted)" : "Keep", p.keep, rowInfo(p.keep)), dupSide("Merge away", p.merge, rowInfo(p.merge))),
+				el("div", { class: "small", style: "margin-bottom:0.4rem" }, el("span", { class: `pill ${p.score >= 0.85 ? "warn" : "plain"}` }, `${Math.round(p.score * 100)}% alike`), p.both_posted ? " Posted twice?" : " Uploaded twice?"),
+				el("div", { class: "dup" }, dupSide(p.keep.status === "posted" ? `Keep (posted${p.keep.journal_entry_id ? `, entry #${p.keep.journal_entry_id}` : ""})` : "Keep", p.keep, rowInfo(p.keep)), dupSide(p.both_posted ? `Reverse (posted, entry #${p.merge.journal_entry_id})` : "Merge away", p.merge, rowInfo(p.merge))),
+				p.both_posted ? el("div", { class: "row", style: "margin-top:0.5rem" },
+					el("button", { class: "btn danger", onclick: () => confirm(`Reverse journal entry #${p.merge.journal_entry_id}? A reversing entry is posted today; entry #${p.keep.journal_entry_id} stays.`) && dupAction("/duplicates/reverse", { merge_id: p.merge.id, keep_id: p.keep.id }, `Entry #${p.merge.journal_entry_id} reversed.`) }, "Reverse the copy"),
+					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, other_id: p.keep.id }, "Marked as not duplicates.") }, "Not duplicates")) :
 				el("div", { class: "row", style: "margin-top:0.5rem" },
 					el("button", { class: "btn primary", onclick: () => dupAction("/duplicates/merge", { merge_id: p.merge.id, keep_id: p.keep.id }, "Merged.") }, "Merge"),
 					p.keep.status === "new" ? el("button", { class: "btn", onclick: () => dupAction("/duplicates/merge", { merge_id: p.keep.id, keep_id: p.merge.id }, "Merged; the other copy is kept.") }, "Merge, keep the other copy") : null,
@@ -1331,7 +1533,7 @@
 		let params;
 		try { params = new URLSearchParams(window.parent.location.search); } catch { return false; }
 		const tab = params.get("tab");
-		if (tab && ["import", "review", "bills", "receipts", "duplicates", "rules", "settings"].includes(tab)) { showTab(tab); return true; }
+		if (tab && ["review", "bills", "receipts", "duplicates", "rules", "settings"].includes(tab)) { showTab(tab); return true; }
 		const bill = params.get("bill");
 		const statement = params.get("statement");
 		if (bill && /^\d+$/.test(bill)) { showTab("bills"); openBill(Number(bill)); return true; }
@@ -1343,11 +1545,12 @@
 	let moduleName = "Auto sort";
 	api("/status").then((st) => {
 		moduleName = st.name || moduleName;
+		role = st.role || role;
 		document.title = moduleName;
 		document.querySelectorAll(".mod-name").forEach((n) => (n.textContent = moduleName));
 	}).catch(() => {});
 
-	if (!openFromLink()) showTab("import");
+	if (!openFromLink()) showTab("review");
 	loadDupCount();
 </script>
 </body>

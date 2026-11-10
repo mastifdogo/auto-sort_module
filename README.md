@@ -37,8 +37,8 @@ LLM API: there's no API key to set up in the module.
 
 ## Install
 
-Needs **Ledger 0.11.2 or newer** (shared LLM API for modules, LLM connections for
-images, journal entry links, file exchange between modules, organizations, settings forms, roles,
+Needs **Ledger 0.11.3 or newer** (shared LLM API for modules, LLM connections for
+images, journal entry links, Ledger's New account dialog for modules, file exchange between modules, organizations, settings forms, roles,
 search, drawn icons).
 
 1. In Ledger, open **Settings → Modules**, enter `mastifdogo/llm-api-module` and press **Add**.
@@ -53,7 +53,7 @@ search, drawn icons).
 4. The module's **Status** tab shows whether the LLM API is ready, and what's missing if not.
 
 **Updating to 0.6.0:** the email checker is gone (Gmail and IMAP). Bills and receipts already read
-from email stay. Upload new ones on the Import tab, or let another module send them. Ledger may
+from email stay. Upload new ones on the Bills or Receipts tab, or let another module send them. Ledger may
 keep the old email settings' values (including an IMAP password) in its settings table until the
 module is removed; they're no longer used. You can disallow Auto sort under Settings → Gmail.
 
@@ -86,22 +86,25 @@ The module creates no accounts. It works with your chart of accounts:
   ("march.csv: 12 transactions to post"; a warning when some need review). It goes away once
   everything is posted, skipped or discarded.
 - A **to-do** per unpaid bill, with its due date ("Review bill: Rogers 85.50 CAD", then "Pay
-  Rogers 85.50 CAD" after approval). It's ticked when the payment is posted, and removed when the
-  bill is ignored or deleted.
+  Rogers 85.50 CAD" after approval), opening that bill. It's ticked when the payment is posted, and
+  removed when the bill is ignored or deleted. Once a bill is past its due date the to-do reads
+  **"Overdue: …"** at the danger level (refreshed hourly); Ledger shows its due date in red. To show
+  the whole line in bright red, Ledger's dashboard needs a small change of its own (not part of this
+  module).
 - A **to-do** while there are possible duplicates, and one while Auto sort has matches to review.
 
 ## Use
 
 The page has these tabs:
 
-- **Import:** where things come in: uploading a statement or a bill/receipt, files other modules
-  sent, and **Sort now**.
-- **Statements**, **Bills** and **Receipts:** where you categorise and approve, each with **Auto
-  sort**.
+- **Statements:** **Upload a statement**, **Sort now**, and each statement to categorise and post,
+  with **Auto sort** and **Create bill** (from what a card or loan statement says is owed).
+- **Bills** and **Receipts:** **Upload a bill/receipt** (PDF, photo or saved email) or add one by
+  hand; approve, match, **Split** and mark billable to a customer.
 - **Duplicates:** duplicates and things already in the journal, to merge or link.
-- **Learned rules** and **Status**.
+- **Learned rules** and **Status** (also lists files other modules sent).
 
-1. **Upload** (Import tab): choose the file and the bank or card account it belongs to. For credit-card
+1. **Upload a statement** (Statements tab): choose the file and the bank or card account it belongs to. For credit-card
    exports that show purchases as positive numbers, tick *flip signs*.
 2. Suggestions appear within a few seconds to a minute (40 transactions per request by default).
 3. **Review:** change any account in the drop-down (your choice is kept, even if you re-run the
@@ -138,7 +141,7 @@ into payables. The card's own statement already records those charges.
 
 ## Photos of bills and receipts
 
-Upload a photo or scan (JPEG, PNG, WebP, GIF) on the Import tab like a PDF; large phone photos are
+Upload a photo or scan (JPEG, PNG, WebP, GIF) on the Bills or Receipts tab like a PDF; large phone photos are
 shrunk in the browser first. Pictures go to Ledger's LLM connection for images (Settings → LLM API;
 Claude, or a local vision model such as one served by Ollama), which can be a different model than
 the one for text. Photos inside an uploaded email (with no PDF) and pictures other modules send are
@@ -162,7 +165,7 @@ Following Ledger's rule for modules, nothing the AI decides takes effect until a
 - A new account the AI suggests is created only when you press **Create account**.
 - The bank or card account the AI guesses for a PDF statement is only preselected; you choose it.
 - A file another module sent that the AI read is marked done for its sender only when you approve
-  it (Import tab), approve the bill it became, or post from the statement it became.
+  it (Status tab), approve the bill it became, or post from the statement it became.
 
 There's no auto-approve setting. Transfers, duplicates and learned rules don't use the AI.
 
@@ -176,6 +179,12 @@ The **Duplicates** tab lists transactions waiting to be posted that look like on
 - **Already in the journal:** an entry on the same account with the same amount within 3 days that
   this module didn't post (e.g. entered by hand). Reversed entries don't count.
 
+**Recheck** with *Last week*, *Last month*, *Last year* or *All time* looks at every transaction
+dated in that period, posted ones too. Two **posted** copies of one payment show as *Posted twice?*:
+**Reverse the copy** posts a reversing entry for the second one (after you confirm) and keeps the
+other. A copy that paid a bill, or an entry shared by both sides of a transfer, is left for you to
+reverse in the journal.
+
 **Merge** keeps one and never posts the other (the posted copy, or the one you've worked on, or the
 older one is kept; **Merge, keep the other copy** swaps them). The kept row takes the account you
 chose for the merged one. **Not duplicates** is remembered. Merged rows show under *Show: Merged
@@ -186,13 +195,13 @@ to-do.
 
 If none of your accounts fits a transaction, the AI can answer "new account" with a name and type
 (e.g. *Pet care*, expense). The module picks a free code next to that type's accounts (5910 after
-5900) and shows it under the row, editable: change the code, name or type, then **Create account**.
-It's created in Ledger in the statement's currency and every row it was suggested for uses it. Any
-row's account list also has **＋ New account…**.
+5900) and shows it under the row. **Create…** opens Ledger's New account dialog with it filled in
+(change anything there); every row of the statement it was suggested for then uses it. Every
+account list ends with **+ New account…**, which opens the same dialog.
 
 A statement whose account isn't in your chart yet (from another module) offers the same:
 a bank or card account named after the sender and the account number's last digits
-(e.g. *RBC Visa ••4411*, a liability), to edit and **Create and use it**.
+(e.g. *RBC Visa ••4411*, a liability): **Create and use it…**.
 
 ## Files from other modules
 
@@ -207,8 +216,8 @@ exchange (`ctx.files`, Ledger 0.11.0). A module offering "send to…" lists it a
   decides which.
 - Each file is marked **done** with what it became (e.g. "12 transactions staged") or **rejected**
   with why, which the sender sees. A file the AI read (bills, receipts, PDF statements) stays
-  *accepted* until you approve it: **Approve** on the Import tab, approving the bill, or posting from
-  the statement; deleting the bill or discarding the statement rejects it. The Import tab lists them under *Sent by other modules*, with
+  *accepted* until you approve it: **Approve** on the Status tab, approving the bill, or posting from
+  the statement; deleting the bill or discarding the statement rejects it. The Status tab lists them under *Files from other modules*, with
   **Try again** for rejected ones. Nothing is posted until you approve it.
 
 ## Organizations
@@ -247,17 +256,34 @@ is linked to its entry. Rejected matches aren't suggested again. Nothing changes
 approve, and a to-do on Ledger's dashboard counts the matches waiting.
 
 ## Bills
-## Bills
 
-Bills and receipts come from the Import tab (a PDF, a photo or a saved email, `.eml`), from other
+Bills and receipts come from the Bills and Receipts tabs (a PDF, a photo or a saved email, `.eml`), from other
 modules (Ledger's file exchange), or by hand. Ledger's LLM API reads the vendor, invoice number,
 dates, amount and a suggested account (PDFs need a connection for images that's Claude; photos any
 connection for images). Repeats of a bill that's already listed (same vendor and invoice number, or
 same amount and due date) are refused.
 
-**Sort now** (Import tab) matches bills and receipts, and transfers between your accounts, to the
+**Sort now** (Statements tab) matches bills and receipts, and transfers between your accounts, to the
 statement transactions waiting to be posted, looks for bills and receipts already in the journal,
 and says what it found.
+
+**A bill from a statement:** on a card or loan statement, **Create bill** has Ledger's LLM API read
+what the statement says is owed: the new balance, due date, statement date, minimum payment and
+reference (from the statement file; for PDFs, Claude). It never adds up the transactions itself.
+You check the form, then **Create bill**; one bill per statement. Its account is the card or loan
+account, so paying it pays down the card. Statements uploaded before 0.7.0 have no file kept; the
+LLM then only sees the transactions, so type the amount.
+
+**Billable:** a bill or receipt can be marked **Billable to the customer** with a **Customer**:
+customers from the Sales module (when it's installed) and names you used before are offered. The
+list shows them as *billable · Acme Corp*.
+
+**Split:** a receipt (or bill) for things booked to different accounts, e.g. groceries and
+household supplies: **Split into lines…**, then **Suggest lines with the LLM** reads the document's
+line items (the PDF or photo through the connection for images, or the email text) and proposes
+lines with accounts. Edit them; they must add up to the total; **Save split**. When its payment is
+posted, the entry books each line to its account (a bill posted to payables books the lines on
+approval). A split can change until it's posted.
 
 **Review on the Bills and Receipts tabs:** fix anything that's wrong, then **Approve**.
 
@@ -309,10 +335,16 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/match-suggestions/:id/approve`, `/reject` | carry a match out, or turn it down |
 | `GET`/`POST` | `/bills?status=unpaid\|new\|open\|paid\|ignored&kind=bill\|receipt`, `/bills` | list; add by hand `{vendor, amount, due_date, ...}` |
 | `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF, a picture or an `.eml` |
-| `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payment; edit fields or `status`; delete |
+| `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payment and lines; edit fields (incl. `billable`, `customer_name`, `customer_ref`) or `status`; delete |
 | `GET` | `/bills/:id/document` | the stored PDF, base64 |
 | `POST` | `/bills/:id/approve`, `/unapprove` | approve (posts to payables if configured); undo (reverses that entry) |
 | `GET`/`POST` | `/bills/:id/candidates`, `/match {transaction_id}`, `/unmatch` | manual matching |
+| `POST` | `/statements/:id/bill-draft` | what the statement says is owed, read by the LLM (nothing saved); create it with `POST /bills {..., statement_id}` |
+| `POST` | `/bills/:id/split-draft` | proposed split lines, read by the LLM (nothing saved) |
+| `PUT`/`DELETE` | `/bills/:id/lines` | `{lines: [{description, amount, account_code}]}`: save a split (adds up to the amount); remove it |
+| `GET` | `/customers` | customer names used on bills |
+| `GET` | `/duplicates?period=week\|month\|year\|all` | recheck a period, posted rows included (`both_posted` pairs) |
+| `POST` | `/duplicates/reverse {merge_id, keep_id}` | reverse the entry of a posted copy |
 | `POST` | `/bills/:id/link-entry {entry_id}`, `/unlink-entry` | it's already in the journal: count it paid by that entry, or undo |
 | `POST` | `/bills/:id/auto-sort` | Auto sort for a bill or receipt |
 
@@ -383,6 +415,15 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.7.0:** Needs Ledger 0.11.3. The Import tab is gone: uploads are on the Statements, Bills and
+  Receipts tabs, Sort now on Statements, and files from other modules on Status. **Create bill** from
+  a statement's amount owed (read by the LLM, edited by you). **Recheck** duplicates over the last
+  week, month, year or all time, posted copies included (reverse one with a click). Overdue bills'
+  to-dos say **Overdue** at the danger level. Bills and receipts can be **billable** to a
+  **customer** (Sales module customers offered). **Split** receipts into lines with accounts, the
+  LLM reading the line items; posting books each line. Account lists use Ledger's **New account**
+  dialog. Migration 011.
 
 - **0.6.0:** **Auto sort** button on statements, bills and receipts: Ledger's LLM API looks for the
   same transaction among unposted lines and posted journal entries; you approve or reject each

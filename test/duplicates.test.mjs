@@ -52,3 +52,15 @@ test("entries in the journal: the same signed amount, not posted by this module"
 	assert.equal(found[0].entry.amount_cents, -12000n);
 	assert.deepEqual(findEntryDuplicates(rows, lines, new Set(["14"]), new Set(["1-11"])), []);
 });
+
+test("a recheck also pairs two posted copies (never the same entry); the older one is kept", () => {
+	const rows = [
+		row(1, 1, "2026-03-01", "SHELL 123", -4000, { status: "posted", journal_entry_id: 10 }),
+		row(2, 2, "2026-03-01", "SHELL 123", -4000, { status: "posted", journal_entry_id: 11 }),
+		row(3, 3, "2026-03-05", "RENT", -150000, { status: "posted", journal_entry_id: 12 }),
+		row(4, 4, "2026-03-05", "RENT", -150000, { status: "posted", journal_entry_id: 12 }),
+	];
+	assert.deepEqual(findDuplicatePairs(rows), []);
+	const pairs = findDuplicatePairs(rows, new Set(), { includePosted: true });
+	assert.deepEqual(pairs.map((p) => [p.keep.id, p.merge.id, p.both_posted]), [[1, 2, true]]);
+});

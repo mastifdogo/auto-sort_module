@@ -85,3 +85,26 @@ test("photos of a receipt go to Ledger's LLM API as images, when a connection fo
 	assert.equal(calls[1].images, undefined);
 	assert.match(calls[1].prompt, /pictures that you cannot see/);
 });
+
+test("a receipt's split: lines with amounts and accounts from the list", async () => {
+	const { suggestSplit } = await import("../lib/bills.mjs");
+	let sent;
+	const llm = async (req) => ((sent = req), { data: { lines: [{ description: "Groceries", amount: "40.10", account_code: "5400" }, { description: "Paper towels", amount: "9.90", account_code: "9999" }, { description: "bad", amount: "x", account_code: "5300" }], total: "50.00", confidence: 0.8 } });
+	const r = await suggestSplit({ llm, bill: { kind: "receipt", vendor: "Costco", amount_cents: 5000, currency: "CAD" }, document: { text: "MILK 4.10 ..." }, accounts });
+	assert.deepEqual(r.lines, [{ description: "Groceries", amount_cents: 4010n, account_code: "5400" }, { description: "Paper towels", amount_cents: 990n, account_code: null }]);
+	assert.equal(r.total_cents, 5000n);
+	assert.match(sent.prompt, /Receipt from Costco, total 50.00 CAD/);
+	assert.deepEqual(sent.schema.properties.lines.items.properties.account_code.enum, ["5300", "5400", ""]);
+});
+
+test("a statement's amount owed, never computed from transactions", async () => {
+	const { readStatementBill } = await import("../lib/bills.mjs");
+	let sent;
+	const llm = async (req) => ((sent = req), { data: { vendor: "RBC Visa", statement_date: "2026-03-28", due_date: "2026-04-18", amount_due: "1,234.56", minimum_payment: "10.00", reference: "4411", currency: "CAD", confidence: 0.9, summary: "March" } });
+	const r = await readStatementBill({ llm, document: { text: "NEW BALANCE $1,234.56" }, about: ["Statement file: visa.ofx"] });
+	assert.equal(r.amount_cents, 123456n);
+	assert.equal(r.minimum_cents, 1000n);
+	assert.equal(r.due_date, "2026-04-18");
+	assert.match(sent.system, /Never compute a balance/);
+	assert.match(sent.prompt, /NEW BALANCE/);
+});

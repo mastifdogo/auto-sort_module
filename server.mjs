@@ -270,12 +270,12 @@ export default async function register(ctx) {
 	 * account are skipped. Returns { id, transactions, duplicates }; with no new transactions the
 	 * statement isn't kept (id null).
 	 */
-	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null, source = mail ? "email" : "upload", guess = null }) {
+	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null, source = mail ? "email" : "upload", guess = null, document = null }) {
 		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -t.amount_cents : t.amount_cents }));
 		const code = account?.code ?? "";
 		const { rows } = await q(
-			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key, account_guess)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key, account_guess, document, document_type)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
 			[
 				(filename || `statement.${parsed.format}`).slice(0, 200),
 				code,
@@ -288,6 +288,9 @@ export default async function register(ctx) {
 				(mail?.subject ?? "").slice(0, 500),
 				mail?.sourceKey ?? null,
 				account ? null : guess,
+				// The file itself (≤ 5 MB), so the LLM can read the statement's balance later (Create bill).
+				document && document.data.length <= 5 << 20 ? document.data : null,
+				document && document.data.length <= 5 << 20 ? document.type : null,
 			],
 		);
 		const id = rows[0].id;
@@ -339,6 +342,7 @@ export default async function register(ctx) {
 		.forEach(async () => {
 			await q(`DELETE FROM ${T("settings")} WHERE key = 'mail_state'`);
 			await dash.remove("mail-error", "notification");
+			await bills.syncBillTodos();
 		})
 		.catch((err) => ctx.log.warn("email checker cleanup failed", { err: String(err?.message || err) }));
 
@@ -380,6 +384,27 @@ export default async function register(ctx) {
 		const found = await journal.refresh();
 		ctx.log.info("sort now", { bill_matches: billMatches, transfer_links: transferLinks, journal_matches: found });
 		return { bill_matches: billMatches, transfer_links: transferLinks, journal_matches: found };
+	});
+
+	/**
+	 * The debit lines for paying a split bill or receipt from this row: its lines, when the row books
+	 * to the bill's own account (not payables) and they add up to the payment. Else null.
+	 */
+	async function splitLinesFor(billId, code, abs) {
+		const bill = await bills.getBill(String(billId)).catch(() => null);
+		if (!bill || bill.ap_account || bill.journal_entry_id || code !== bill.account_code) return null;
+		const lines = await bills.linesOf(bill.id);
+		if (lines.length < 2 || lines.reduce((s, l) => s + BigInt(l.amount_cents), 0n) !== abs) return null;
+		return lines.map((l) => ({ account_code: l.account_code, debit_cents: BigInt(l.amount_cents), credit_cents: 0n, memo: l.description.slice(0, 500) }));
+	}
+
+	// POST /statements/:id/bill-draft: what the statement says is owed, read by the LLM, to edit and
+	// create as a bill (nothing is saved here).
+	ctx.route("POST", "/statements/:id/bill-draft", async (req) => {
+		const statement = await getStatement(req.params.id);
+		const { rows } = await q(`SELECT id FROM ${T("bills")} WHERE statement_id = $1 AND status <> 'ignored'`, [statement.id]);
+		if (rows.length > 0) throw new ctx.HttpError(409, `this statement already has bill #${rows[0].id}`);
+		return bills.statementBillDraft(statement);
 	});
 
 	// -----------------------------------------------------------------------
@@ -487,7 +512,13 @@ export default async function register(ctx) {
 			if (err instanceof ParseError) throw bad(err.message);
 			throw err;
 		}
-		const r = await stageStatement(parsed, { filename, account, flip: b.flip_signs === true, uploadedBy: req.user.username });
+		const r = await stageStatement(parsed, {
+			filename,
+			account,
+			flip: b.flip_signs === true,
+			uploadedBy: req.user.username,
+			document: { data: Buffer.from(b.content, "utf8"), type: parsed.format === "csv" ? "text/csv" : "application/x-ofx" },
+		});
 		if (r.transactions === 0) throw new ctx.HttpError(409, `all ${r.duplicates} transactions in this file were uploaded before`);
 		return ctx.response(201, { id: r.id, transactions: r.transactions, duplicates: r.duplicates, warnings: parsed.warnings.slice(0, 50) });
 	});
@@ -517,6 +548,10 @@ export default async function register(ctx) {
 		// Card exports that show purchases as positive: offered as "flip signs" when choosing a card account.
 		const flip_hint = statement.format === "csv" && rows.length > 0 && rows.filter((t) => t.amount_cents > 0n).length / rows.length > 0.6;
 		const suggested_account = statement.status === "needs_account" ? await suggestStatementAccount(statement) : null;
+		const { rows: made } = await q(`SELECT id, status FROM ${T("bills")} WHERE statement_id = $1 AND status <> 'ignored' ORDER BY id LIMIT 1`, [statement.id]);
+		statement.bill_id = made[0]?.id ?? null;
+		const { rows: docs } = await q(`SELECT document IS NOT NULL AS has_document, document_type FROM ${T("statements")} WHERE id = $1`, [statement.id]);
+		statement.has_document = docs[0]?.has_document ?? false;
 		return { statement, transactions: rows, review_threshold, flip_hint, suggested_account };
 	});
 
@@ -686,6 +721,8 @@ export default async function register(ctx) {
 					results.already_recorded++;
 					continue;
 				}
+				// A split receipt (or a bill not posted to payables) books each of its lines.
+				const split = t.bill_id !== null && amt < 0n ? await splitLinesFor(t.bill_id, t.code, abs) : null;
 				const entry = await ctx.ledger.createJournalEntry(
 					{
 						entry_date: t.date,
@@ -693,7 +730,7 @@ export default async function register(ctx) {
 						reference: (t.fitid || `categorizer ${statement.id}/${id}`).slice(0, 100),
 						lines: [
 							{ account_code: t.account_code, debit_cents: amt > 0n ? abs : 0n, credit_cents: amt < 0n ? abs : 0n, memo: t.memo.slice(0, 500) },
-							{ account_code: t.code, debit_cents: amt < 0n ? abs : 0n, credit_cents: amt > 0n ? abs : 0n, memo: "" },
+							...(split ?? [{ account_code: t.code, debit_cents: amt < 0n ? abs : 0n, credit_cents: amt > 0n ? abs : 0n, memo: "" }]),
 						],
 						links: [link],
 					},
@@ -716,7 +753,7 @@ export default async function register(ctx) {
 				// A bill payment marks the bill paid; it isn't a payee rule (it books to payables).
 				const paidBill = t.bill_id !== null && (await bills.onPosted(id, t.code, entry.id));
 				if (paidBill) await linkEntry(entry.id, await bills.linkFor(t.bill_id), req.user);
-				if (!paidBill) await learn(t.description, t.code, req.user.username);
+				if (!paidBill && !split) await learn(t.description, t.code, req.user.username);
 				results.posted++;
 			} catch (err) {
 				const msg = String(err?.message || err).slice(0, 500);

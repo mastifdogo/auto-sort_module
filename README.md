@@ -360,7 +360,8 @@ and `transactions` (what was uploaded and how each line was categorised and post
 `bill_lines`, `rules` (learned payee rules), `statement_sources` (which account a sender's statements
 go to), `received_files`, `match_suggestions` and `not_duplicates`. The files themselves (bill PDFs
 and photos, statement files) are in `bill_documents` and `statement_files`, as base64, so the other
-tables stay readable. No secrets are kept in any table.
+tables stay readable; from Ledger 0.13.1 a backup CSV shows only the file's size there, with its name,
+type, size and date in readable columns beside it. No secrets are kept in any table.
 
 ## Privacy
 
@@ -425,6 +426,9 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.7.2:** `bill_documents` and `statement_files` keep each file's name, size and date in readable
+  columns (Ledger 0.13.1 shows only the size of the file itself in backup CSVs). Migration 013.
 
 - **0.7.1:** Readable backup CSVs (Ledger 0.13.0 saves each module table as a CSV): bill documents
   and statement files moved to their own tables (`bill_documents`, `statement_files`), and the old

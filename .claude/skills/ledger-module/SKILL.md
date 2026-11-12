@@ -72,7 +72,9 @@ feature the module uses (the context file says which version added what;
 - Backups (Ledger 0.13.0) save every table of the schema as a CSV for people:
   keep table and column names plain, no secrets in tables, and keep big
   files out of record tables (`bill_documents`, `statement_files` hold the
-  bytes; `bills`/`statements` stay readable).
+  bytes; `bills`/`statements` stay readable). From Ledger 0.13.1 a `bytea`
+  column shows only its size in the CSV, so file tables keep `file_name`,
+  `content_type`, `size_bytes` and `created_at` beside `content`.
 - Ledger runs in a Debian 12 container: don't spawn outside programs.
 - Versions: new features (a page, route, setting, data kept) raise the middle
   number (`0.2.6` → `0.3.0`); fixes only raise the last.

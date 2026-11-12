@@ -293,7 +293,12 @@ export default async function register(ctx) {
 		const id = rows[0].id;
 		// The file itself (≤ 5 MB), so the LLM can read the statement's balance later (Create bill).
 		if (document && document.data.length <= 5 << 20) {
-			await q(`INSERT INTO ${T("statement_files")} (statement_id, content_type, content) VALUES ($1, $2, $3)`, [id, document.type, document.data]);
+			await q(`INSERT INTO ${T("statement_files")} (statement_id, file_name, content_type, content) VALUES ($1, $2, $3, $4)`, [
+				id,
+				(filename || `statement.${parsed.format}`).slice(0, 200),
+				document.type,
+				document.data,
+			]);
 		}
 		const { rowCount } = await q(
 			`INSERT INTO ${T("transactions")} (statement_id, line_no, account_code, fingerprint, tx_date, description, memo, amount_cents, fitid)

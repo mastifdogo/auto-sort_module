@@ -1,7 +1,7 @@
 {
   "id": "categorizer",
   "name": "Auto sort",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and Ledger's LLM API suggests an account for each transaction; transfers between your accounts are posted once, and lines already in the journal are found and linked. Bills and receipts (PDFs, photos, saved emails, or files from other modules) are tracked until paid and matched to statement payments; an Auto sort button asks the LLM for matches. Needs an admin to allow it under Settings → LLM API.",
   "ledger": ">=0.11.3",
   "server": "server.mjs",

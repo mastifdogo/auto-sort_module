@@ -352,6 +352,16 @@ Options are Ledger's module settings (`GET`/`PUT /api/v1/modules/categorizer/set
 only). Viewers can look but not change anything; Ledger enforces that. Ledger's search bar finds
 bills, statements and transactions; the links open them on the module's page.
 
+## Backups
+
+Auto sort's tables are in Ledger's database backups. Since Ledger 0.13.0 each backup also saves them
+as CSV files you can open in a spreadsheet (`ledger-<stamp>-categorizer-<table>.csv`): `statements`
+and `transactions` (what was uploaded and how each line was categorised and posted), `bills` and
+`bill_lines`, `rules` (learned payee rules), `statement_sources` (which account a sender's statements
+go to), `received_files`, `match_suggestions` and `not_duplicates`. The files themselves (bill PDFs
+and photos, statement files) are in `bill_documents` and `statement_files`, as base64, so the other
+tables stay readable. No secrets are kept in any table.
+
 ## Privacy
 
 With Claude as Ledger's AI, each transaction's date, description, memo and amount, your account
@@ -415,6 +425,10 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.7.1:** Readable backup CSVs (Ledger 0.13.0 saves each module table as a CSV): bill documents
+  and statement files moved to their own tables (`bill_documents`, `statement_files`), and the old
+  email log table (unused since 0.6.0) is removed. Migration 012. Nothing changes on the page.
 
 - **0.7.0:** Needs Ledger 0.11.3. The Import tab is gone: uploads are on the Statements, Bills and
   Receipts tabs, Sort now on Statements, and files from other modules on Status. **Create bill** from

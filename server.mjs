@@ -274,8 +274,8 @@ export default async function register(ctx) {
 		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -t.amount_cents : t.amount_cents }));
 		const code = account?.code ?? "";
 		const { rows } = await q(
-			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key, account_guess, document, document_type)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key, account_guess)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
 			[
 				(filename || `statement.${parsed.format}`).slice(0, 200),
 				code,
@@ -288,12 +288,13 @@ export default async function register(ctx) {
 				(mail?.subject ?? "").slice(0, 500),
 				mail?.sourceKey ?? null,
 				account ? null : guess,
-				// The file itself (≤ 5 MB), so the LLM can read the statement's balance later (Create bill).
-				document && document.data.length <= 5 << 20 ? document.data : null,
-				document && document.data.length <= 5 << 20 ? document.type : null,
 			],
 		);
 		const id = rows[0].id;
+		// The file itself (≤ 5 MB), so the LLM can read the statement's balance later (Create bill).
+		if (document && document.data.length <= 5 << 20) {
+			await q(`INSERT INTO ${T("statement_files")} (statement_id, content_type, content) VALUES ($1, $2, $3)`, [id, document.type, document.data]);
+		}
 		const { rowCount } = await q(
 			`INSERT INTO ${T("transactions")} (statement_id, line_no, account_code, fingerprint, tx_date, description, memo, amount_cents, fitid)
 			 SELECT $1, u.line_no, $2, u.fp, u.d, u.description, u.memo, u.amount, u.fitid
@@ -550,8 +551,8 @@ export default async function register(ctx) {
 		const suggested_account = statement.status === "needs_account" ? await suggestStatementAccount(statement) : null;
 		const { rows: made } = await q(`SELECT id, status FROM ${T("bills")} WHERE statement_id = $1 AND status <> 'ignored' ORDER BY id LIMIT 1`, [statement.id]);
 		statement.bill_id = made[0]?.id ?? null;
-		const { rows: docs } = await q(`SELECT document IS NOT NULL AS has_document, document_type FROM ${T("statements")} WHERE id = $1`, [statement.id]);
-		statement.has_document = docs[0]?.has_document ?? false;
+		const { rows: docs } = await q(`SELECT 1 FROM ${T("statement_files")} WHERE statement_id = $1`, [statement.id]);
+		statement.has_document = docs.length > 0;
 		return { statement, transactions: rows, review_threshold, flip_hint, suggested_account };
 	});
 

@@ -69,6 +69,11 @@ feature the module uses (the context file says which version added what;
 - Journal entry links (Ledger 0.11.2): every entry the module posts carries
   `links` (`tx:<id>` → `?statement=`, `bill:<id>` → `?bill=`); entries
   linked later use `linkEntry()` (transfers, duplicates).
+- Backups (Ledger 0.13.0) save every table of the schema as a CSV for people:
+  keep table and column names plain, no secrets in tables, and keep big
+  files out of record tables (`bill_documents`, `statement_files` hold the
+  bytes; `bills`/`statements` stay readable).
+- Ledger runs in a Debian 12 container: don't spawn outside programs.
 - Versions: new features (a page, route, setting, data kept) raise the middle
   number (`0.2.6` → `0.3.0`); fixes only raise the last.
 

@@ -138,7 +138,7 @@ add Gmail or IMAP reading back without the user asking).
 
 - The id is `categorizer` (permanent: it names the schema). The name shown
   is "Auto sort" (it was "LLM API"); messages use `ctx.name`, never a fixed
-  name. Needs Ledger ≥ 0.13.2.
+  name. Needs Ledger ≥ 0.16.0.
 - Layout: `server.mjs` (statements, categorizing, `/status`, search, posting
   with entry links), `lib/bill-routes.mjs` (bill routes, reading uploads and
   module files, `matchBillTx`, `linkBillEntry`), `lib/mime.mjs` (uploaded
@@ -171,9 +171,17 @@ add Gmail or IMAP reading back without the user asking).
   (`splitLinesFor()` in server.mjs); approval into payables books them too.
   LLM proposals (`/bills/:id/split-draft`, `/statements/:id/bill-draft`) are
   never saved by themselves: the user edits and saves.
-- Customers: `bills.customer_name` + `customer_ref` ("sales:<id>" for the
-  Sales module's customers, which the page reads from the Sales module's own
-  API in the browser; never its tables).
+- Customers and vendors (Ledger 0.16.0): `ctx.entities`, Ledger's one list.
+  `linkEntities(billId, { create })` in bill-routes.mjs sets
+  `bills.vendor_entity_id` / `customer_entity_id`: `create: true` only on a
+  person's action (save, approve, import, add by hand); AI-read vendors only
+  `find()` an existing one. Entries for a bill pass `entity_id` (vendor).
+  `customer_ref` ("sales:<id>") is legacy; don't read other modules' APIs.
+- Account pickers: `accountOptions()` shows the tree (`parent_code`,
+  Ledger 0.15.0); `bankAccountOptions()` puts `kind`-tagged accounts
+  (chequing, savings, credit_card; Ledger 0.16.0) first.
+- Restores (Ledger 0.14.0) can leave rows whose stored file is gone: check
+  `ctx.storage.stat()` before linking to a file; reads return null.
 - Overdue: `syncBillTodos()` titles overdue to-dos "Overdue: …" with level
   `danger`, refreshed hourly in every organization.
 - Journal matches (no AI): staged rows in the journal come from

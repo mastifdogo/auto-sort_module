@@ -423,7 +423,7 @@ export default async function register(ctx) {
 
 	ctx.route("GET", "/accounts", async () => {
 		const accounts = await ctx.ledger.listAccounts();
-		return { data: accounts.map((a) => ({ code: a.code, name: a.name, type: a.type, currency: a.currency })) };
+		return { data: accounts.map((a) => ({ code: a.code, name: a.name, type: a.type, currency: a.currency, kind: a.kind ?? null, parent_code: a.parent_code ?? null })) };
 	});
 
 	/**
@@ -738,6 +738,8 @@ export default async function register(ctx) {
 				}
 				// A split receipt (or a bill not posted to payables) books each of its lines.
 				const split = t.bill_id !== null && amt < 0n ? await splitLinesFor(t.bill_id, t.code, abs) : null;
+				// Paying a bill: the entry is with its vendor (Ledger's list of customers and vendors).
+				const vendorEntity = t.bill_id !== null ? (await bills.getBill(String(t.bill_id)).catch(() => null))?.vendor_entity_id : null;
 				const entry = await ctx.ledger.createJournalEntry(
 					{
 						entry_date: t.date,
@@ -748,6 +750,7 @@ export default async function register(ctx) {
 							...(split ?? [{ account_code: t.code, debit_cents: amt < 0n ? abs : 0n, credit_cents: amt > 0n ? abs : 0n, memo: "" }]),
 						],
 						links: [link],
+						...(vendorEntity ? { entity_id: Number(vendorEntity) } : {}),
 					},
 					req.user,
 				);

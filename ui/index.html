@@ -244,7 +244,7 @@
 		<p class="err" id="bd-error"></p>
 		<form id="bd-form" class="grid">
 			<label>Type <select id="bd-kind"><option value="bill">Bill (to be paid)</option><option value="receipt">Receipt (already paid)</option></select></label>
-			<label>Vendor <input id="bd-vendor" maxlength="200"></label>
+			<label>Vendor <input id="bd-vendor" list="vendors" maxlength="200"></label>
 			<label>Invoice number <input id="bd-invoice" maxlength="100"></label>
 			<label>Bill date <input id="bd-date" type="date"></label>
 			<label>Due date <input id="bd-due" type="date"></label>
@@ -255,6 +255,7 @@
 			<label class="inline" style="align-self:end"><input type="checkbox" id="bd-billable"> Billable to the customer</label>
 		</form>
 		<datalist id="customers"></datalist>
+		<datalist id="vendors"></datalist>
 		<p class="muted small" id="bd-summary"></p>
 		<div id="bd-split"></div>
 		<div class="row" style="margin: 0.75rem 0">
@@ -455,23 +456,15 @@
 	async function loadCustomers() {
 		if (customersLoaded) return;
 		customersLoaded = true;
-		const [own, sales] = await Promise.all([
-			api("/customers").catch(() => ({ data: [] })),
-			fetch("/api/v1/m/sales/customers").then((r) => (r.ok ? r.json() : { data: [] })).catch(() => ({ data: [] })),
-		]);
+		// Ledger's customers and vendors (one list for every module, Ledger 0.16.0).
+		const [customers, vendors] = await Promise.all([api("/customers").catch(() => ({ data: [] })), api("/vendors").catch(() => ({ data: [] }))]);
 		const names = new Map();
-		for (const c of sales.data ?? []) {
-			if (c.archived) continue;
-			const name = String(c.company || c.name || "").trim();
-			if (!name) continue;
-			names.set(name.toLowerCase(), name);
-			customerRefs.set(name.toLowerCase(), `sales:${c.id}`);
-		}
-		for (const c of own.data) {
+		for (const c of customers.data) {
 			if (!names.has(c.customer_name.toLowerCase())) names.set(c.customer_name.toLowerCase(), c.customer_name);
 			if (c.customer_ref && !customerRefs.has(c.customer_name.toLowerCase())) customerRefs.set(c.customer_name.toLowerCase(), c.customer_ref);
 		}
 		$("customers").replaceChildren(...[...names.values()].sort((a, b) => a.localeCompare(b)).map((n) => el("option", { value: n })));
+		$("vendors").replaceChildren(...vendors.data.map((v) => el("option", { value: v.name })));
 	}
 
 	const ACCOUNT_TYPES = ["asset", "liability", "equity", "revenue", "expense"];
@@ -483,6 +476,31 @@
 		while (used.has(String(n))) n += 10;
 		return String(n);
 	}
+	/**
+	 * Accounts as a tree (Ledger 0.15.0): each sub-account right under its parent, indented. A parent
+	 * that isn't in the list (e.g. another currency) leaves its sub-accounts at the top level.
+	 */
+	function accountTree(list) {
+		const codes = new Set(list.map((a) => a.code));
+		const byParent = new Map();
+		for (const a of list) {
+			const p = a.parent_code && codes.has(a.parent_code) ? a.parent_code : "";
+			if (!byParent.has(p)) byParent.set(p, []);
+			byParent.get(p).push(a);
+		}
+		const out = [];
+		const walk = (p, depth) => {
+			for (const a of (byParent.get(p) ?? []).sort((x, y) => x.code.localeCompare(y.code, undefined, { numeric: true }))) {
+				out.push({ a, depth });
+				if (depth < 6) walk(a.code, depth + 1);
+			}
+		};
+		walk("", 0);
+		return out;
+	}
+	const indent = (depth) => "\u2003".repeat(depth);
+	const KIND_LABEL = { chequing: "chequing", savings: "savings", credit_card: "credit card" };
+
 	function accountOptions(select, list, { selected = null, placeholder = null } = {}) {
 		select.replaceChildren();
 		if (placeholder !== null) select.append(el("option", { value: "" }, placeholder));
@@ -490,10 +508,22 @@
 			const group = list.filter((a) => a.type === type);
 			if (group.length === 0) continue;
 			const og = el("optgroup", { label: type[0].toUpperCase() + type.slice(1) });
-			for (const a of group) og.append(el("option", { value: a.code, selected: a.code === selected }, `${a.code} · ${a.name}`));
+			for (const { a, depth } of accountTree(group)) og.append(el("option", { value: a.code, selected: a.code === selected }, `${indent(depth)}${a.code} · ${a.name}`));
 			select.append(og);
 		}
 		if (selected === null && placeholder !== null) select.value = "";
+	}
+
+	/** Bank and card accounts for a statement: the ones tagged chequing, savings or credit card first (Ledger 0.16.0). */
+	function bankAccountOptions(select, placeholder = "Choose…") {
+		const bankish = accounts.filter((a) => a.type === "asset" || a.type === "liability");
+		const tagged = bankish.filter((a) => a.kind);
+		const rest = bankish.filter((a) => !a.kind);
+		const opt = (a, depth = 0) => el("option", { value: a.code }, `${indent(depth)}${a.code} · ${a.name} (${a.kind ? KIND_LABEL[a.kind] ?? a.kind : a.type}, ${a.currency})`);
+		select.replaceChildren(el("option", { value: "" }, placeholder));
+		if (tagged.length) select.append(el("optgroup", { label: "Bank and card accounts" }, ...tagged.sort((x, y) => x.code.localeCompare(y.code, undefined, { numeric: true })).map((a) => opt(a))));
+		if (rest.length) select.append(el("optgroup", { label: tagged.length ? "Other assets and liabilities" : "Assets and liabilities" }, ...accountTree(rest).map(({ a, depth }) => opt(a, depth))));
+		return bankish;
 	}
 
 	// ---------------------------------------------------------------- upload
@@ -501,9 +531,7 @@
 		await loadAccounts();
 		const sel = $("up-account");
 		const prev = sel.value;
-		const bankish = accounts.filter((a) => a.type === "asset" || a.type === "liability");
-		sel.replaceChildren(el("option", { value: "" }, "Choose…"));
-		for (const a of bankish) sel.append(el("option", { value: a.code }, `${a.code} · ${a.name} (${a.type}, ${a.currency})`));
+		bankAccountOptions(sel);
 		sel.value = prev || (localStorageGet("upload-account") ?? "");
 	}
 	function localStorageGet(k) { try { return localStorage.getItem("categorizer:" + k); } catch { return null; } }
@@ -637,8 +665,7 @@
 				: `This statement came by email${s.mail_subject ? ` (“${s.mail_subject}”${s.mail_from ? ` from ${s.mail_from}` : ""})` : ""}, and its account isn't known yet. Which account is it for?`)
 			: "Move this statement's transactions to another account. Suggestions are made again.";
 		const sel = $("d-account-select");
-		const bankish = accounts.filter((a) => a.type === "asset" || a.type === "liability");
-		sel.replaceChildren(el("option", { value: "" }, "Choose…"), ...bankish.map((a) => el("option", { value: a.code }, `${a.code} · ${a.name} (${a.type}, ${a.currency})`)));
+		const bankish = bankAccountOptions(sel);
 		// The AI's guess (from a PDF statement) is only preselected; nothing happens until you choose.
 		const guess = needs && s.account_guess && bankish.some((a) => a.code === s.account_guess) ? s.account_guess : "";
 		sel.value = needs ? guess : s.account_code;
@@ -1358,6 +1385,8 @@
 		try {
 			let r;
 			if (action === "save") r = await api(`/bills/${currentBill.id}`, { method: "PATCH", body: JSON.stringify(body) });
+			// A new customer or vendor may now be in Ledger's list.
+			if (action === "save" && ("customer_name" in body || "vendor" in body)) customersLoaded = false;
 			else if (action === "delete") r = await api(`/bills/${currentBill.id}`, { method: "DELETE" });
 			else r = await api(`/bills/${currentBill.id}/${action}`, { method: "POST", body: JSON.stringify(body) });
 			if (action === "delete") { currentBill = null; $("bill-detail").classList.add("hidden"); }

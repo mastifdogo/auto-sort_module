@@ -37,7 +37,8 @@ LLM API: there's no API key to set up in the module.
 
 ## Install
 
-Needs **Ledger 0.13.2 or newer** (module file storage, Import from CSV, the shared LLM API and its
+Needs **Ledger 0.16.0 or newer** (customers and vendors shared with Ledger, account tags and
+sub-accounts, module file storage, Import from CSV, the shared LLM API and its
 connection for images, journal entry links, the New account dialog, file exchange between modules,
 organizations, settings forms, roles, search, drawn icons).
 
@@ -274,8 +275,14 @@ You check the form, then **Create bill**; one bill per statement. Its account is
 account, so paying it pays down the card. Statements uploaded before 0.7.0 have no file kept; the
 LLM then only sees the transactions, so type the amount.
 
-**Billable:** a bill or receipt can be marked **Billable to the customer** with a **Customer**:
-customers from the Sales module (when it's installed) and names you used before are offered. The
+**Customers and vendors** (Ledger 0.16.0): a bill's vendor and customer are linked to Ledger's own
+list of customers and vendors (**Entities** in Ledger's sidebar), shared with every module, and the
+fields offer the names on it. A vendor or customer you type, save, approve or import is added to
+the list (or given the role) if it isn't there; a vendor the AI read from a document is only linked
+when it's already on the list, and added when you approve the bill. Entries Auto sort posts for a
+bill (into payables, and its payment) record the vendor.
+
+**Billable:** a bill or receipt can be marked **Billable to the customer** with a **Customer**. The
 list shows them as *billable · Acme Corp*.
 
 **Split:** a receipt (or bill) for things booked to different accounts, e.g. groceries and
@@ -440,6 +447,12 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.9.0:** Needs Ledger 0.16.0. Bills' vendors and customers are linked to Ledger's shared list
+  of customers and vendors (entities), and entries for a bill record its vendor; AI-read vendors are
+  added only when a person approves. Account pickers show sub-accounts under their parent, and
+  bank and card pickers put accounts tagged chequing, savings or credit card first. A bill whose
+  stored file is gone after a restore shows no document. Migration 015.
 
 - **0.8.0:** Needs Ledger 0.13.2. Bill documents and statement files are kept in Ledger's storage
   for modules (carried by every backup) instead of the database; older ones move there after the

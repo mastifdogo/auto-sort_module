@@ -17,6 +17,7 @@
 
 import { createHash } from "node:crypto";
 import { registerBills } from "./lib/bill-routes.mjs";
+import { moduleFiles } from "./lib/files.mjs";
 import { dashboard } from "./lib/dashboard.mjs";
 import { registerTransfers } from "./lib/transfer-sync.mjs";
 import { registerReceivedFiles } from "./lib/received-files.mjs";
@@ -35,6 +36,7 @@ export default async function register(ctx) {
 	const q = (sql, params) => ctx.db.query(sql, params);
 	const bad = (msg) => new ctx.HttpError(422, msg);
 	const dash = dashboard(ctx);
+	const files = moduleFiles(ctx, { q, T });
 
 	// -----------------------------------------------------------------------
 	// Settings
@@ -291,14 +293,9 @@ export default async function register(ctx) {
 			],
 		);
 		const id = rows[0].id;
-		// The file itself (≤ 5 MB), so the LLM can read the statement's balance later (Create bill).
+		// The file itself (≤ 5 MB, in Ledger's storage), so the LLM can read the statement's balance later (Create bill).
 		if (document && document.data.length <= 5 << 20) {
-			await q(`INSERT INTO ${T("statement_files")} (statement_id, file_name, content_type, content) VALUES ($1, $2, $3, $4)`, [
-				id,
-				(filename || `statement.${parsed.format}`).slice(0, 200),
-				document.type,
-				document.data,
-			]);
+			await files.saveStatementFile(id, { filename: (filename || `statement.${parsed.format}`).slice(0, 200), contentType: document.type, data: document.data });
 		}
 		const { rowCount } = await q(
 			`INSERT INTO ${T("transactions")} (statement_id, line_no, account_code, fingerprint, tx_date, description, memo, amount_cents, fitid)
@@ -336,13 +333,20 @@ export default async function register(ctx) {
 			if (rowCount > 0) enqueue(sid);
 		}
 	};
-	const billHelpers = { q, T, bad, ai, requeue, stageStatement, settleFile: null };
+	const billHelpers = { q, T, bad, ai, requeue, stageStatement, settleFile: null, files };
 	const bills = registerBills(ctx, billHelpers);
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
 	const journal = registerJournalMatches(ctx, { q, T, bad, ai, bills, duplicates, transfers, syncStatementNotice });
 
 	await migrateOldSettings().catch((err) => ctx.log.error("moving old settings failed", { err: String(err?.message || err) }));
+	// Files kept in the database before 0.8.0 move to Ledger's storage, in the background.
+	ctx.orgs
+		.forEach(async (org) => {
+			const n = await files.moveOldFiles();
+			if (n) ctx.log.info("files moved to storage", { organization: org.id, files: n });
+		})
+		.catch((err) => ctx.log.warn("moving files to storage failed", { err: String(err?.message || err) }));
 	// The email checker is gone (0.6.0): forget its state and its error notice in every organization.
 	await ctx.orgs
 		.forEach(async () => {
@@ -364,9 +368,9 @@ export default async function register(ctx) {
 			  WHERE status = 'posting'`,
 		);
 	});
-	const files = registerReceivedFiles(ctx, { q, T, bills });
+	const received = registerReceivedFiles(ctx, { q, T, bills });
 	// Approving a bill, posting from a statement or discarding it settles the file it came from.
-	bills.settleFile = billHelpers.settleFile = files.settle;
+	bills.settleFile = billHelpers.settleFile = received.settle;
 
 	// -----------------------------------------------------------------------
 	// Routes: settings
@@ -622,7 +626,12 @@ export default async function register(ctx) {
 		// Posted rows stay so their fingerprints keep blocking duplicate uploads.
 		await q(`DELETE FROM ${T("transactions")} WHERE statement_id = $1 AND status <> 'posted'`, [statement.id]);
 		if (statement.posted === 0) await bills.settleFile?.({ statementId: statement.id }, "rejected", `discarded in ${ctx.name} by ${req.user.username}`, req.user.username);
-		await q(`DELETE FROM ${T("statements")} s WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM ${T("transactions")} t WHERE t.statement_id = s.id)`, [statement.id]);
+		const { rows: left } = await q(`SELECT 1 FROM ${T("transactions")} WHERE statement_id = $1 LIMIT 1`, [statement.id]);
+		if (left.length === 0) {
+			// The statement goes (nothing of it was posted): so does its file.
+			await files.removeStatementFile(statement.id);
+			await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [statement.id]);
+		}
 		await syncStatementNotice(statement.id);
 	});
 

@@ -1313,9 +1313,14 @@
 
 	$("bd-show-doc").onclick = async () => {
 		try {
-			const d = await api(`/bills/${currentBill.id}/document`);
-			const bytes = Uint8Array.from(atob(d.data), (c) => c.charCodeAt(0));
-			const url = URL.createObjectURL(new Blob([bytes], { type: d.type || "application/pdf" }));
+			// Stored in Ledger's storage: shown straight from its address; older files through the API.
+			let url = currentBill.document_url;
+			let d = { name: currentBill.document_name, type: currentBill.document_type };
+			if (!url) {
+				d = await api(`/bills/${currentBill.id}/document`);
+				const bytes = Uint8Array.from(atob(d.data), (c) => c.charCodeAt(0));
+				url = URL.createObjectURL(new Blob([bytes], { type: d.type || "application/pdf" }));
+			}
 			const view = /^image\//.test(d.type || "")
 				? el("img", { src: url, alt: d.name || "picture", style: "max-width:100%; height:auto; border:1px solid var(--border); border-radius:6px" })
 				: el("iframe", { class: "pdf", src: url, title: d.name });

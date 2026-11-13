@@ -37,9 +37,9 @@ LLM API: there's no API key to set up in the module.
 
 ## Install
 
-Needs **Ledger 0.11.3 or newer** (shared LLM API for modules, LLM connections for
-images, journal entry links, Ledger's New account dialog for modules, file exchange between modules, organizations, settings forms, roles,
-search, drawn icons).
+Needs **Ledger 0.13.2 or newer** (module file storage, Import from CSV, the shared LLM API and its
+connection for images, journal entry links, the New account dialog, file exchange between modules,
+organizations, settings forms, roles, search, drawn icons).
 
 1. In Ledger, open **Settings → Modules**, enter `mastifdogo/llm-api-module` and press **Add**.
    **Auto sort** appears in the sidebar with a robot icon. You can hide or reorder it under
@@ -352,16 +352,30 @@ Options are Ledger's module settings (`GET`/`PUT /api/v1/modules/categorizer/set
 only). Viewers can look but not change anything; Ledger enforces that. Ledger's search bar finds
 bills, statements and transactions; the links open them on the module's page.
 
-## Backups
+## Backups and files
 
-Auto sort's tables are in Ledger's database backups. Since Ledger 0.13.0 each backup also saves them
-as CSV files you can open in a spreadsheet (`ledger-<stamp>-categorizer-<table>.csv`): `statements`
-and `transactions` (what was uploaded and how each line was categorised and posted), `bills` and
-`bill_lines`, `rules` (learned payee rules), `statement_sources` (which account a sender's statements
-go to), `received_files`, `match_suggestions` and `not_duplicates`. The files themselves (bill PDFs
-and photos, statement files) are in `bill_documents` and `statement_files`, as base64, so the other
-tables stay readable; from Ledger 0.13.1 a backup CSV shows only the file's size there, with its name,
-type, size and date in readable columns beside it. No secrets are kept in any table.
+Bill PDFs and photos, and statement files, are kept in Ledger's storage for modules (Ledger 0.13.2:
+on its data share, per organization), and every backup folder carries them under
+`files/categorizer/` (`bills/<id>/…`, `statements/<id>/…`). The page opens them straight from there.
+Files kept in the database by earlier versions move there by themselves after the update.
+
+Since Ledger 0.13.0 each backup also saves Auto sort's tables as CSV files you can open in a
+spreadsheet: `statements` and `transactions` (what was uploaded and how each line was categorised
+and posted), `bills` and `bill_lines`, `rules` (learned payee rules), `statement_sources` (which
+account a sender's statements go to), `received_files`, `match_suggestions` and `not_duplicates`.
+`bill_documents` and `statement_files` say what each stored file is: its name, type, size, date and
+where it's stored. No secrets are kept in any table.
+
+## Import from CSV
+
+**Settings → Modules → Auto sort → Import from CSV** (Ledger 0.13.2) brings in open bills and
+receipts from other bookkeeping software: vendor, amount, due date, bill date, invoice number,
+account (code or name), type (bill or receipt), currency, customer and billable. Ledger matches the
+file's columns (by name, or with the AI) and shows a preview; Auto sort's check lists rows it can't
+take (an unknown account, a type that isn't bill or receipt). Bills already here (the same row
+again, or the same vendor and invoice number, or amount and dates) are skipped, so importing a file
+twice adds nothing. Imported bills arrive on the Bills and Receipts tabs as **Needs review**; nothing
+is posted until you approve them.
 
 ## Privacy
 
@@ -426,6 +440,11 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.8.0:** Needs Ledger 0.13.2. Bill documents and statement files are kept in Ledger's storage
+  for modules (carried by every backup) instead of the database; older ones move there after the
+  update. **Import from CSV** for bills and receipts under Settings → Modules → Auto sort.
+  Migration 014.
 
 - **0.7.2:** `bill_documents` and `statement_files` keep each file's name, size and date in readable
   columns (Ledger 0.13.1 shows only the size of the file itself in backup CSVs). Migration 013.

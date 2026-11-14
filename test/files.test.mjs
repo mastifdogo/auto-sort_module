@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { billFilePath, statementFilePath, storageName } from "../lib/files.mjs";
+import { billFilePath, existingDocumentId, goesToDocuments, statementFilePath, storageName } from "../lib/files.mjs";
 
 const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._ ()-]{0,127}$/; // Ledger's storage path segment (module-storage.ts)
 
@@ -22,4 +22,15 @@ test("file names become paths Ledger's storage accepts, with an extension for th
 	assert.equal(storageName("x".repeat(300), "application/pdf").length, 104);
 	assert.equal(billFilePath(7, "scan", "image/jpeg"), "bills/7/scan.jpg");
 	assert.equal(statementFilePath(3, "march.csv", "text/csv"), "statements/3/march.csv");
+});
+
+test("PDFs and PNG/JPEG scans go to Ledger's Documents; a file already there is recognised", () => {
+	assert.equal(goesToDocuments("application/pdf"), true);
+	assert.equal(goesToDocuments("image/png"), true);
+	assert.equal(goesToDocuments("image/jpeg"), true);
+	assert.equal(goesToDocuments("image/gif"), false);
+	assert.equal(goesToDocuments("text/csv"), false);
+	assert.equal(existingDocumentId({ status: 409, message: 'this file is already here as "Hydro" (document 12)' }), 12);
+	assert.equal(existingDocumentId({ status: 422, message: "data must be a PDF (document 12)" }), null);
+	assert.equal(existingDocumentId({ status: 409, message: "something else" }), null);
 });

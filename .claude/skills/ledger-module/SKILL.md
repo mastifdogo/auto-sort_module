@@ -75,12 +75,19 @@ feature the module uses (the context file says which version added what;
   bytes; `bills`/`statements` stay readable). From Ledger 0.13.1 a `bytea`
   column shows only its size in the CSV, so file tables keep `file_name`,
   `content_type`, `size_bytes` and `created_at` beside `content`.
-- Files (Ledger 0.13.2): bill documents and statement files live in
-  `ctx.storage` (`bills/<id>/<name>`, `statements/<id>/<name>`) through
-  `lib/files.mjs` (`storageName()` makes names Ledger accepts);
-  `bill_documents` / `statement_files` keep name, type, size, date and
-  `storage_path`. Their `content` column only holds pre-0.8.0 files until
-  `moveOldFiles()` (startup, every organization) moves them; never write it.
+- Files (`lib/files.mjs`): every PDF, PNG or JPEG the module takes in is
+  filed in Ledger's Documents (`ctx.documents.add`, origin `imported`,
+  Ledger 0.19.0) and only `document_id` is kept in `bill_documents` /
+  `statement_files`; a 409 means it's already there (`existingDocumentId()`
+  reads the id). Other files (CSV/OFX statements, GIF/WebP) go to
+  `ctx.storage` (`storage_path`). Never write the `content` column.
+  Statements pass `account_code` only when a person chose the account.
+  Files 0.8–0.9 put in storage move to Documents only on
+  `POST /documents/move` (a person's click on Status): it moves their data.
+  Remove a document only if this module filed it and no other row uses it.
+- LLM: stay provider-neutral (Ledger 0.18.2). Never branch on
+  `status().provider` or a model name, no provider names in prompts or UI;
+  go by `configured`, `images.configured`, `readsPdf`. Validate `json()` data.
 - Import from CSV (`ctx.imports.provide`, one per module, in
   bill-routes.mjs): bills and receipts. The dry run lists bad rows; repeats
   (exact row, or `findDuplicate`) are skipped so re-imports add nothing;
@@ -150,7 +157,7 @@ add Gmail or IMAP reading back without the user asking).
 
 - The id is `categorizer` (permanent: it names the schema). The name shown
   is "Auto sort" (it was "LLM API"); messages use `ctx.name`, never a fixed
-  name. Needs Ledger ≥ 0.16.0.
+  name. Needs Ledger ≥ 0.19.1.
 - Layout: `server.mjs` (statements, categorizing, `/status`, search, posting
   with entry links), `lib/bill-routes.mjs` (bill routes, reading uploads and
   module files, `matchBillTx`, `linkBillEntry`), `lib/mime.mjs` (uploaded

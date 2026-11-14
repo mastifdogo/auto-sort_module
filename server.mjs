@@ -53,11 +53,11 @@ export default async function register(ctx) {
 		};
 	}
 
-	/** Ledger's AI for this module: a JSON call, and whether the provider reads PDFs. */
+	/** Ledger's LLM API for this module: a JSON call, and whether the connection for images reads PDFs and pictures. */
 	async function ai() {
 		const st = await ctx.llm.status();
-		// PDFs and pictures go to Ledger's LLM connection for images (Ledger 0.11.2): Claude reads both,
-		// a local vision model only pictures.
+		// PDFs and pictures go to Ledger's LLM connection for images. Any provider can be behind it
+		// (Ledger 0.18.2): go by what status() says it reads, never by its name.
 		return { llm: (req) => ctx.llm.json(req), readsPdf: st.readsPdf === true, readsImages: st.images?.configured === true, status: st };
 	}
 
@@ -293,9 +293,10 @@ export default async function register(ctx) {
 			],
 		);
 		const id = rows[0].id;
-		// The file itself (≤ 5 MB, in Ledger's storage), so the LLM can read the statement's balance later (Create bill).
+		// The file itself (≤ 5 MB), so the LLM can read the statement's balance later (Create bill): a PDF
+		// in Ledger's Documents (under its account when that's known, never a guess), a CSV or OFX in storage.
 		if (document && document.data.length <= 5 << 20) {
-			await files.saveStatementFile(id, { filename: (filename || `statement.${parsed.format}`).slice(0, 200), contentType: document.type, data: document.data });
+			await files.saveStatementFile(id, { filename: (filename || `statement.${parsed.format}`).slice(0, 200), contentType: document.type, data: document.data }, { account_code: code });
 		}
 		const { rowCount } = await q(
 			`INSERT INTO ${T("transactions")} (statement_id, line_no, account_code, fingerprint, tx_date, description, memo, amount_cents, fitid)
@@ -383,7 +384,16 @@ export default async function register(ctx) {
 		// Organizations (separate books): which one this request works in; the full list only for admins.
 		const organization = await ctx.orgs.current();
 		const organizations = req.user.role === "admin" ? await ctx.orgs.list() : [];
-		return { name: ctx.name, llm, settings: { ...cfg, ap_account: String(ap_account ?? "") }, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version, organization, organizations };
+		const files_for_documents = await files.pendingForDocuments();
+		return { name: ctx.name, files_for_documents, llm, settings: { ...cfg, ap_account: String(ap_account ?? "") }, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version, organization, organizations };
+	});
+
+	// POST /documents/move: file the PDFs and scans still in the module's storage (from before 0.10.0)
+	// in Ledger's Documents. A person asks for it: it moves their files.
+	ctx.route("POST", "/documents/move", async (req) => {
+		const r = await files.moveToDocuments(req.user);
+		ctx.log.info("files moved to Documents", { ...r, by: req.user.username });
+		return r;
 	});
 
 	// POST /sort-now: match bills, receipts and transfers to the statement transactions waiting to be

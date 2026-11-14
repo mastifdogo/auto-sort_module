@@ -7,8 +7,8 @@ LLM API: there's no API key to set up in the module.
 
 - **Formats:** CSV exports (columns are found from the header, or guessed from the data when there's
   no header; single amount or debit/credit columns) and **OFX / QFX / QBO**.
-- **AI:** whatever the admin chose under **Settings → LLM API** in Ledger: Claude, or a local model
-  through Ollama or an OpenAI-compatible server so statements stay on your network.
+- **AI:** whichever LLM connection the admin set up under **Settings → LLM API** in Ledger: any
+  provider Ledger supports, including a model on your own network so statements stay there.
 - **Uses your books:** the prompt includes your chart of accounts and how you booked similar
   transactions from the same bank account before. The model can only answer with one of your real
   account codes (the response is constrained to a JSON schema).
@@ -37,7 +37,7 @@ LLM API: there's no API key to set up in the module.
 
 ## Install
 
-Needs **Ledger 0.16.0 or newer** (customers and vendors shared with Ledger, account tags and
+Needs **Ledger 0.19.1 or newer** (the shared Documents store, any LLM provider, customers and vendors shared with Ledger, account tags and
 sub-accounts, module file storage, Import from CSV, the shared LLM API and its
 connection for images, journal entry links, the New account dialog, file exchange between modules,
 organizations, settings forms, roles, search, drawn icons).
@@ -45,10 +45,10 @@ organizations, settings forms, roles, search, drawn icons).
 1. In Ledger, open **Settings → Modules**, enter `mastifdogo/llm-api-module` and press **Add**.
    **Auto sort** appears in the sidebar with a robot icon. You can hide or reorder it under
    Settings → Sidebar. Updates install on Ledger's update schedule, or with **Update modules now**.
-2. An admin allows the module under **Settings → LLM API**: set up a connection (Claude needs an API
-   key; Ollama a model you've pulled) and tick **Auto sort** under the modules allowed to use it. A
-   connection for images reads bill PDFs (Claude) and photos (Claude or a local vision model).
-   Larger local models (14B and up) categorise noticeably better than small ones.
+2. An admin allows the module under **Settings → LLM API**: set up a connection and tick **Auto
+   sort** under the modules allowed to use it. A connection for images reads photos of bills and
+   receipts, and bill PDFs when it can read PDFs (the Status tab says whether it does). Larger
+   local models (14B and up) categorise noticeably better than small ones.
 3. Options are under **Settings → Auto sort** (per organization): review threshold, transactions
    per AI request, and the accounts payable account.
 4. The module's **Status** tab shows whether the LLM API is ready, and what's missing if not.
@@ -143,8 +143,8 @@ into payables. The card's own statement already records those charges.
 ## Photos of bills and receipts
 
 Upload a photo or scan (JPEG, PNG, WebP, GIF) on the Bills or Receipts tab like a PDF; large phone photos are
-shrunk in the browser first. Pictures go to Ledger's LLM connection for images (Settings → LLM API;
-Claude, or a local vision model such as one served by Ollama), which can be a different model than
+shrunk in the browser first. Pictures go to Ledger's LLM connection for images (Settings → LLM
+API), which can be a different model than
 the one for text. Photos inside an uploaded email (with no PDF) and pictures other modules send are
 read the same way. The picture is kept with the bill or receipt. Without a connection for images,
 enter the details by hand. The Status tab shows which connection reads PDFs and pictures.
@@ -209,7 +209,7 @@ a bank or card account named after the sender and the account number's last digi
 Auto sort accepts `statement`, `transaction`, `bill` and `receipt` files through Ledger's file
 exchange (`ctx.files`, Ledger 0.11.0). A module offering "send to…" lists it among the targets.
 
-- **Statements and transaction lists** (CSV, OFX, QFX, QBO, or a PDF read by Claude) are staged on
+- **Statements and transaction lists** (CSV, OFX, QFX, QBO, or a PDF when the LLM connection reads PDFs) are staged on
   the Statements tab. Put the account in `meta.account_code` (and optionally `meta.flip_signs`,
   `meta.date_order`); without it the statement waits for you to choose, and your choice is
   remembered for that module and account number.
@@ -260,7 +260,7 @@ approve, and a to-do on Ledger's dashboard counts the matches waiting.
 
 Bills and receipts come from the Bills and Receipts tabs (a PDF, a photo or a saved email, `.eml`), from other
 modules (Ledger's file exchange), or by hand. Ledger's LLM API reads the vendor, invoice number,
-dates, amount and a suggested account (PDFs need a connection for images that's Claude; photos any
+dates, amount and a suggested account (PDFs need a connection for images that reads PDFs; photos any
 connection for images). Repeats of a bill that's already listed (same vendor and invoice number, or
 same amount and due date) are refused.
 
@@ -270,7 +270,7 @@ and says what it found.
 
 **A bill from a statement:** on a card or loan statement, **Create bill** has Ledger's LLM API read
 what the statement says is owed: the new balance, due date, statement date, minimum payment and
-reference (from the statement file; for PDFs, Claude). It never adds up the transactions itself.
+reference (from the statement file; a PDF needs a connection that reads PDFs). It never adds up the transactions itself.
 You check the form, then **Create bill**; one bill per statement. Its account is the card or loan
 account, so paying it pays down the card. Statements uploaded before 0.7.0 have no file kept; the
 LLM then only sees the transactions, so type the amount.
@@ -361,10 +361,17 @@ bills, statements and transactions; the links open them on the module's page.
 
 ## Backups and files
 
-Bill PDFs and photos, and statement files, are kept in Ledger's storage for modules (Ledger 0.13.2:
-on its data share, per organization), and every backup folder carries them under
-`files/categorizer/` (`bills/<id>/…`, `statements/<id>/…`). The page opens them straight from there.
-Files kept in the database by earlier versions move there by themselves after the update.
+**Documents** (Ledger 0.19.0): PDFs and PNG/JPEG scans of bills and receipts, and PDF statements,
+are filed in Ledger's **Documents** (in the sidebar), the one store for PDFs that Ledger and every
+module share; you can see, rename and search them there, and backups carry them. A bill is filed
+as an invoice and a receipt as a receipt, with the vendor and date once you approve it; a statement
+under its bank or card account. A file that's already in Documents is used as it is, not added
+twice. Deleting a bill removes the document only if Auto sort filed it; ones you added stay.
+
+PDFs and scans that 0.8–0.9 saved in Auto sort's own storage stay there until you press **Move them
+to Documents** on the Status tab (they keep opening either way). Other files (CSV and OFX
+statements, GIF and WebP pictures) stay in the module's storage, which backups carry under
+`files/categorizer/`.
 
 Since Ledger 0.13.0 each backup also saves Auto sort's tables as CSV files you can open in a
 spreadsheet: `statements` and `transactions` (what was uploaded and how each line was categorised
@@ -386,12 +393,12 @@ is posted until you approve them.
 
 ## Privacy
 
-With Claude as Ledger's AI, each transaction's date, description, memo and amount, your account
-codes, names and descriptions, and descriptions of recent entries on the statement account are
-sent to the Anthropic API, and so are the bills, receipts and photos you upload. Auto sort sends a
+With a hosted LLM provider as Ledger's connection, each transaction's date, description, memo and
+amount, your account codes, names and descriptions, and descriptions of recent entries on the
+statement account are sent to that provider, and so are the bills, receipts and photos you upload. Auto sort sends a
 line's or bill's date, description and amount with its candidates (dates, descriptions, amounts and
-account codes of matching entries, lines and bills). With Ollama or another server on your network,
-nothing leaves it. Bill documents are stored in the Ledger database. Ledger logs each AI call (tokens, not content) under
+account codes of matching entries, lines and bills). With a model on your own network,
+nothing leaves it. Bill documents are kept in Ledger's Documents. Ledger logs each AI call (tokens, not content) under
 Settings → LLM API.
 
 ## Notes on Ledger's module guidelines
@@ -447,6 +454,11 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.10.0:** Needs Ledger 0.19.1. PDFs and scans of bills, receipts and statements are filed in
+  Ledger's shared **Documents** instead of the module's own storage; older ones move when you press
+  the button on the Status tab. Works with any LLM provider Ledger connects (no provider is named
+  or assumed). Migration 016.
 
 - **0.9.0:** Needs Ledger 0.16.0. Bills' vendors and customers are linked to Ledger's shared list
   of customers and vendors (entities), and entries for a bill record its vendor; AI-read vendors are

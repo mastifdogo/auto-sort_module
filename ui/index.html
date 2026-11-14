@@ -318,6 +318,10 @@
 	<div class="panel">
 		<h2 style="margin-top:0">AI</h2>
 		<p id="st-ai" class="small"></p>
+		<div id="st-docs" class="hidden">
+			<h2>Documents</h2>
+			<p class="small"><span id="st-docs-text"></span> <button class="btn" id="st-docs-move">Move them to Documents</button></p>
+		</div>
 		<h2>Organization</h2>
 		<p id="st-org" class="small"></p>
 		<h2>Options</h2>
@@ -1545,23 +1549,36 @@
 		const ai = st.llm;
 		$("st-ai").replaceChildren(
 			...(!ai.configured
-				? statusLine(false, "No AI provider is set up yet. An admin can choose one under Settings → LLM API and allow this module there.")
+				? statusLine(false, "No LLM connection is set up yet. An admin can add one under Settings → LLM API and allow this module there.")
 				: !ai.allowed
-					? statusLine(false, `Ledger uses ${ai.provider} (${ai.model || "default model"}), but this module isn't allowed to use it yet. An admin can allow it under Settings → LLM API.`)
-					: statusLine(true, `Suggestions and bills use Ledger's LLM API: ${ai.provider}, ${ai.model || "default model"}. ${
+					? statusLine(false, "Ledger has an LLM connection, but this module isn't allowed to use it yet. An admin can allow it under Settings → LLM API.")
+					: statusLine(true, `Suggestions and bills use Ledger's LLM API${ai.model ? ` (${ai.model})` : ""}. ${
 						!ai.images?.configured
 							? "No connection for images is set up, so amounts that are only in a PDF or a photo have to be typed in."
-							: `PDFs and photos go to ${ai.images.provider}, ${ai.images.model || "default model"}${ai.readsPdf ? "" : " (it reads photos of bills and receipts; PDFs need Claude)"}.`
+							: `PDFs and photos go to the connection for images${ai.images.model ? ` (${ai.images.model})` : ""}${ai.readsPdf ? "" : "; it reads photos of bills and receipts but not PDFs, so PDF amounts have to be typed in"}.`
 					}`)),
 		);
 		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${st.settings.ap_account || "none (bills are only tracked)"}.`;
 		$("st-version").textContent = `Module ${st.version} on Ledger ${st.ledger}.`;
+		// PDFs and scans saved before 0.10.0 are still in Auto sort's own storage: you decide when they move.
+		const n = st.files_for_documents || 0;
+		$("st-docs").classList.toggle("hidden", n === 0 || st.role === "viewer");
+		$("st-docs-text").textContent = `${n} PDF${n === 1 ? "" : "s"} or scan${n === 1 ? "" : "s"} of bills, receipts and statements ${n === 1 ? "is" : "are"} still in Auto sort's own storage. Ledger now keeps these in Documents (in the sidebar), shared with every module.`;
 		const org = st.organization;
 		const others = st.organizations.filter((o) => o.id !== org.id);
 		$("st-org").textContent = `These are ${org.name}'s books (organization ${org.id}). Statements, bills and rules here are kept apart from other organizations'.`
 			+ ` Settings → ${moduleName} are this organization's own.`
 			+ (others.length ? ` Other organizations: ${others.map((o) => `${o.name} (${o.id})`).join(", ")}.` : "");
 	}
+	$("st-docs-move").onclick = async () => {
+		$("st-docs-move").disabled = true;
+		try {
+			const r = await api("/documents/move", { method: "POST" });
+			toast(`${r.moved} file${r.moved === 1 ? "" : "s"} moved to Documents.${r.missing ? ` ${r.missing} couldn't be found.` : ""}`);
+			await loadStatus();
+		} catch (e) { fail(e); } finally { $("st-docs-move").disabled = false; }
+	};
+
 	// Links from Ledger's search bar arrive as /apps/categorizer?bill=… or ?statement=… on the parent page.
 	function openFromLink() {
 		let params;

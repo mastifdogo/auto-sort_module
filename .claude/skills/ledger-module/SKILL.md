@@ -85,9 +85,21 @@ feature the module uses (the context file says which version added what;
   bill-routes.mjs): bills and receipts. The dry run lists bad rows; repeats
   (exact row, or `findDuplicate`) are skipped so re-imports add nothing;
   imported bills are `new` (Needs review), source `import`.
-- Ledger runs in a Debian 12 container: don't spawn outside programs.
+- Ledger runs in a Debian 13 container with PostgreSQL 18 and Node.js 24
+  (Ledger 0.18.0; Debian 12 is deprecated): write for that only, and don't
+  spawn outside programs.
 - Versions: new features (a page, route, setting, data kept) raise the middle
   number (`0.2.6` → `0.3.0`); fixes only raise the last.
+
+## When invoked with no instruction
+
+Bring the module up to date with the current Ledger and push it: read
+Ledger's module docs and skill, compare (new `ctx` features, things Ledger
+now does differently, checker reports), make the changes, raise `"ledger"`
+and bump `version`, run the checks, then commit and push to `main` (the
+release workflow publishes it). If nothing needs changing, say so and push
+nothing. Changes that move the user's data still need their approval in the
+module.
 
 ## 3. Check before saying it works
 

@@ -664,6 +664,8 @@ export default async function register(ctx) {
 			await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [statement.id]);
 		}
 		await syncStatementNotice(statement.id);
+		// Auto sort's matches for the rows that went are no longer to review.
+		await journal.syncTodo();
 	});
 
 	// -----------------------------------------------------------------------
@@ -679,6 +681,8 @@ export default async function register(ctx) {
 			if (b.account_code) {
 				const accounts = await ctx.ledger.listAccounts();
 				if (!accounts.some((a) => a.code === b.account_code)) throw bad(`no active account with code ${JSON.stringify(b.account_code)}`);
+				const { rows: own } = await q(`SELECT 1 FROM ${T("transactions")} WHERE id = ANY($1::bigint[]) AND account_code = $2 LIMIT 1`, [ids.map(String), b.account_code]);
+				if (own.length > 0) throw bad(`${b.account_code} is the statement's own account; choose the account on the other side`);
 			}
 			params.push(b.account_code || null);
 			sets.push(`chosen_code = $${params.length}`);
@@ -695,6 +699,7 @@ export default async function register(ctx) {
 		);
 		if (b.account_code !== undefined || b.status !== undefined) await transfers.matchTransfers();
 		for (const sid of new Set(rows.map((r) => r.statement_id))) await syncStatementNotice(sid);
+		if (b.status !== undefined) await journal.syncTodo();
 		return { updated: rowCount };
 	}
 
@@ -806,14 +811,21 @@ export default async function register(ctx) {
 				results.posted++;
 			} catch (err) {
 				const msg = String(err?.message || err).slice(0, 500);
-				await q(`UPDATE ${T("transactions")} SET status = 'new', error = $2 WHERE id = $1`, [id, msg]);
-				results.failed.push({ id, error: msg });
+				// Only a row that isn't in the journal yet goes back to be posted again.
+				const { rowCount } = await q(`UPDATE ${T("transactions")} SET status = 'new', error = $2 WHERE id = $1 AND status = 'posting'`, [id, msg]);
+				if (rowCount > 0) results.failed.push({ id, error: msg });
+				else {
+					// Its entry is posted and a later step failed (marking a bill paid, learning the payee): the row stays posted.
+					results.posted++;
+					ctx.log.warn("posted, but a follow-up step failed", { transaction: String(id), err: msg });
+				}
 			}
 		}
 		await syncStatementNotice(statement.id);
 		for (const sid of otherStatements) if (String(sid) !== String(statement.id)) await syncStatementNotice(sid);
 		// New entries can be the recorded side of transfers still waiting on other statements.
 		if (results.posted > 0) await transfers.matchTransfers();
+		if (results.posted > 0) await journal.syncTodo();
 		// Someone posted from it: the file it came from (if another module sent it) is done.
 		if (results.posted > 0) await bills.settleFile?.({ statementId: statement.id }, "done", `${results.posted} transaction${results.posted === 1 ? "" : "s"} posted by ${req.user.username}`, req.user.username);
 		ctx.log.info("transactions posted", { statement: String(statement.id), posted: results.posted, failed: results.failed.length, by: req.user.username });

@@ -465,6 +465,20 @@ not accessible by integration", allow it under Settings → Actions → General 
 
 ## Changes
 
+- **0.13.1:** Fixes, no new features and no migration.
+  - A statement line was posted twice if something failed right after its entry was made (the
+    line went back to "not posted" although the entry was in the journal). It now stays posted.
+  - On a bill or receipt, **Save changes** (unless the vendor or customer changed), **Mark paid**,
+    **Ignore** and **Reopen** saved but then showed "no such endpoint" and left the page stale;
+    **Approve** stopped after saving an edit. They work now.
+  - CSV statements: dates with the month written out as *June* or *July* ("5 June 2026") and
+    amounts without a leading zero (".50") or with a typographic minus sign were skipped. They are
+    read now.
+  - The dashboard's "matches from Auto sort to review" to-do no longer counts matches whose
+    statement line was posted, skipped or discarded.
+  - Refused with a clear message: booking a line against its statement's own account, merging a
+    line into a reversed journal entry, and matching a payment to a bill that is paid or ignored.
+
 - **0.13.0:** Needs Ledger 0.19.8. The accounts payable account under Settings → Auto sort → Bills
   is chosen from a list of liability accounts instead of typed as a code.
 

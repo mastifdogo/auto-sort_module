@@ -473,7 +473,6 @@
 		$("vendors").replaceChildren(...vendors.data.map((v) => el("option", { value: v.name })));
 	}
 
-	const ACCOUNT_TYPES = ["asset", "liability", "equity", "revenue", "expense"];
 	const TYPE_START = { asset: 1000, liability: 2000, equity: 3000, revenue: 4000, expense: 5000 };
 	function proposeCode(type) {
 		const used = new Set(accounts.map((a) => a.code));
@@ -1390,10 +1389,11 @@
 	async function billAction(action, body = {}) {
 		try {
 			let r;
-			if (action === "save") r = await api(`/bills/${currentBill.id}`, { method: "PATCH", body: JSON.stringify(body) });
-			// A new customer or vendor may now be in Ledger's list.
-			if (action === "save" && ("customer_name" in body || "vendor" in body)) customersLoaded = false;
-			else if (action === "delete") r = await api(`/bills/${currentBill.id}`, { method: "DELETE" });
+			if (action === "save") {
+				r = await api(`/bills/${currentBill.id}`, { method: "PATCH", body: JSON.stringify(body) });
+				// A new customer or vendor may now be in Ledger's list.
+				if ("customer_name" in body || "vendor" in body) customersLoaded = false;
+			} else if (action === "delete") r = await api(`/bills/${currentBill.id}`, { method: "DELETE" });
 			else r = await api(`/bills/${currentBill.id}/${action}`, { method: "POST", body: JSON.stringify(body) });
 			if (action === "delete") { currentBill = null; $("bill-detail").classList.add("hidden"); }
 			await loadBills();

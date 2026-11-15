@@ -176,7 +176,7 @@ add Gmail or IMAP reading back without the user asking).
 
 - The id is `categorizer` (permanent: it names the schema). The name shown
   is "Auto sort" (it was "LLM API"); messages use `ctx.name`, never a fixed
-  name. Needs Ledger ≥ 0.19.5.
+  name. Needs Ledger ≥ 0.19.8.
 - Layout: `server.mjs` (statements, categorizing, `/status`, search, posting
   with entry links), `lib/bill-routes.mjs` (bill routes, reading uploads and
   module files, `matchBillTx`, `linkBillEntry`), `lib/mime.mjs` (uploaded

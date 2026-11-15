@@ -39,5 +39,3 @@ export function sampleEmail({ subject = "Your Rogers bill", messageId = "abc@rog
 		].join("\r\n"),
 	);
 }
-
-/** A tiny IMAP server: one folder, messages by UID. Records every command. */

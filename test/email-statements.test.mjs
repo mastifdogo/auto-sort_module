@@ -1,31 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { extractBill } from "../lib/bills.mjs";
-import { accountHint, extractPdfStatement, senderAddress, shouldFlip, sourceKey } from "../lib/email-statements.mjs";
-import { parseEmail } from "../lib/mime.mjs";
-
-const OFX = `OFXHEADER:100\r\n\r\n<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS><BANKACCTFROM><ACCTID>00123-4567</BANKACCTFROM><BANKTRANLIST>
-<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260302<TRNAMT>-45.10<FITID>F1<NAME>SHELL</STMTTRN>
-<STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20260303<TRNAMT>2000.00<FITID>F2<NAME>PAYROLL</STMTTRN>
-</BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>`;
-
-const mailWith = (attachments, subject = "Your March eStatement") =>
-	Buffer.from(
-		[
-			"From: My Bank <alerts@mybank.ca>",
-			`Subject: ${subject}`,
-			"Message-ID: <st-1@mybank>",
-			'Content-Type: multipart/mixed; boundary="b"',
-			"",
-			"--b",
-			"Content-Type: text/plain",
-			"",
-			"Your statement for the account ending in 4567 is attached.",
-			...attachments.flatMap(([name, type, body]) => ["--b", `Content-Type: ${type}; name="${name}"`, `Content-Disposition: attachment; filename="${name}"`, "Content-Transfer-Encoding: base64", "", Buffer.from(body).toString("base64")]),
-			"--b--",
-			"",
-		].join("\r\n"),
-	);
+import { extractPdfStatement, shouldFlip } from "../lib/email-statements.mjs";
 
 test("card CSVs with purchases as positive amounts are flipped", () => {
 	const card = { type: "liability" };

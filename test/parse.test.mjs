@@ -7,6 +7,8 @@ test("parseAmount handles bank formats", () => {
 		"12.30": 1230n, "-12.30": -1230n, "$1,234.56": 123456n, "-$45.10": -4510n, "$-45.10": -4510n, "(12.30)": -1230n,
 		"12.30-": -1230n, "12.30 CR": 1230n, "12.30 DR": -1230n, "1.234,56": 123456n, "12,3": 1230n, "CAD 5": 500n,
 		"0.005": 1n, "7": 700n, "+3.5": 350n, "": null, "abc": null,
+		// No leading zero, and a typographic minus sign.
+		".50": 50n, "-.50": -50n, "$.5": 50n, "(.05)": -5n, ".": null, "-": null, "\u221212.34": -1234n,
 	};
 	for (const [raw, want] of Object.entries(cases)) assert.equal(parseAmount(raw), want, raw);
 });
@@ -21,6 +23,12 @@ test("parseDate handles common layouts", () => {
 	assert.equal(parseDate("05-Mar-26"), "2026-03-05");
 	assert.equal(parseDate("Mar 5, 2026"), "2026-03-05");
 	assert.equal(parseDate("Sept 5, 2026"), "2026-09-05");
+	// Month names written in full, four-letter ones included.
+	assert.equal(parseDate("5 June 2026"), "2026-06-05");
+	assert.equal(parseDate("July 6, 2026"), "2026-07-06");
+	assert.equal(parseDate("8 Sept 2026"), "2026-09-08");
+	assert.equal(parseDate("1 September 2026"), "2026-09-01");
+	assert.equal(parseDate("5 Junk 2026"), null);
 	assert.equal(parseDate("02/30/2026"), null);
 	assert.equal(parseDate("Total"), null);
 });
@@ -79,4 +87,14 @@ test("payeeKey groups the same merchant", () => {
 	assert.equal(payeeKey("SHELL #998 TORONTO ON"), "SHELL TORONTO ON");
 	assert.equal(payeeKey("PAYPAL *NETFLIX.COM 866-579"), "NETFLIX");
 	assert.equal(payeeKey("12345"), "");
+});
+
+test("rows dated with full month names, and amounts without a leading zero, are kept", () => {
+	const csv = "Date,Description,Amount\n5 June 2026,LOBLAWS,-45.10\n6 July 2026,HYDRO ONE,-120.00\n8 Sept 2026,COFFEE,-.50\n";
+	const r = parseStatement(csv, { filename: "x.csv" });
+	assert.deepEqual(r.warnings, []);
+	assert.deepEqual(
+		r.transactions.map((t) => [t.date, t.amount_cents]),
+		[["2026-06-05", -4510n], ["2026-07-06", -12000n], ["2026-09-08", -50n]],
+	);
 });

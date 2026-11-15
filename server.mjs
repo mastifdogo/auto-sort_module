@@ -18,6 +18,7 @@
 import { createHash } from "node:crypto";
 import { registerBills } from "./lib/bill-routes.mjs";
 import { moduleFiles } from "./lib/files.mjs";
+import { markAmended, renameAccountCode } from "./lib/ledger-sync.mjs";
 import { dashboard } from "./lib/dashboard.mjs";
 import { registerTransfers } from "./lib/transfer-sync.mjs";
 import { registerReceivedFiles } from "./lib/received-files.mjs";
@@ -340,6 +341,12 @@ export default async function register(ctx) {
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
 	const journal = registerJournalMatches(ctx, { q, T, bad, ai, bills, duplicates, transfers, syncStatementNotice });
 
+	// A person renumbered an account (Ledger 0.19.3): Ledger has rewritten the columns it recognises; these follow.
+	// It runs in that person's organization.
+	if (typeof ctx.ledger.onAccountCodeChanged === "function") {
+		ctx.ledger.onAccountCodeChanged((change) => renameAccountCode(q, T, change));
+	}
+
 	await migrateOldSettings().catch((err) => ctx.log.error("moving old settings failed", { err: String(err?.message || err) }));
 	// Files kept in the database before 0.8.0 move to Ledger's storage, in the background.
 	ctx.orgs
@@ -543,6 +550,16 @@ export default async function register(ctx) {
 		return ctx.response(201, { id: r.id, transactions: r.transactions, duplicates: r.duplicates, warnings: parsed.warnings.slice(0, 50) });
 	});
 
+	async function statementReconciled(id) {
+		const { rows } = await q(`SELECT document_id FROM ${T("statement_files")} WHERE statement_id = $1 AND document_id IS NOT NULL`, [id]);
+		if (!rows.length || typeof ctx.documents?.get !== "function") return false;
+		try {
+			return (await ctx.documents.get(rows[0].document_id))?.reconciled === true;
+		} catch {
+			return false; // gone from Documents (or a restore left it out)
+		}
+	}
+
 	async function getStatement(id) {
 		if (!/^\d+$/.test(id)) throw new ctx.HttpError(404, "no such statement");
 		const { rows } = await q(`${STATEMENT_SELECT} WHERE s.id = $1 GROUP BY s.id`, [id]);
@@ -572,6 +589,10 @@ export default async function register(ctx) {
 		statement.bill_id = made[0]?.id ?? null;
 		const { rows: docs } = await q(`SELECT 1 FROM ${T("statement_files")} WHERE statement_id = $1`, [statement.id]);
 		statement.has_document = docs.length > 0;
+		// Ledger 0.19.4: a statement filed in Documents says whether an account has been reconciled against it.
+		statement.reconciled = await statementReconciled(statement.id);
+		// Ledger 0.19.5: a person may have changed a posted entry's amounts since; show both, overwrite neither.
+		await markAmended(ctx, rows, statement.account_code);
 		return { statement, transactions: rows, review_threshold, flip_hint, suggested_account };
 	});
 

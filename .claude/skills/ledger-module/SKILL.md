@@ -157,7 +157,7 @@ add Gmail or IMAP reading back without the user asking).
 
 - The id is `categorizer` (permanent: it names the schema). The name shown
   is "Auto sort" (it was "LLM API"); messages use `ctx.name`, never a fixed
-  name. Needs Ledger ≥ 0.19.1.
+  name. Needs Ledger ≥ 0.19.5.
 - Layout: `server.mjs` (statements, categorizing, `/status`, search, posting
   with entry links), `lib/bill-routes.mjs` (bill routes, reading uploads and
   module files, `matchBillTx`, `linkBillEntry`), `lib/mime.mjs` (uploaded
@@ -168,6 +168,16 @@ add Gmail or IMAP reading back without the user asking).
   `lib/received-files.mjs`, `lib/email-statements.mjs` (statements from
   modules: account hints, PDF statements), `lib/dashboard.mjs`. Tests:
   `test/*.test.mjs` (`npm test`).
+- Changes people make in Ledger (`lib/ledger-sync.mjs`): Ledger rewrites a
+  renumbered account's code only in columns named `account_code`,
+  `*_account_code`, `*_account`; `suggested_code`, `chosen_code`,
+  `account_guess` and `new_account` (jsonb) predate that rule, so
+  `ctx.ledger.onAccountCodeChanged` updates them. Name any new code column
+  `…account_code`. A posted entry's amounts can be changed by a person:
+  `markAmended()` reads the entry and adds `entry_amended` /
+  `entry_amount_cents` to statement rows, bills and payments (never
+  overwrite the module's own amount). Statements filed in Documents report
+  `reconciled`.
 - AI: every call is `ctx.llm.json()`; a 403/409 from it ("not allowed" /
   "not set up") stops a batch run early, and its message (which says where
   to fix it) is shown on the rows.

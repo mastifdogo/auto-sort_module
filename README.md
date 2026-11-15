@@ -359,6 +359,17 @@ Options are Ledger's module settings (`GET`/`PUT /api/v1/modules/categorizer/set
 only). Viewers can look but not change anything; Ledger enforces that. Ledger's search bar finds
 bills, statements and transactions; the links open them on the module's page.
 
+## Changes made in Ledger
+
+- **Renumbered accounts** (Ledger 0.19.3): when someone changes an account's code, every account
+  Auto sort remembers follows: statements, transactions (suggested and chosen accounts, proposed
+  new accounts), bills, split lines, payee rules and the payable account setting.
+- **Changed entries** (Ledger 0.19.5): a person can correct the amounts of an entry Auto sort
+  posted. The statement row, bill or payment then shows **Changed in Ledger** with the entry's
+  amount now, next to Auto sort's own; neither is overwritten.
+- **Reconciled statements** (Ledger 0.19.4): a statement filed in Documents shows **Reconciled in
+  Ledger** once an account has been reconciled against it.
+
 ## Backups and files
 
 **Documents** (Ledger 0.19.0): PDFs and PNG/JPEG scans of bills and receipts, and PDF statements,
@@ -443,8 +454,7 @@ Ledger installs modules without a build step or `npm install`, so the module has
 Use the `ledger-module` skill in `.claude/skills/`: it checks the module against a real Ledger
 (`sh .claude/skills/ledger-module/scripts/check.sh` with `TEST_DATABASE_URL` set) and links to
 Ledger's module docs. `npm test` runs the unit tests (Node 22+). To try it without spending API
-credit, point Ledger's AI (Settings → LLM API, Server URL) at a local stub that answers like the
-Messages API.
+credit, point Ledger's AI (Settings → LLM API, Server URL) at a local stub server.
 
 **Releasing:** bump `version` in `ledger-module.json` and merge to `main`. The Release workflow
 (`.github/workflows/release.yml`) then tags `v<version>` and publishes the GitHub Release that
@@ -454,6 +464,10 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.11.0:** Needs Ledger 0.19.5. Follows renumbered accounts everywhere it keeps a code, shows
+  when a person changed a posted entry's amounts in Ledger, and shows statements that have been
+  reconciled. No migration.
 
 - **0.10.0:** Needs Ledger 0.19.1. PDFs and scans of bills, receipts and statements are filed in
   Ledger's shared **Documents** instead of the module's own storage; older ones move when you press
@@ -521,7 +535,7 @@ not accessible by integration", allow it under Settings → Actions → General 
   separate tabs. Migration 006.
 
 - **0.2.0:** **Statements in email** option: bank and card statements found by the email check (CSV, OFX,
-  QFX, QBO attachments, or PDFs read by Claude) are staged for review and posted only with your
+  QFX, QBO attachments, or PDFs read by the AI) are staged for review and posted only with your
   approval; their account is remembered per sender and account number. Migration 005.
 
 - **0.1.3:** **Sort now** button on the Bills tab; the page no longer repeats the module's name as a

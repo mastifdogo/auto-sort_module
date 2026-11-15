@@ -376,6 +376,8 @@
 		toastTimer = setTimeout(() => (t.style.display = "none"), isError ? 8000 : 3500);
 	}
 	const fail = (e) => toast(e.message || String(e), true);
+	// Someone changed the posted entry's amounts in Ledger since: show what it says now, next to the module's own amount.
+	const amendedPill = (r) => (r?.entry_amended ? el("span", { class: "pill warn", title: `Changed in Ledger after it was posted; Auto sort's record says ${money(r.amount_cents)}` }, ` Changed in Ledger: ${money(r.entry_amount_cents)}`) : "");
 	const money = (cents) => (Number(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 	const TYPE_ORDER = ["expense", "revenue", "asset", "liability", "equity"];
 
@@ -719,7 +721,7 @@
 		const { statement: s, transactions } = current;
 		const stmtAccount = accounts.find((a) => a.code === s.account_code);
 		$("d-title").textContent = s.account_code ? `${s.filename} → ${accountLabel(s.account_code)}` : `${s.filename} (account not chosen)`;
-		$("d-status").replaceChildren(statusPill(s.status));
+		$("d-status").replaceChildren(statusPill(s.status), s.reconciled ? el("span", { class: "pill good", title: "An account has been reconciled against this statement in Ledger" }, " Reconciled in Ledger") : "");
 		const review = transactions.filter(isReview).length;
 		$("d-info").textContent =
 			`${s.total} transactions${s.first_date ? `, ${s.first_date} to ${s.last_date}` : ""} · ${s.posted} posted · ${s.skipped} skipped · ${review} need review` +
@@ -766,7 +768,7 @@
 				cb.checked = selected.has(t.id);
 				cb.onchange = () => { cb.checked ? selected.add(t.id) : selected.delete(t.id); updateButtons(); };
 				let conf;
-				if (t.status === "posted") conf = el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`, t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : "");
+				if (t.status === "posted") conf = el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`, t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : ""), amendedPill(t));
 				else if (t.status === "skipped") conf = el("span", { class: "pill plain" }, "Skipped");
 				else if (t.status === "merged") conf = el("span", {},
 					el("span", { class: "pill plain" }, t.duplicate_entry_id ? `Duplicate of entry #${t.duplicate_entry_id}` : `Duplicate of row #${t.duplicate_of ?? "?"}`),
@@ -1270,7 +1272,7 @@
 	function renderBill(b, payments) {
 		const [cls, text] = BILL_STATUS[b.status] || ["plain", b.status];
 		$("bd-title").textContent = `${b.vendor || "Bill"}${b.invoice_number ? ` #${b.invoice_number}` : ""}`;
-		$("bd-status").replaceChildren(el("span", { class: `pill ${cls}` }, text), b.journal_entry_id ? el("span", { class: "pill plain" }, ` In payables (entry #${b.journal_entry_id})`) : "");
+		$("bd-status").replaceChildren(el("span", { class: `pill ${cls}` }, text), b.journal_entry_id ? el("span", { class: "pill plain" }, ` In payables (entry #${b.journal_entry_id})`) : "", amendedPill(b));
 		$("bd-error").textContent = b.error || "";
 		$("bd-kind").value = b.kind;
 		$("bd-vendor").value = b.vendor;
@@ -1306,7 +1308,7 @@
 					el("td", {}, t.description),
 					el("td", { class: "num neg" }, `${money(t.amount_cents)} ${b.currency}`),
 					el("td", { class: "wide" }, accountLabel(t.account_code), " → ", accountLabel(t.code || "")),
-					el("td", {}, t.status === "posted" ? el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`) : el("span", { class: "pill plain" }, "Waiting to be posted")),
+					el("td", {}, t.status === "posted" ? el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`), amendedPill(t)) : el("span", { class: "pill plain" }, "Waiting to be posted")),
 					el("td", {}, t.status !== "posted" ? el("button", { class: "btn", onclick: () => billAction("unmatch") }, "Not this one") : el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "Open statement")),
 				),
 			))),

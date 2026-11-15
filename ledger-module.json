@@ -1,9 +1,9 @@
 {
   "id": "categorizer",
   "name": "Auto sort",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and Ledger's LLM API suggests an account for each transaction; transfers between your accounts are posted once, and lines already in the journal are found and linked. Bills and receipts (PDFs, photos, saved emails, or files from other modules) are tracked until paid and matched to statement payments; an Auto sort button asks the LLM for matches. Needs an admin to allow it under Settings → LLM API.",
-  "ledger": ">=0.19.6",
+  "ledger": ">=0.19.8",
   "server": "server.mjs",
   "ui": "ui",
   "nav": {
@@ -37,12 +37,12 @@
     "fields": [
       {
         "key": "review_threshold",
-        "label": "Needs review below confidence",
+        "label": "Mark for review below confidence",
         "type": "number",
         "min": 0,
         "max": 1,
         "default": 0.75,
-        "help": "Suggestions below this confidence (0 to 1) are marked Needs review."
+        "help": "From 0 to 1. Suggestions the AI is less sure of than this are marked Needs review."
       },
       {
         "key": "batch_size",
@@ -50,15 +50,18 @@
         "type": "number",
         "min": 1,
         "max": 200,
-        "default": 40
+        "default": 40,
+        "help": "Smaller batches are slower but suit small models."
       },
       {
         "key": "ap_account",
-        "label": "Accounts payable account code",
-        "type": "text",
-        "default": "",
-        "help": "Optional. A liability account, e.g. 2000. Approving a bill then posts it there, and its bank payment clears it. Empty: bills are only tracked.",
-        "tab": "bills"
+        "label": "Accounts payable account",
+        "type": "account",
+        "tab": "bills",
+        "account_types": [
+          "liability"
+        ],
+        "help": "Optional. Approving a bill posts it there, and its bank payment clears it. None: bills are only tracked."
       }
     ]
   }

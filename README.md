@@ -465,6 +465,9 @@ not accessible by integration", allow it under Settings → Actions → General 
 
 ## Changes
 
+- **0.13.0:** Needs Ledger 0.19.8. The accounts payable account under Settings → Auto sort → Bills
+  is chosen from a list of liability accounts instead of typed as a code.
+
 - **0.12.0:** Needs Ledger 0.19.6. Settings → Auto sort has two tabs, Sorting (review threshold,
   batch size) and Bills (accounts payable account); the Status tab links to each. Settings keep
   their values.

@@ -11,6 +11,23 @@ This repository is a **Ledger module**: `ledger-module.json` (manifest),
 Release of this repository. Ledger itself is
 [mastifdogo/Bookeeping](https://github.com/mastifdogo/Bookeeping).
 
+## Push to `main` without asking
+
+**When work on this module is finished and its checks pass, commit and push
+it to `main` of this repository straight away. Do not ask "shall I push?",
+do not wait for a go-ahead, do not leave it on a branch, and do not open a
+pull request.** The owner has asked for this as a standing rule: every
+finished change goes to `main`, where the release workflow publishes the new
+version. Asking first is the mistake.
+
+- Bump `version` in `ledger-module.json` in the same push, so it releases.
+- After pushing, say what was pushed and the new version; don't ask whether
+  to release it, it already is.
+- If your environment gives you a different work branch, push there as it
+  requires and then to `main` as well.
+- Don't push only if: the checks fail; the user said in this conversation
+  not to; or the change belongs in Ledger's repository, not this one.
+
 ## 1. Get a Ledger checkout and read the module API
 
 The API reference and the full workflow live in the Ledger repository.
@@ -124,7 +141,9 @@ to keep it running and test the real flows with `curl` and Playwright (it
 prints the session cookie). If PostgreSQL has no password yet:
 `runuser -u postgres -- psql -qc "ALTER USER postgres PASSWORD 'postgres'"`.
 
-## 4. Release (only when the user asks)
+## 4. Release: push to `main`, without asking
+
+Pushing is part of finishing the work (see "Push to `main` without asking" above). Don't ask first.
 
 **Never push to the Ledger repository (`mastifdogo/Bookeeping`) while
 working on this module.** Push only to this repository. If the module needs

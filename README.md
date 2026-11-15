@@ -465,6 +465,10 @@ not accessible by integration", allow it under Settings → Actions → General 
 
 ## Changes
 
+- **0.12.0:** Needs Ledger 0.19.6. Settings → Auto sort has two tabs, Sorting (review threshold,
+  batch size) and Bills (accounts payable account); the Status tab links to each. Settings keep
+  their values.
+
 - **0.11.0:** Needs Ledger 0.19.5. Follows renumbered accounts everywhere it keeps a code, shows
   when a person changed a posted entry's amounts in Ledger, and shows statements that have been
   reconciled. No migration.

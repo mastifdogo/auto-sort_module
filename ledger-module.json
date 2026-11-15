@@ -1,9 +1,9 @@
 {
   "id": "categorizer",
   "name": "Auto sort",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Upload bank or credit-card statements (CSV, OFX, QFX) and Ledger's LLM API suggests an account for each transaction; transfers between your accounts are posted once, and lines already in the journal are found and linked. Bills and receipts (PDFs, photos, saved emails, or files from other modules) are tracked until paid and matched to statement payments; an Auto sort button asks the LLM for matches. Needs an admin to allow it under Settings → LLM API.",
-  "ledger": ">=0.19.5",
+  "ledger": ">=0.19.6",
   "server": "server.mjs",
   "ui": "ui",
   "nav": {
@@ -22,6 +22,18 @@
     ]
   },
   "settings": {
+    "tabs": [
+      {
+        "id": "sorting",
+        "label": "Sorting",
+        "help": "How the AI sorts statement lines into accounts."
+      },
+      {
+        "id": "bills",
+        "label": "Bills",
+        "help": "What approving a bill does in the books."
+      }
+    ],
     "fields": [
       {
         "key": "review_threshold",
@@ -45,7 +57,8 @@
         "label": "Accounts payable account code",
         "type": "text",
         "default": "",
-        "help": "Optional. A liability account, e.g. 2000. Approving a bill then posts it there, and its bank payment clears it. Empty: bills are only tracked."
+        "help": "Optional. A liability account, e.g. 2000. Approving a bill then posts it there, and its bank payment clears it. Empty: bills are only tracked.",
+        "tab": "bills"
       }
     ]
   }

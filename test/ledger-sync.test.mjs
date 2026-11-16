@@ -31,3 +31,20 @@ test("markAmended with a sign (a bill's payable entry credits the account)", asy
 	const [b] = await markAmended(ctxWith({ 9: ap }), [{ journal_entry_id: 9, amount_cents: 7500 }], "2100", { sign: -1n });
 	assert.equal(b.entry_amount_cents, 8000n);
 });
+
+test("markAmended notes a changed entry date, even when the amounts are the same", async () => {
+	const e = { amended: false, entry_date: "2026-03-08", lines: [{ account_code: "1000", debit_cents: 0, credit_cents: 999 }] };
+	const rows = [{ journal_entry_id: 4, amount_cents: -999n, date: "2026-03-06" }, { journal_entry_id: 5, amount_cents: -1n, date: "2026-03-08" }];
+	await markAmended({ ledger: { getJournalEntry: async (id) => (id === "4" ? e : { ...e, lines: [{ account_code: "1000", debit_cents: 0, credit_cents: 1 }] }) } }, rows, "1000");
+	assert.equal(rows[0].entry_date_changed, true);
+	assert.equal(rows[0].entry_date, "2026-03-08");
+	assert.equal(rows[0].entry_amended, undefined);
+	assert.equal(rows[1].entry_date_changed, undefined);
+});
+
+test("markAmended counts a line moved off the account (Unreconciled) as a change", async () => {
+	const e = { amended: false, moves: [{ id: 1 }], entry_date: "2026-03-06", lines: [{ account_code: "1990", debit_cents: 0, credit_cents: 999 }] };
+	const [r] = await markAmended({ ledger: { getJournalEntry: async () => e } }, [{ journal_entry_id: 1, amount_cents: -999n, date: "2026-03-06" }], "1000");
+	assert.equal(r.entry_amended, true);
+	assert.equal(r.entry_amount_cents, 0n);
+});

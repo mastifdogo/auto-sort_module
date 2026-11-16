@@ -136,3 +136,13 @@ test("proposed codes follow the chart's numbering and skip used ones", () => {
 	assert.equal(proposeCode([...accounts, { code: "2000", type: "equity" }], "liability"), "2010");
 	assert.equal(proposeCode([{ code: "CASH", type: "asset" }], "asset"), "1000");
 });
+
+test("pickable leaves out hidden accounts and Ledger's Unreconciled account", async () => {
+	const { pickable, candidateAccounts } = await import("../lib/categorize.mjs");
+	assert.equal(pickable({ code: "5900" }), true);
+	assert.equal(pickable({ code: "1900", hidden: true }), false);
+	assert.equal(pickable({ code: "1990", module_id: "ledger" }), false);
+	const bank = { code: "1000", currency: "CAD" };
+	const got = candidateAccounts([{ code: "5900", currency: "CAD", is_active: true }, { code: "1900", currency: "CAD", is_active: true, hidden: true }], bank);
+	assert.deepEqual(got.map((a) => a.code), ["5900"]);
+});

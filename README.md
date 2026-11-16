@@ -367,8 +367,23 @@ bills, statements and transactions; the links open them on the module's page.
 - **Changed entries** (Ledger 0.19.5): a person can correct the amounts of an entry Auto sort
   posted. The statement row, bill or payment then shows **Changed in Ledger** with the entry's
   amount now, next to Auto sort's own; neither is overwritten.
+- **Changed dates and moved lines** (Ledger 0.20.2): an entry's date changed in Ledger shows
+  **Dated … in Ledger** beside the row's own date; a bank line a reconciliation moved to Ledger's
+  Unreconciled account shows as **Changed in Ledger**.
+- **Hidden accounts** (Ledger 0.20.1): clearing accounts and other hidden accounts aren't offered in
+  Auto sort's pickers or to the AI, and can't be chosen for a row, bill or statement. Nothing is
+  ever posted to Ledger's Unreconciled account.
 - **Reconciled statements** (Ledger 0.19.4): a statement filed in Documents shows **Reconciled in
   Ledger** once an account has been reconciled against it.
+
+## Root mode
+
+When an admin turns on Ledger's root mode (Ledger 0.21.1), Auto sort shows red **Root:** buttons:
+delete a statement with all its rows (posted ones too), delete a bill or receipt even when approved
+or paid, mark a posted row not posted, or take a bill out of its journal entry. Journal entries
+and documents are never touched by these. Every change goes through Ledger, so it's in Settings →
+Root log and can be put back. Before root mode can be left, Auto sort lists rows and bills that
+point at a journal entry that no longer exists.
 
 ## Backups and files
 
@@ -464,6 +479,11 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.14.0:** Needs Ledger 0.21.1. Root mode (delete or change any statement, row or bill through
+  Ledger's root log, and a check before leaving it); hidden and clearing accounts left out of
+  pickers and AI suggestions; changed entry dates and lines moved to Unreconciled shown on posted
+  rows. Migration 017 (an id column on four tables, for root mode).
 
 - **0.13.1:** Fixes, no new features and no migration.
   - A statement line was posted twice if something failed right after its entry was made (the

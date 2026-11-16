@@ -17,6 +17,7 @@
 
 import { createHash } from "node:crypto";
 import { registerBills } from "./lib/bill-routes.mjs";
+import { registerRoot } from "./lib/root-routes.mjs";
 import { moduleFiles } from "./lib/files.mjs";
 import { markAmended, renameAccountCode } from "./lib/ledger-sync.mjs";
 import { dashboard } from "./lib/dashboard.mjs";
@@ -24,7 +25,7 @@ import { registerTransfers } from "./lib/transfer-sync.mjs";
 import { registerReceivedFiles } from "./lib/received-files.mjs";
 import { registerDuplicates } from "./lib/duplicate-routes.mjs";
 import { registerJournalMatches } from "./lib/journal-matches.mjs";
-import { candidateAccounts, examplesFromEntries, proposeCode, suggest } from "./lib/categorize.mjs";
+import { candidateAccounts, examplesFromEntries, pickable, proposeCode, suggest } from "./lib/categorize.mjs";
 import { ParseError, parseAmount, parseDate, parseStatement, payeeKey } from "./lib/parse.mjs";
 
 const MAX_CONTENT_CHARS = 1_000_000;
@@ -340,6 +341,7 @@ export default async function register(ctx) {
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
 	const journal = registerJournalMatches(ctx, { q, T, bad, ai, bills, duplicates, transfers, syncStatementNotice });
+	registerRoot(ctx, { q, T, dash, syncStatementNotice, syncTodo: () => journal.syncTodo() });
 
 	// A person renumbered an account (Ledger 0.19.3): Ledger has rewritten the columns it recognises; these follow.
 	// It runs in that person's organization.
@@ -439,7 +441,7 @@ export default async function register(ctx) {
 	// -----------------------------------------------------------------------
 
 	ctx.route("GET", "/accounts", async () => {
-		const accounts = await ctx.ledger.listAccounts();
+		const accounts = (await ctx.ledger.listAccounts()).filter(pickable);
 		return { data: accounts.map((a) => ({ code: a.code, name: a.name, type: a.type, currency: a.currency, kind: a.kind ?? null, parent_code: a.parent_code ?? null })) };
 	});
 
@@ -531,6 +533,7 @@ export default async function register(ctx) {
 		const dateOrder = ["auto", "mdy", "dmy"].includes(b.date_order) ? b.date_order : "auto";
 		const { account } = await statementAccount(b.account_code);
 		if (!account.is_active) throw bad(`account ${account.code} is inactive`);
+		if (!pickable(account)) throw bad(`account ${account.code} is a hidden or clearing account; choose a bank or card account`);
 
 		let parsed;
 		try {
@@ -617,6 +620,7 @@ export default async function register(ctx) {
 		if (statement.status === "categorizing" || statement.status === "queued") throw new ctx.HttpError(409, "wait until the suggestions are done");
 		const { account } = await statementAccount(b.account_code);
 		if (!account.is_active || !["asset", "liability"].includes(account.type)) throw bad("choose an active bank (asset) or card (liability) account");
+		if (!pickable(account)) throw bad(`account ${account.code} is a hidden or clearing account; choose a bank or card account`);
 		const flip = b.flip_signs === true;
 		// Rows this account already has (from an earlier upload) are dropped, as at upload.
 		const { rows: dupes } = await q(
@@ -679,8 +683,8 @@ export default async function register(ctx) {
 		if (b.account_code !== undefined) {
 			if (b.account_code !== null && typeof b.account_code !== "string") throw bad("account_code must be a string or null");
 			if (b.account_code) {
-				const accounts = await ctx.ledger.listAccounts();
-				if (!accounts.some((a) => a.code === b.account_code)) throw bad(`no active account with code ${JSON.stringify(b.account_code)}`);
+				const accounts = (await ctx.ledger.listAccounts()).filter(pickable);
+				if (!accounts.some((a) => a.code === b.account_code)) throw bad(`no active account with code ${JSON.stringify(b.account_code)} to choose`);
 				const { rows: own } = await q(`SELECT 1 FROM ${T("transactions")} WHERE id = ANY($1::bigint[]) AND account_code = $2 LIMIT 1`, [ids.map(String), b.account_code]);
 				if (own.length > 0) throw bad(`${b.account_code} is the statement's own account; choose the account on the other side`);
 			}

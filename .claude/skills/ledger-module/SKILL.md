@@ -81,7 +81,7 @@ feature the module uses (the context file says which version added what;
 - Bad input answers 4xx (`throw new ctx.HttpError(422, "…")`), never 500.
 - LLM connections (Ledger 0.11.2): requests with `documents` or `images` go
   to the connection for images. `ai()` in server.mjs gives `readsPdf`
-  (images connection is Claude) and `readsImages`; photos go to
+  (the images connection reads PDFs) and `readsImages`; photos go to
   `extractBill({ images })`, sniffed by `imageType()` in lib/bills.mjs.
 - Journal entry links (Ledger 0.11.2): every entry the module posts carries
   `links` (`tx:<id>` → `?statement=`, `bill:<id>` → `?bill=`); entries
@@ -225,6 +225,19 @@ add Gmail or IMAP reading back without the user asking).
   `entry_amount_cents` to statement rows, bills and payments (never
   overwrite the module's own amount). Statements filed in Documents report
   `reconciled`.
+- Hidden accounts (Ledger 0.20.1): `pickable()` in lib/categorize.mjs leaves out
+  `hidden` accounts (clearing accounts) and Ledger's Unreconciled (`module_id`
+  "ledger"); use it for every picker, AI candidate list and account check.
+  `markAmended()` also flags `entry_date_changed` / `entry_date` and lines
+  moved off the bank account (`moves`, Ledger 0.20.2).
+- Root mode (`lib/root-routes.mjs`, Ledger 0.21.1): `GET /root`, and POST
+  `/root/statements/:id/delete`, `/root/bills/:id/delete`,
+  `/root/transactions/:id/unpost`, `/root/bills/:id/unpost`, only with
+  `req.user.root`, only through `ctx.root.remove/update` (children and
+  references first; every table they touch has an `id`, migration 017).
+  Never post or reverse entries there. `ctx.root.onCheck` lists rows and
+  bills whose entry is gone. UI buttons are red "Root:" and shown only when
+  `/root` says so.
 - AI: every call is `ctx.llm.json()`; a 403/409 from it ("not allowed" /
   "not set up") stops a batch run early, and its message (which says where
   to fix it) is shown on the rows.
@@ -287,6 +300,5 @@ add Gmail or IMAP reading back without the user asking).
   never posted; `not_duplicates` remembers dismissed pairs.
 - The sidebar icon is drawn (`nav.icon.path`, a robot head).
 - Testing the real flows: Ledger reads its AI settings from
-  `INTEGRATIONS_DIR` (`llm.json`). Point it at a local stub that answers
-  like the Messages API, allow `categorizer`, and drive statements, bills,
+  `INTEGRATIONS_DIR` (`llm.json`). Point it at a local stub server, allow `categorizer`, and drive statements, bills,
   transfers and Auto sort through the HTTP API.

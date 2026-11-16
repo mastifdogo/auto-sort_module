@@ -35,6 +35,7 @@
 	.btn { padding: 0.4rem 0.8rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; white-space: nowrap; }
 	.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 	.btn.danger { color: var(--bad); }
+	.btn.root { color: #fff; background: var(--bad); border-color: var(--bad); font-weight: 600; }
 	.btn:disabled { opacity: 0.5; cursor: default; }
 	.row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 	.spacer { flex: 1; }
@@ -158,6 +159,7 @@
 			<button class="btn primary" id="d-autosort" title="Ask Ledger's LLM API whether each unposted line is already in the journal, on another statement, or a bill's payment. You approve each match.">Auto sort</button>
 			<button class="btn" id="rerun" title="Ask the model again for every transaction that isn't posted">Re-run suggestions</button>
 			<button class="btn danger" id="discard" title="Remove the transactions that aren't posted">Discard unposted</button>
+			<button class="btn root hidden" id="d-root-delete" title="Root mode: delete this statement with all its rows, posted ones too. Their journal entries stay. Ledger can put it back.">Root: delete statement</button>
 		</div>
 		<p class="muted small" id="d-info"></p>
 		<div id="d-account" class="panel hidden" style="margin: 0.5rem 0">
@@ -266,6 +268,8 @@
 			<button class="btn" id="bd-reopen">Reopen</button>
 			<button class="btn danger" id="bd-ignore">Ignore</button>
 			<button class="btn danger" id="bd-delete">Delete</button>
+			<button class="btn root hidden" id="bd-root-unpost" title="Root mode: forget the journal entry this bill is in (the entry isn't touched). Ledger can put it back.">Root: take out of entry</button>
+			<button class="btn root hidden" id="bd-root-delete" title="Root mode: delete this bill even if approved or paid. Its entries and document stay. Ledger can put it back.">Root: delete</button>
 			<button class="btn primary" id="bd-autosort" title="Ask Ledger's LLM API which unposted line or journal entry is this bill's payment or record. You approve the match.">Auto sort</button>
 		</div>
 		<p class="muted small" id="bd-ap-note"></p>
@@ -377,7 +381,21 @@
 	}
 	const fail = (e) => toast(e.message || String(e), true);
 	// Someone changed the posted entry's amounts in Ledger since: show what it says now, next to the module's own amount.
-	const amendedPill = (r) => (r?.entry_amended ? el("span", { class: "pill warn", title: `Changed in Ledger after it was posted; Auto sort's record says ${money(r.amount_cents)}` }, ` Changed in Ledger: ${money(r.entry_amount_cents)}`) : "");
+	const amendedPill = (r) => el("span", {},
+		r?.entry_amended ? el("span", { class: "pill warn", title: `Changed in Ledger after it was posted; Auto sort's record says ${money(r.amount_cents)}` }, ` Changed in Ledger: ${money(r.entry_amount_cents)}`) : "",
+		r?.entry_date_changed ? el("span", { class: "pill warn", title: "The entry's date was changed in Ledger after it was posted" }, ` Dated ${r.entry_date} in Ledger`) : "");
+
+	// Root mode (Ledger 0.21.1): an admin with root mode on gets red "Root:" buttons. The server decides.
+	let rootMode = false;
+	const loadRoot = () => api("/root").then((r) => { rootMode = r.root === true; }).catch(() => { rootMode = false; });
+	async function rootAction(path, question, done) {
+		if (!confirm(question)) return null;
+		try {
+			const r = await api(path, { method: "POST", body: "{}" });
+			toast(done);
+			return r;
+		} catch (e) { fail(e); return null; }
+	}
 	const money = (cents) => (Number(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 	const TYPE_ORDER = ["expense", "revenue", "asset", "liability", "equity"];
 
@@ -614,6 +632,11 @@
 		$("list-view").classList.remove("hidden");
 	}
 	$("back").onclick = () => { closeDetail(); loadStatements().catch(fail); };
+	$("d-root-delete").onclick = async () => {
+		const s = current?.statement;
+		if (!s) return;
+		if (await rootAction(`/root/statements/${s.id}/delete`, `Root mode: delete ${s.filename} with all ${s.total} rows, posted ones too? Their journal entries stay; Ledger's root log can put it back.`, "Statement deleted (root).")) $("back").click();
+	};
 
 	async function openStatement(id) {
 		selected = new Set();
@@ -625,7 +648,7 @@
 	async function refresh(id = current?.statement.id) {
 		clearTimeout(pollTimer);
 		if (accounts.length === 0) await loadAccounts();
-		current = await api(`/statements/${id}`);
+		[current] = await Promise.all([api(`/statements/${id}`), loadRoot()]);
 		current.journal = new Map();
 		current.suggestions = new Map();
 		renderDetail();
@@ -727,6 +750,7 @@
 			(s.duplicates ? ` · ${s.duplicates} skipped at upload as already seen` : "");
 		$("d-error").textContent = s.error || "";
 		renderAccountPanel(s);
+		$("d-root-delete").classList.toggle("hidden", !rootMode);
 		$("d-makebill").textContent = s.bill_id ? `Bill #${s.bill_id}` : "Create bill";
 		$("d-makebill").title = s.bill_id ? "Open the bill made from this statement" : "Ledger's LLM API reads what the statement says is owed (balance, due date); you check it, then create the bill";
 		const busy = ["queued", "categorizing", "needs_account"].includes(s.status);
@@ -767,7 +791,8 @@
 				cb.checked = selected.has(t.id);
 				cb.onchange = () => { cb.checked ? selected.add(t.id) : selected.delete(t.id); updateButtons(); };
 				let conf;
-				if (t.status === "posted") conf = el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`, t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : ""), amendedPill(t));
+				if (t.status === "posted") conf = el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`, t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : ""), amendedPill(t),
+					rootMode ? el("button", { class: "btn small root", title: "Root mode: mark this row not posted (its entry isn't touched)", onclick: async () => { if (await rootAction(`/root/transactions/${t.id}/unpost`, `Mark row ${t.id} not posted? Entry #${t.journal_entry_id} isn't touched.`, "Marked not posted.")) refresh().catch(fail); } }, "Root: unpost") : "");
 				else if (t.status === "skipped") conf = el("span", { class: "pill plain" }, "Skipped");
 				else if (t.status === "merged") conf = el("span", {},
 					el("span", { class: "pill plain" }, t.duplicate_entry_id ? `Duplicate of entry #${t.duplicate_entry_id}` : `Duplicate of row #${t.duplicate_of ?? "?"}`),
@@ -1134,7 +1159,7 @@
 	};
 
 	async function openBill(id) {
-		const r = await api(`/bills/${id}`).catch(fail);
+		const [r] = await Promise.all([api(`/bills/${id}`).catch(fail), loadRoot()]);
 		if (!r) return;
 		// A receipt opens on the Receipts tab, a bill on Bills (also after its type was changed).
 		const tab = r.bill.kind === "receipt" ? "receipts" : "bills";
@@ -1296,6 +1321,8 @@
 		$("bd-reopen").classList.toggle("hidden", !["ignored", "paid"].includes(b.status) || !!b.paid_entry_id);
 		$("bd-ignore").classList.toggle("hidden", !open || locked);
 		$("bd-delete").classList.toggle("hidden", locked || b.status === "paid");
+		$("bd-root-delete").classList.toggle("hidden", !rootMode);
+		$("bd-root-unpost").classList.toggle("hidden", !rootMode || !(b.journal_entry_id || b.paid_entry_id));
 		$("bd-ap-note").textContent = b.status === "new" && b.kind === "bill" ? `Approving posts this bill to accounts payable if one is set under Settings → ${moduleName}.` : "";
 
 		const pay = $("bd-payments");
@@ -1420,6 +1447,13 @@
 	$("bd-reopen").onclick = () => billAction("save", { status: "new" });
 	$("bd-ignore").onclick = () => billAction("save", { status: "ignored" });
 	$("bd-delete").onclick = () => confirm("Delete this bill?") && billAction("delete");
+	$("bd-root-delete").onclick = async () => {
+		if (!(await rootAction(`/root/bills/${currentBill.id}/delete`, "Root mode: delete this bill with its lines? Its journal entries and its document stay; Ledger's root log can put it back.", "Deleted (root)."))) return;
+		currentBill = null; $("bill-detail").classList.add("hidden"); loadBills().catch(fail);
+	};
+	$("bd-root-unpost").onclick = async () => {
+		if (await rootAction(`/root/bills/${currentBill.id}/unpost`, "Root mode: take this bill out of its journal entry? The entry isn't touched.", "Taken out of the entry (root).")) { await loadBills(); await openBill(currentBill.id); }
+	};
 
 
 	// Files from other modules (Ledger's ctx.files): shown only once there are some.

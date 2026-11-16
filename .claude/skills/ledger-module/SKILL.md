@@ -141,6 +141,34 @@ to keep it running and test the real flows with `curl` and Playwright (it
 prints the session cookie). If PostgreSQL has no password yet:
 `runuser -u postgres -- psql -qc "ALTER USER postgres PASSWORD 'postgres'"`.
 
+## Root mode (Ledger ≥ 0.21.1)
+
+An admin can turn on root mode in Ledger. In it they can delete any account,
+journal entry, line or user and move a line to any account; entries may be
+unbalanced until root mode is left, and anything can be reversed later (the
+same ids come back). So an account, entry or user this module kept may be
+gone for a while: treat it as gone, don't fail, and don't delete the
+module's own records because of it. Also since 0.20.2 an entry's date can
+change and a bank line can sit in Ledger's Unreconciled clearing account for
+a while: read dates, accounts and amounts from the entry, not from a copy.
+
+Root gets the same power over this module's records. When `req.user.root`
+is true (needs `"ledger": ">=0.21.1"`), let the admin delete or change ANY
+record of the module, including ones normally protected, and only through
+Ledger, never with the module's own DELETE or UPDATE:
+
+- `await ctx.root.remove(req, table, id, "what was deleted")` and
+  `await ctx.root.update(req, table, id, { column: value }, summary)`: one
+  row of one of the module's tables with an `id` column. They answer 403
+  without root, log the action under Settings → Root log, and Ledger puts
+  the row back when the action or the whole root session is reversed.
+- Remove rows that hang off a row first, one by one (cascaded rows are not
+  kept). Don't post or reverse journal entries on a root delete.
+- `ctx.root.onCheck(async () => [...])` returns plain sentences for records
+  that are truly broken, `[]` when sound; root mode can't be left until then.
+- Show root controls only when the server says the user is in root mode,
+  marked "Root" in red.
+
 ## 4. Release: push to `main`, without asking
 
 Pushing is part of finishing the work (see "Push to `main` without asking" above). Don't ask first.

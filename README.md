@@ -292,6 +292,30 @@ lines with accounts. Edit them; they must add up to the total; **Save split**. W
 posted, the entry books each line to its account (a bill posted to payables books the lines on
 approval). A split can change until it's posted.
 
+**Tags** (Ledger 0.23.0): Ledger keeps tags on journal entries that every module reads the same
+way. Auto sort keeps them true on a bill's entry (the payables entry made on approval; without a
+payables account, the entry its payment is recorded in):
+- **vendor**: who the bill is from, set on approval.
+- **paid**: when its payment is posted, when it's linked to an entry that records it, or on
+  **Mark paid**; taken off on **Reopen**.
+- **overdue**: an approved, unpaid bill past its due date (checked hourly and whenever bills
+  change); taken off when it's paid or no longer due.
+- **Undo approval** takes paid and overdue off the reversed entry.
+
+The tags belong to the entry, so anyone can change them in Ledger, and the bill follows: tag a
+bill's entry **paid** (a person, or another module that paid it) and the bill becomes
+*Paid (tagged in Ledger)* here, with nothing posted and its statement match dropped; take the tag
+off and it is unpaid again. If the bill's payment is in the journal, it stays paid and the tag is
+put back. A vendor tagged on the entry of a bill that has none fills in the bill's vendor.
+
+**Paying what other modules posted:** entries another module tagged **billed** or **overdue**
+(e.g. a Sales invoice) or with a **vendor**, and not **paid**, are what a statement deposit or
+payment may pay. A row with exactly such an entry's amount is offered it (*Pays entry #12*; the
+customer's or vendor's name in the description raises the confidence; without the name it's only
+offered when nothing else has that amount) and gets the entry's receivable or payable account.
+**Not this one** drops the offer. Posting the row, which only a person does, tags that entry
+**paid** and the new entry with the customer or vendor. No AI is involved.
+
 **Review on the Bills and Receipts tabs:** fix anything that's wrong, then **Approve**.
 
 **Accounting:**
@@ -327,6 +351,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `PATCH` | `/transactions/:id` | `{account_code?, status?: "new"\|"skipped"}` |
 | `POST` | `/transactions/bulk` | the same for `{ids: [...]}` |
 | `POST` | `/transactions/:id/not-transfer` | unlink a transfer match (both sides get a fresh suggestion) |
+| `POST` | `/transactions/:id/not-paying` | the row doesn't pay the tagged entry it was offered (not offered again) |
 | `GET` | `/duplicates` | likely duplicates: `{pairs: [{keep, merge, score}], entries: [{merge, entry, score}], count}` |
 | `POST` | `/duplicates/merge` | `{merge_id, keep_id}` or `{merge_id, entry_id}`: the merged row is never posted |
 | `POST` | `/duplicates/dismiss` | `{tx_id, other_id}` or `{tx_id, entry_id}`: not duplicates |
@@ -336,7 +361,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/suggest` | `{account_code, transactions: [{date, description, amount, memo?}]}` returns suggestions without storing anything (for scripts or other modules) |
 | `GET`/`DELETE` | `/rules`, `/rules/:key` | learned payee rules |
 | `GET` | `/status` | Ledger's LLM API status for this module, the options in effect, the user's role, the organization |
-| `POST` | `/sort-now` | match bills and transfers, count bills already in the journal; returns `{bill_matches, transfer_links, journal_matches}` |
+| `POST` | `/sort-now` | match bills and transfers, count bills already in the journal; returns `{bill_matches, transfer_links, journal_matches, tag_matches}` (rows matched to entries tagged as owed) |
 | `GET` | `/journal-matches?bill_id=` | open bills and receipts already in the journal (no AI) |
 | `GET` | `/match-suggestions?statement_id=\|bill_id=` | Auto sort's pending matches, with what they point to |
 | `POST` | `/match-suggestions/:id/approve`, `/reject` | carry a match out, or turn it down |
@@ -479,6 +504,14 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.15.0:** Ledger's shared tags on journal entries (Ledger 0.23.0; on an older Ledger the module
+  works as before, without tags). A bill's entry is tagged with its vendor, **paid** and
+  **overdue**, kept true as the bill changes, and bills approved earlier get their tags once at
+  startup. A bill whose entry is tagged paid in Ledger (by a person or another module) is paid here
+  too, with nothing posted: *Paid (tagged in Ledger)*; taking the tag off reopens it. Statement
+  rows are offered the entries other modules tagged as owed (billed, overdue, a vendor's) that
+  they pay; posting such a row tags that entry paid. Migration 018.
 
 - **0.14.0:** Needs Ledger 0.21.1. Root mode (delete or change any statement, row or bill through
   Ledger's root log, and a check before leaving it); hidden and clearing accounts left out of

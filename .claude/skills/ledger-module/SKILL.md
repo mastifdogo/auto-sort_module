@@ -271,6 +271,17 @@ add Gmail or IMAP reading back without the user asking).
   (chequing, savings, credit_card; Ledger 0.16.0) first.
 - Restores (Ledger 0.14.0) can leave rows whose stored file is gone: check
   `ctx.storage.stat()` before linking to a file; reads return null.
+- Tags (`lib/tags.mjs`, Ledger 0.23.0, feature-detected: `if (ctx.tags)`, so
+  `"ledger"` stays lower): a bill's entry (`journal_entry_id`, else
+  `paid_entry_id`) carries `vendor`, `paid`, `overdue`; `syncBill()` sets
+  what differs (called by the bill routes and by `syncBillTodos()`, which
+  also runs hourly) and `backfill()` once at startup (`bills.tags_synced_at`).
+  `ctx.tags.onChange` (own changes skipped): `paid` set by someone else makes
+  the bill paid (`paid_by_tag`, `paid_tag_by`), removed makes it open again
+  unless its payment is in the journal; never post in reaction to a tag.
+  `matchPayables()` offers rows the entries other modules tagged billed /
+  overdue / vendor and not paid (`transactions.pays_entry_id`, source `tag`,
+  no AI); only posting the row (a person) sets `paid` on that entry.
 - Overdue: `syncBillTodos()` titles overdue to-dos "Overdue: …" with level
   `danger`, refreshed hourly in every organization.
 - Journal matches (no AI): staged rows in the journal come from

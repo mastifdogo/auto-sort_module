@@ -791,7 +791,7 @@
 				cb.checked = selected.has(t.id);
 				cb.onchange = () => { cb.checked ? selected.add(t.id) : selected.delete(t.id); updateButtons(); };
 				let conf;
-				if (t.status === "posted") conf = el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`, t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : ""), amendedPill(t),
+				if (t.status === "posted") conf = el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`, t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : t.pays_entry_id ? ` · paid entry #${t.pays_entry_id}` : ""), amendedPill(t),
 					rootMode ? el("button", { class: "btn small root", title: "Root mode: mark this row not posted (its entry isn't touched)", onclick: async () => { if (await rootAction(`/root/transactions/${t.id}/unpost`, `Mark row ${t.id} not posted? Entry #${t.journal_entry_id} isn't touched.`, "Marked not posted.")) refresh().catch(fail); } }, "Root: unpost") : "");
 				else if (t.status === "skipped") conf = el("span", { class: "pill plain" }, "Skipped");
 				else if (t.status === "merged") conf = el("span", {},
@@ -808,6 +808,10 @@
 					const pct = Math.round(t.confidence * 100);
 					conf = el("span", { class: `pill ${t.confidence >= current.review_threshold ? "good" : "warn"}`, title: "Matched to a bill" }, `Bill ${pct}%`);
 				}
+				else if (t.source === "tag" && t.pays_entry_id && t.confidence != null) {
+					const pct = Math.round(t.confidence * 100);
+					conf = el("span", { class: `pill ${t.confidence >= current.review_threshold ? "good" : "warn"}`, title: "Pays a journal entry another module tagged as owed (billed, overdue, or a vendor's). Posting this row tags that entry paid." }, `Pays entry #${t.pays_entry_id} ${pct}%`);
+				}
 				else if (t.confidence == null) conf = el("span", { class: "pill plain" }, busy ? "Waiting…" : "—");
 				else {
 					const pct = Math.round(t.confidence * 100);
@@ -821,6 +825,7 @@
 					el("td", { class: "wide" }, sel, t.chosen_code && t.suggested_code && t.chosen_code !== t.suggested_code ? el("div", { class: "reason" }, `Suggested: ${accountLabel(t.suggested_code)}`) : null, proposal),
 					el("td", { class: "wide" }, conf, t.reason && t.status === "new" ? el("div", { class: t.source === "error" ? "err" : "reason" }, t.reason) : null, t.error ? el("div", { class: "err" }, t.error) : null,
 						open && (t.transfer_tx_id || t.transfer_entry_id) ? el("button", { class: "btn", style: "margin-top:4px", onclick: () => notTransfer(t.id) }, "Not a transfer") : null,
+						open && t.pays_entry_id && t.status === "new" ? el("button", { class: "btn", style: "margin-top:4px", title: "This row doesn't pay that entry; it gets a fresh suggestion", onclick: () => notPaying(t.id) }, "Not this one") : null,
 						t.status === "posted" && t.reason.startsWith("recorded with the transfer") ? el("div", { class: "reason" }, t.reason) : null,
 						...(open ? matchNotes(t) : [])),
 				);
@@ -962,6 +967,14 @@
 		} catch (e) { fail(e); }
 	}
 
+	async function notPaying(id) {
+		try {
+			await api(`/transactions/${id}/not-paying`, { method: "POST" });
+			toast("Unlinked. The row gets a fresh suggestion.");
+			await refresh();
+		} catch (e) { fail(e); }
+	}
+
 	async function notTransfer(id) {
 		try {
 			await api(`/transactions/${id}/not-transfer`, { method: "POST" });
@@ -1047,6 +1060,8 @@
 
 	// ---------------------------------------------------------------- bills
 	const BILL_STATUS = { new: ["warn", "Needs review"], open: ["plain", "Approved"], paid: ["good", "Paid"], ignored: ["plain", "Ignored"] };
+	/** Paid because its journal entry was tagged "paid" in Ledger (by a person or another module), not by a payment here. */
+	const billStatusText = (b, text) => (b.status === "paid" && b.paid_by_tag ? `${text} (tagged in Ledger)` : text);
 	let billsList = [];
 	let currentBill = null;
 
@@ -1079,7 +1094,7 @@
 		body.replaceChildren(
 			...billsList.map((b) => {
 				const [cls, text0] = BILL_STATUS[b.status] || ["plain", b.status];
-				const text = b.kind === "receipt" && b.status === "paid" ? "Matched" : text0;
+				const text = billStatusText(b, b.kind === "receipt" && b.status === "paid" ? "Matched" : text0);
 				const overdue = b.due_date && b.due_date < today && ["new", "open"].includes(b.status);
 				const payment = b.transaction_id
 					? el("span", { class: `pill ${b.transaction_status === "posted" ? "good" : "plain"}` }, b.transaction_status === "posted" ? "Posted" : "Matched")
@@ -1105,7 +1120,7 @@
 		$("b-sort-status").textContent = "Sorting…";
 		try {
 			const r = await api("/sort-now", { method: "POST" });
-			const msg = `${r.bill_matches} payment${r.bill_matches === 1 ? "" : "s"} matched to bills, ${r.transfer_links} transfer${r.transfer_links === 1 ? "" : "s"} linked, ${r.journal_matches} bill${r.journal_matches === 1 ? "" : "s"} or receipt${r.journal_matches === 1 ? "" : "s"} found in the journal (Duplicates tab).`;
+			const msg = `${r.bill_matches} payment${r.bill_matches === 1 ? "" : "s"} matched to bills, ${r.transfer_links} transfer${r.transfer_links === 1 ? "" : "s"} linked, ${r.journal_matches} bill${r.journal_matches === 1 ? "" : "s"} or receipt${r.journal_matches === 1 ? "" : "s"} found in the journal (Duplicates tab)${r.tag_matches ? `, ${r.tag_matches} row${r.tag_matches === 1 ? "" : "s"} matched to entries tagged as owed` : ""}.`;
 			$("b-sort-status").textContent = msg;
 			loadDupCount();
 		} catch (e) { $("b-sort-status").textContent = ""; fail(e); } finally { $("b-sort").disabled = false; }
@@ -1296,7 +1311,7 @@
 	function renderBill(b, payments) {
 		const [cls, text] = BILL_STATUS[b.status] || ["plain", b.status];
 		$("bd-title").textContent = `${b.vendor || "Bill"}${b.invoice_number ? ` #${b.invoice_number}` : ""}`;
-		$("bd-status").replaceChildren(el("span", { class: `pill ${cls}` }, text), b.journal_entry_id ? el("span", { class: "pill plain" }, ` In payables (entry #${b.journal_entry_id})`) : "", amendedPill(b));
+		$("bd-status").replaceChildren(el("span", { class: `pill ${cls}` }, billStatusText(b, text)), b.journal_entry_id ? el("span", { class: "pill plain" }, ` In payables (entry #${b.journal_entry_id})`) : "", amendedPill(b));
 		$("bd-error").textContent = b.error || "";
 		$("bd-kind").value = b.kind;
 		$("bd-vendor").value = b.vendor;
@@ -1326,7 +1341,7 @@
 		$("bd-ap-note").textContent = b.status === "new" && b.kind === "bill" ? `Approving posts this bill to accounts payable if one is set under Settings → ${moduleName}.` : "";
 
 		const pay = $("bd-payments");
-		if (payments.length === 0) pay.replaceChildren(el("p", { class: "muted small" }, b.status === "paid" ? (b.paid_entry_id ? `Recorded in journal entry #${b.paid_entry_id}.` : "Marked paid by hand.") : "No matching bank transaction yet. It's matched when a statement with the payment is uploaded, or try Auto sort."));
+		if (payments.length === 0) pay.replaceChildren(el("p", { class: "muted small" }, b.status === "paid" ? (b.paid_entry_id ? `Recorded in journal entry #${b.paid_entry_id}.` : b.paid_by_tag ? `Paid elsewhere: its journal entry${b.journal_entry_id ? ` #${b.journal_entry_id}` : ""} was tagged "paid" in Ledger by ${b.paid_tag_by || "a person"}. ${moduleName} posted nothing for it. Taking the tag off there, or Reopen here, makes it unpaid again.` : "Marked paid by hand.") : "No matching bank transaction yet. It's matched when a statement with the payment is uploaded, or try Auto sort."));
 		else pay.replaceChildren(
 			el("table", { class: "stack" }, el("tbody", {}, ...payments.map((t) =>
 				el("tr", {},

@@ -12,6 +12,8 @@
 // LLM; transactions that pay them are matched before the LLM is asked.
 // Journal matches (lib/journal-matches.mjs): staged rows, bills and receipts
 // found in the journal, and the Auto sort button that asks the LLM.
+// Tags (lib/tags.mjs, Ledger 0.23.0): a bill's entry carries vendor, paid and overdue; "paid" set by
+// another module or a person makes the bill paid; rows are offered the tagged entries they could pay.
 // Transfers (lib/transfer-sync.mjs): the two rows of a transfer between your
 // own accounts are linked and posted as one entry.
 
@@ -25,6 +27,7 @@ import { registerTransfers } from "./lib/transfer-sync.mjs";
 import { registerReceivedFiles } from "./lib/received-files.mjs";
 import { registerDuplicates } from "./lib/duplicate-routes.mjs";
 import { registerJournalMatches } from "./lib/journal-matches.mjs";
+import { entryTags } from "./lib/tags.mjs";
 import { candidateAccounts, examplesFromEntries, pickable, proposeCode, suggest } from "./lib/categorize.mjs";
 import { ParseError, parseAmount, parseDate, parseStatement, payeeKey } from "./lib/parse.mjs";
 
@@ -39,6 +42,8 @@ export default async function register(ctx) {
 	const bad = (msg) => new ctx.HttpError(422, msg);
 	const dash = dashboard(ctx);
 	const files = moduleFiles(ctx, { q, T });
+	// Ledger's shared tags on journal entries (0.23.0); does nothing on an older Ledger.
+	const tags = entryTags(ctx, { q, T });
 
 	// -----------------------------------------------------------------------
 	// Settings
@@ -176,6 +181,8 @@ export default async function register(ctx) {
 		try {
 			// Payments of known bills don't need the model.
 			await bills.autoMatch();
+			// Nor do deposits and payments of what another module tagged as owed (billed, overdue, a vendor's).
+			await tags.matchPayables().catch((err) => ctx.log.warn("matching rows to tagged entries failed", { err: String(err?.message || err) }));
 			const cfg = await readSettings();
 			const { llm } = await ai();
 			const { account, accounts } = await statementAccount(rows[0].account_code);
@@ -184,7 +191,7 @@ export default async function register(ctx) {
 			const examples = await examplesFor(account, candidates, rules);
 			const { rows: txs } = await q(
 				`SELECT id, tx_date::text AS date, description, memo, amount_cents FROM ${T("transactions")}
-				  WHERE statement_id = $1 AND status = 'new' AND bill_id IS NULL AND transfer_tx_id IS NULL AND transfer_entry_id IS NULL
+				  WHERE statement_id = $1 AND status = 'new' AND bill_id IS NULL AND pays_entry_id IS NULL AND transfer_tx_id IS NULL AND transfer_entry_id IS NULL
 				    AND ($2 OR suggested_code IS NULL OR source = 'error')
 				  ORDER BY line_no`,
 				[id, all],
@@ -336,7 +343,7 @@ export default async function register(ctx) {
 			if (rowCount > 0) enqueue(sid);
 		}
 	};
-	const billHelpers = { q, T, bad, ai, requeue, stageStatement, settleFile: null, files };
+	const billHelpers = { q, T, bad, ai, requeue, stageStatement, settleFile: null, files, tags };
 	const bills = registerBills(ctx, billHelpers);
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
@@ -365,6 +372,16 @@ export default async function register(ctx) {
 			await bills.syncBillTodos();
 		})
 		.catch((err) => ctx.log.warn("email checker cleanup failed", { err: String(err?.message || err) }));
+
+	// Bills approved before tags existed (Ledger 0.23.0) get theirs, once, in every organization; not awaited.
+	if (tags.on) {
+		ctx.orgs
+			.forEach(async (org) => {
+				const n = await tags.backfill();
+				if (n) ctx.log.info("bill entries tagged", { organization: org.id, bills: n });
+			})
+			.catch((err) => ctx.log.warn("tagging bill entries failed", { err: String(err?.message || err) }));
+	}
 
 	// Resume work interrupted by a restart, in every organization's books (startup runs in the main
 	// books otherwise). The categorising itself isn't awaited: register must finish quickly.
@@ -411,8 +428,10 @@ export default async function register(ctx) {
 		const billMatches = await bills.autoMatch();
 		const transferLinks = await transfers.matchTransfers();
 		const found = await journal.refresh();
-		ctx.log.info("sort now", { bill_matches: billMatches, transfer_links: transferLinks, journal_matches: found });
-		return { bill_matches: billMatches, transfer_links: transferLinks, journal_matches: found };
+		// Rows that pay an entry another module tagged as owed (Ledger 0.23.0).
+		const tagMatches = await tags.matchPayables();
+		ctx.log.info("sort now", { bill_matches: billMatches, transfer_links: transferLinks, journal_matches: found, tag_matches: tagMatches });
+		return { bill_matches: billMatches, transfer_links: transferLinks, journal_matches: found, tag_matches: tagMatches };
 	});
 
 	/**
@@ -575,7 +594,7 @@ export default async function register(ctx) {
 		const { rows } = await q(
 			`SELECT t.id, t.line_no, t.tx_date::text AS date, t.description, t.memo, t.amount_cents, t.fitid, t.suggested_code, t.confidence, t.reason, t.source,
 			        t.chosen_code, COALESCE(t.chosen_code, t.suggested_code) AS account_code, t.status, t.journal_entry_id, t.error, t.posted_by, t.posted_at,
-			        t.new_account, t.duplicate_of, t.duplicate_entry_id,
+			        t.new_account, t.duplicate_of, t.duplicate_entry_id, t.pays_entry_id,
 			        t.bill_id, b.vendor AS bill_vendor, b.status AS bill_status,
 			        t.transfer_tx_id, t.transfer_entry_id, o.account_code AS transfer_account, o.tx_date::text AS transfer_date,
 			        o.description AS transfer_description, o.status AS transfer_status, o.statement_id AS transfer_statement_id
@@ -631,7 +650,7 @@ export default async function register(ctx) {
 		);
 		await q(
 			`UPDATE ${T("transactions")} SET account_code = $2, amount_cents = CASE WHEN $3 THEN -amount_cents ELSE amount_cents END,
-			        suggested_code = NULL, confidence = NULL, reason = '', source = '', bill_id = NULL, transfer_tx_id = NULL, transfer_entry_id = NULL, error = NULL
+			        suggested_code = NULL, confidence = NULL, reason = '', source = '', bill_id = NULL, pays_entry_id = NULL, transfer_tx_id = NULL, transfer_entry_id = NULL, error = NULL
 			  WHERE statement_id = $1 AND status <> 'posted'`,
 			[statement.id, account.code, flip],
 		);
@@ -707,6 +726,16 @@ export default async function register(ctx) {
 		return { updated: rowCount };
 	}
 
+	// POST /transactions/:id/not-paying: the row doesn't pay the tagged entry it was offered (not offered again).
+	ctx.route("POST", "/transactions/:id/not-paying", async (req) => {
+		if (!/^\d+$/.test(req.params.id)) throw new ctx.HttpError(404, "no such transaction");
+		const statementId = await tags.forget(req.params.id, { rejected: true });
+		if (statementId === null) throw new ctx.HttpError(409, "this row isn't matched to an entry it pays");
+		await requeue([statementId]);
+		await syncStatementNotice(statementId);
+		return { id: req.params.id, pays_entry_id: null };
+	});
+
 	ctx.route("PATCH", "/transactions/:id", async (req) => updateTransactions([req.params.id], req.body ?? {}));
 	ctx.route("POST", "/transactions/bulk", async (req) => updateTransactions(req.body?.ids, req.body ?? {}));
 
@@ -744,7 +773,7 @@ export default async function register(ctx) {
 			const claim = await q(
 				`UPDATE ${T("transactions")} SET status = 'posting' WHERE id = $1 AND status = 'new'
 				 RETURNING tx_date::text AS date, description, memo, amount_cents, fitid, account_code, COALESCE(chosen_code, suggested_code) AS code, bill_id, statement_id,
-				           transfer_tx_id, transfer_entry_id`,
+				           transfer_tx_id, transfer_entry_id, pays_entry_id`,
 				[id],
 			);
 			if (claim.rowCount === 0) continue;
@@ -780,6 +809,9 @@ export default async function register(ctx) {
 				const split = t.bill_id !== null && amt < 0n ? await splitLinesFor(t.bill_id, t.code, abs) : null;
 				// Paying a bill: the entry is with its vendor (Ledger's list of customers and vendors).
 				const vendorEntity = t.bill_id !== null ? (await bills.getBill(String(t.bill_id)).catch(() => null))?.vendor_entity_id : null;
+				// The row pays an entry another module tagged as owed (Ledger 0.23.0), if it still books to that
+				// entry's receivable or payable and the entry isn't paid or reversed since.
+				const pays = t.bill_id === null && t.pays_entry_id != null ? await tags.payableFor(t) : null;
 				const entry = await ctx.ledger.createJournalEntry(
 					{
 						entry_date: t.date,
@@ -809,9 +841,14 @@ export default async function register(ctx) {
 					}
 				}
 				// A bill payment marks the bill paid; it isn't a payee rule (it books to payables).
-				const paidBill = t.bill_id !== null && (await bills.onPosted(id, t.code, entry.id));
+				const paidBill = t.bill_id !== null && (await bills.onPosted(id, t.code, entry.id, req.user));
 				if (paidBill) await linkEntry(entry.id, await bills.linkFor(t.bill_id), req.user);
-				if (!paidBill && !split) await learn(t.description, t.code, req.user.username);
+				// The payment's entry is with the bill's vendor: tagged, unless it was posted with that vendor.
+				if (vendorEntity) await tags.tagWho(entry, "vendor", vendorEntity, req.user);
+				// A person posted the money for what another module tagged as owed: that entry is "paid" now.
+				if (pays) await tags.paidBy(pays, entry, req.user);
+				else if (t.pays_entry_id != null) await q(`UPDATE ${T("transactions")} SET pays_entry_id = NULL WHERE id = $1`, [id]);
+				if (!paidBill && !split && !pays) await learn(t.description, t.code, req.user.username);
 				results.posted++;
 			} catch (err) {
 				const msg = String(err?.message || err).slice(0, 500);

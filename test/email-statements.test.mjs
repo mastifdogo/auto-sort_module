@@ -33,3 +33,13 @@ test("PDF statements are read by the AI into signed transactions", async () => {
 	assert.match(sent.system, /purchase is negative/);
 });
 
+
+test("a PDF statement's balance is read in the same call as its transactions", async () => {
+	const llm = async () => ({ data: { account_code: "", account_hint: "", transactions: [{ date: "2026-03-04", description: "TIM HORTONS", amount: "-3.10" }],
+		balance: { vendor: "Visa", statement_date: "2026-03-05", due_date: "2026-03-28", amount_due: "1,234.56", minimum_payment: "10.00", reference: "4411", currency: "CAD" } } });
+	const r = await extractPdfStatement({ llm, email: { from: "x", subject: "s", text: "" }, pdf: { filename: "m.pdf", data: Buffer.from("%PDF-1.4") }, accounts: [] });
+	assert.deepEqual(r.balance, { vendor: "Visa", bill_date: "2026-03-05", due_date: "2026-03-28", amount_cents: 123456n, minimum_cents: 1000n, invoice_number: "4411", currency: "CAD" });
+	// An answer without a balance (older connections) still works.
+	const r2 = await extractPdfStatement({ llm: async () => ({ data: { account_code: "", account_hint: "", transactions: [] } }), email: { from: "x", subject: "s", text: "" }, pdf: { filename: "m.pdf", data: Buffer.from("%PDF-1.4") }, accounts: [] });
+	assert.equal(r2.balance.amount_cents, null);
+});

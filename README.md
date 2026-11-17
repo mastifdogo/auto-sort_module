@@ -212,7 +212,9 @@ exchange (`ctx.files`, Ledger 0.11.0). A module offering "send to…" lists it a
 - **Statements and transaction lists** (CSV, OFX, QFX, QBO, or a PDF when the LLM connection reads PDFs) are staged on
   the Statements tab. Put the account in `meta.account_code` (and optionally `meta.flip_signs`,
   `meta.date_order`); without it the statement waits for you to choose, and your choice is
-  remembered for that module and account number.
+  remembered for that module and account number. What the statement says is owed can come along in
+  `meta.amount_due`, `due_date`, `statement_date`, `minimum_payment`, `reference`, `vendor` and
+  `currency`, so **Create bill** needs no LLM.
 - **Bills and receipts** (PDF or a saved `.eml`) go to the Bills or Receipts tab; the sender's label
   decides which.
 - Each file is marked **done** with what it became (e.g. "12 transactions staged") or **rejected**
@@ -268,9 +270,14 @@ same amount and due date) are refused.
 statement transactions waiting to be posted, looks for bills and receipts already in the journal,
 and says what it found.
 
-**A bill from a statement:** on a card or loan statement, **Create bill** has Ledger's LLM API read
-what the statement says is owed: the new balance, due date, statement date, minimum payment and
-reference (from the statement file; a PDF needs a connection that reads PDFs). It never adds up the transactions itself.
+**A bill from a statement:** on a card or loan statement, **Create bill** fills in what the
+statement says is owed: the new balance, due date, statement date, minimum payment and reference.
+When that is already known, the LLM isn't asked: a PDF statement's balance is read in the same call
+that lists its transactions, an OFX/QFX file's ledger balance counts for a card or loan account, a
+module that sends a statement can say it in the file's meta (`amount_due`, `due_date`,
+`statement_date`, `minimum_payment`, `reference`, `vendor`, `currency`), and an earlier Create bill
+reading is kept. Otherwise Ledger's LLM API reads the statement file (a PDF needs a connection that
+reads PDFs); **Read again with the LLM** asks it anyway. It never adds up the transactions itself.
 You check the form, then **Create bill**; one bill per statement. Its account is the card or loan
 account, so paying it pays down the card. Statements uploaded before 0.7.0 have no file kept; the
 LLM then only sees the transactions, so type the amount.
@@ -284,6 +291,16 @@ bill (into payables, and its payment) record the vendor.
 
 **Billable:** a bill or receipt can be marked **Billable to the customer** with a **Customer**. The
 list shows them as *billable · Acme Corp*.
+
+**Line items:** when a bill or receipt is scanned (PDF, photo or email), the LLM also lists its
+individual line items: item, quantity, unit, price per unit and line total. They show under
+**Line items** on the bill, where you can edit, add or remove them (**Read items with the LLM** for
+bills scanned before 0.16.0). Tick **Billable** on the items you'll bill a customer for: each
+billable item is put on the bill's journal entry as one of Ledger's rate items (item, quantity,
+rate; Ledger 0.25.0), so an invoice can fill itself in from it. That entry is the payables entry
+made on approval, else the entry its payment or receipt is recorded in; until there is one, the
+items wait. Unticking or removing an item, undoing the approval or ignoring the bill takes its rate
+item off; changing or removing the rate item in Ledger updates or unticks the line item here.
 
 **Split:** a receipt (or bill) for things booked to different accounts, e.g. groceries and
 household supplies: **Split into lines…**, then **Suggest lines with the LLM** reads the document's
@@ -371,8 +388,10 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `GET` | `/bills/:id/document` | the stored PDF, base64 |
 | `POST` | `/bills/:id/approve`, `/unapprove` | approve (posts to payables if configured); undo (reverses that entry) |
 | `GET`/`POST` | `/bills/:id/candidates`, `/match {transaction_id}`, `/unmatch` | manual matching |
-| `POST` | `/statements/:id/bill-draft` | what the statement says is owed, read by the LLM (nothing saved); create it with `POST /bills {..., statement_id}` |
+| `POST` | `/statements/:id/bill-draft` | `{reread?}`: what the statement says is owed (nothing saved), from what was already read, else read by the LLM; create it with `POST /bills {..., statement_id}` |
 | `POST` | `/bills/:id/split-draft` | proposed split lines, read by the LLM (nothing saved) |
+| `PUT` | `/bills/:id/items` | `{items: [{id?, description, quantity?, unit?, rate?, amount?, billable?}]}`: the line items (billable ones become rate items on the bill's entry) |
+| `POST` | `/bills/:id/items-draft` | line items read by the LLM (nothing saved) |
 | `PUT`/`DELETE` | `/bills/:id/lines` | `{lines: [{description, amount, account_code}]}`: save a split (adds up to the amount); remove it |
 | `GET` | `/customers` | customer names used on bills |
 | `GET` | `/duplicates?period=week\|month\|year\|all` | recheck a period, posted rows included (`both_posted` pairs) |
@@ -504,6 +523,14 @@ not accessible by integration", allow it under Settings → Actions → General 
 → "Read and write permissions".
 
 ## Changes
+
+- **0.16.0:** **Create bill** from a statement uses what is already known about it without the
+  LLM: a PDF statement's balance (now read in the same call as its transactions), an OFX/QFX
+  ledger balance on a card or loan account, what the sending module put in the file's meta, or an
+  earlier reading; **Read again with the LLM** asks anyway. Scanned bills and receipts get their
+  **line items** (item, quantity, unit, rate, amount); items ticked **Billable** are put on the
+  bill's journal entry as Ledger's rate items (Ledger 0.25.0; on an older Ledger they're only kept
+  here). Migration 019.
 
 - **0.15.0:** Ledger's shared tags on journal entries (Ledger 0.23.0; on an older Ledger the module
   works as before, without tags). A bill's entry is tagged with its vendor, **paid** and

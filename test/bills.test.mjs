@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assignMatches, extractBill, findDuplicate, imageType, matchScore } from "../lib/bills.mjs";
+import { assignMatches, billInfoOf, draftFromBillInfo, extractBill, findDuplicate, imageType, matchScore, normalizeItem, readItems } from "../lib/bills.mjs";
+import { parseOfx } from "../lib/parse.mjs";
 import { parseEmail } from "../lib/mime.mjs";
 import { sampleEmail } from "./helpers.mjs";
 
@@ -16,7 +17,7 @@ test("extractBill passes the PDF to an AI that reads PDFs and parses the answer"
 	const llm = async (req) => ((sent = req), { data: ANSWER });
 	const email = parseEmail(sampleEmail());
 	const x = await extractBill({ llm, readsPdf: true, email, pdfs: email.attachments, accounts, examples: [{ vendor: "Rogers", account_code: "5300" }] });
-	assert.deepEqual(x, { kind: "bill", vendor: "Rogers", invoice_number: "INV-9", bill_date: "2026-03-03", due_date: "2026-03-20", amount_cents: 8550n, currency: "CAD", account_code: "5300", confidence: 0.9, summary: "March phone bill" });
+	assert.deepEqual(x, { kind: "bill", vendor: "Rogers", invoice_number: "INV-9", bill_date: "2026-03-03", due_date: "2026-03-20", amount_cents: 8550n, currency: "CAD", account_code: "5300", confidence: 0.9, summary: "March phone bill", items: [] });
 	assert.equal(sent.documents.length, 1);
 	assert.equal(sent.documents[0].media_type, "application/pdf");
 	assert.equal(Buffer.from(sent.documents[0].data, "base64").toString("latin1").slice(0, 8), "%PDF-1.4");
@@ -107,4 +108,66 @@ test("a statement's amount owed, never computed from transactions", async () => 
 	assert.equal(r.due_date, "2026-04-18");
 	assert.match(sent.system, /Never compute a balance/);
 	assert.match(sent.prompt, /NEW BALANCE/);
+});
+
+test("extractBill keeps the line items it reads, cleaned up", async () => {
+	const items = [
+		{ description: "Copy paper", quantity: "3", unit: "box", unit_price: "8.50", amount: "25.50" },
+		{ description: "Toner", quantity: "", unit: "", unit_price: "", amount: "60.00" },
+		{ description: "Labour  ", quantity: "2.5", unit: "Hours", unit_price: "", amount: "200.00" },
+		{ description: "", quantity: "1", unit: "", unit_price: "1", amount: "1" },
+		{ description: "Note", quantity: "", unit: "", unit_price: "", amount: "" },
+	];
+	const llm = async () => ({ data: { ...ANSWER, items } });
+	const x = await extractBill({ llm, email: parseEmail(sampleEmail()), accounts });
+	assert.deepEqual(x.items, [
+		{ description: "Copy paper", quantity: "3", unit: "box", rate_cents: 850n, amount_cents: 2550n },
+		{ description: "Toner", quantity: "1", unit: "", rate_cents: 6000n, amount_cents: 6000n },
+		{ description: "Labour", quantity: "2.5", unit: "hours", rate_cents: 8000n, amount_cents: 20000n },
+	]);
+	const none = await extractBill({ llm: async () => ({ data: { ...ANSWER, kind: "not_bill", items } }), email: parseEmail(sampleEmail()), accounts });
+	assert.deepEqual(none.items, []);
+});
+
+test("normalizeItem: a price that doesn't divide stays empty, the quantity is kept", () => {
+	assert.deepEqual(normalizeItem({ description: "Bolts", quantity: "3", unit: "", unit_price: "", amount: "1.00" }), { description: "Bolts", quantity: "3", unit: "", rate_cents: null, amount_cents: 100n });
+	assert.equal(normalizeItem({ description: "Odd unit", quantity: "1", unit: "!!", unit_price: "2", amount: "" }).unit, "");
+	assert.equal(normalizeItem({ description: "x".repeat(150), quantity: "1", unit: "", unit_price: "", amount: "" }).description.length, 100);
+});
+
+test("readItems asks for the items of the attached document", async () => {
+	let sent;
+	const llm = async (req) => ((sent = req), { data: { items: [{ description: "Gas", quantity: "40.123", unit: "litres", unit_price: "1.55", amount: "62.19" }] } });
+	const items = await readItems({ llm, bill: { kind: "receipt", vendor: "Shell", amount_cents: 6219n, currency: "CAD" }, document: { text: "", pdf: Buffer.from("%PDF-1.4") } });
+	assert.deepEqual(items, [{ description: "Gas", quantity: "40.123", unit: "litres", rate_cents: 155n, amount_cents: 6219n }]);
+	assert.equal(sent.documents.length, 1);
+	assert.match(sent.prompt, /Receipt from Shell, total 62.19 CAD/);
+});
+
+test("a statement's balance already read makes a bill draft without the LLM", () => {
+	const card = { code: "2100", name: "Visa", type: "liability", currency: "CAD" };
+	const info = billInfoOf({ vendor: "RBC Visa", bill_date: "2026-03-05", due_date: "2026-03-28", amount_cents: 123456n, minimum_cents: 1000n, invoice_number: "4411", currency: "CAD" }, "pdf");
+	const d = draftFromBillInfo(JSON.parse(JSON.stringify(info)), { account: card, last: "2026-03-04" });
+	assert.deepEqual(d, {
+		kind: "bill", vendor: "RBC Visa", invoice_number: "4411", bill_date: "2026-03-05", due_date: "2026-03-28", amount_cents: 123456n, minimum_cents: 1000n,
+		currency: "CAD", account_code: "2100", confidence: null, summary: "", read_from: "saved", saved_from: "pdf",
+	});
+	// Nothing read about the amount: the LLM is needed.
+	assert.equal(billInfoOf({ vendor: "RBC" }, "pdf"), null);
+	assert.equal(draftFromBillInfo(billInfoOf({ due_date: "2026-03-28" }, "pdf"), { account: card }), null);
+	assert.equal(draftFromBillInfo(null, { account: card }), null);
+});
+
+test("an OFX balance owed on a card is a bill draft; on a bank account it isn't", () => {
+	const ofx = "<OFX><CCSTMTRS><BANKTRANLIST><STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260301<TRNAMT>-12.50<FITID>1<NAME>Coffee</STMTTRN></BANKTRANLIST><LEDGERBAL><BALAMT>-845.20<DTASOF>20260305</LEDGERBAL><AVAILBAL><BALAMT>4000</AVAILBAL></CCSTMTRS></OFX>";
+	const p = parseOfx(ofx);
+	assert.deepEqual(p.balance, { amount_cents: -84520n, date: "2026-03-05" });
+	const info = JSON.parse(JSON.stringify(billInfoOf({ balance_cents: p.balance.amount_cents, balance_date: p.balance.date }, "ofx")));
+	const d = draftFromBillInfo(info, { account: { code: "2100", name: "Visa", type: "liability", currency: "CAD" }, last: "2026-03-01" });
+	assert.equal(d.amount_cents, 84520n);
+	assert.equal(d.bill_date, "2026-03-05");
+	assert.equal(d.vendor, "Visa");
+	assert.equal(draftFromBillInfo(info, { account: { code: "1000", name: "Chequing", type: "asset", currency: "CAD" } }), null);
+	// A card in credit owes nothing.
+	assert.equal(draftFromBillInfo({ ...info, balance_cents: "500" }, { account: { code: "2100", type: "liability" } }), null);
 });

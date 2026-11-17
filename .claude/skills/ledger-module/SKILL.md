@@ -282,6 +282,20 @@ add Gmail or IMAP reading back without the user asking).
   `matchPayables()` offers rows the entries other modules tagged billed /
   overdue / vendor and not paid (`transactions.pays_entry_id`, source `tag`,
   no AI); only posting the row (a person) sets `paid` on that entry.
+- Line items (`bill_items`, 0.16.0): `extractBill()` also returns `items`
+  (`normalizeItem()` in lib/bills.mjs: description ≤ 100, quantity ≤ 4 decimals, unit word,
+  `rate_cents`, `amount_cents`), stored at scan, never billable by themselves. A person ticks
+  billable (`PUT /bills/:id/items`); `tags.syncItems()` (called from `syncBill()`, unapprove,
+  unlink-entry, delete) puts each billable item on the bill's entry with `ctx.tags.addRate`
+  (Ledger 0.25.0, feature-detected: `tags.ratesOn`) and keeps `rate_entry_id`/`rate_tag_id`; a
+  rate item someone else changes or removes updates or unticks the item (`itemsFollow`). Root
+  delete removes `bill_items` rows first.
+- Create bill without the LLM (0.16.0): `statements.bill_info` (jsonb, `billInfoOf()` /
+  `draftFromBillInfo()` in lib/bills.mjs) holds what a statement says is owed: from the PDF
+  reading (`extractPdfStatement` returns `balance` in the same call), an OFX `LEDGERBAL` (owed
+  only on a liability account), the sending module's meta (`amount_due`, `due_date`, …), or the
+  last LLM reading. `bill-draft` uses it unless `{reread: true}`; never add a second LLM call for
+  data already read.
 - Overdue: `syncBillTodos()` titles overdue to-dos "Overdue: …" with level
   `danger`, refreshed hourly in every organization.
 - Journal matches (no AI): staged rows in the journal come from

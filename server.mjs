@@ -19,6 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { registerBills } from "./lib/bill-routes.mjs";
+import { billInfoOf } from "./lib/bills.mjs";
 import { registerRoot } from "./lib/root-routes.mjs";
 import { moduleFiles } from "./lib/files.mjs";
 import { markAmended, renameAccountCode } from "./lib/ledger-sync.mjs";
@@ -281,12 +282,17 @@ export default async function register(ctx) {
 	 * account are skipped. Returns { id, transactions, duplicates }; with no new transactions the
 	 * statement isn't kept (id null).
 	 */
-	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null, source = mail ? "email" : "upload", guess = null, document = null }) {
+	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null, source = mail ? "email" : "upload", guess = null, document = null, billInfo = null }) {
 		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -t.amount_cents : t.amount_cents }));
 		const code = account?.code ?? "";
+		// What the statement says is owed, when the file or its reading already told (Create bill then needs no LLM).
+		// An OFX balance is kept with the same signs as the transactions.
+		const info =
+			billInfo ??
+			(parsed.balance ? billInfoOf({ balance_cents: flip ? -parsed.balance.amount_cents : parsed.balance.amount_cents, balance_date: parsed.balance.date }, parsed.format === "pdf" ? "pdf" : "ofx") : null);
 		const { rows } = await q(
-			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key, account_guess)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key, account_guess, bill_info)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
 			[
 				(filename || `statement.${parsed.format}`).slice(0, 200),
 				code,
@@ -299,6 +305,7 @@ export default async function register(ctx) {
 				(mail?.subject ?? "").slice(0, 500),
 				mail?.sourceKey ?? null,
 				account ? null : guess,
+				info ? JSON.stringify(info) : null,
 			],
 		);
 		const id = rows[0].id;
@@ -446,13 +453,17 @@ export default async function register(ctx) {
 		return lines.map((l) => ({ account_code: l.account_code, debit_cents: BigInt(l.amount_cents), credit_cents: 0n, memo: l.description.slice(0, 500) }));
 	}
 
-	// POST /statements/:id/bill-draft: what the statement says is owed, read by the LLM, to edit and
-	// create as a bill (nothing is saved here).
+	// POST /statements/:id/bill-draft {reread?}: what the statement says is owed, to edit and create as
+	// a bill (no bill is saved here). Taken from what was already read (the PDF's reading, the OFX
+	// balance, the sending module, an earlier draft) without the LLM; the LLM reads the statement only
+	// when nothing was, or with reread: true.
 	ctx.route("POST", "/statements/:id/bill-draft", async (req) => {
 		const statement = await getStatement(req.params.id);
+		const reread = req.body?.reread;
+		if (reread !== undefined && typeof reread !== "boolean") throw bad("reread must be true or false");
 		const { rows } = await q(`SELECT id FROM ${T("bills")} WHERE statement_id = $1 AND status <> 'ignored'`, [statement.id]);
 		if (rows.length > 0) throw new ctx.HttpError(409, `this statement already has bill #${rows[0].id}`);
-		return bills.statementBillDraft(statement);
+		return bills.statementBillDraft(statement, { reread: reread === true });
 	});
 
 	// -----------------------------------------------------------------------

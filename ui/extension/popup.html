@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send to Ledger</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="popup">
+<h1>Send to Ledger</h1>
+
+<div id="drop" class="drop" tabindex="0">
+	<p id="drop-text"><strong>Drop a file here</strong> or <label class="link">choose one<input type="file" id="file" class="hidden" ></label></p>
+	<p class="muted small">Any file to the inbox · statements, bills and receipts read and reviewed in Ledger · every file kept in Ledger's Documents</p>
+</div>
+<p class="small"><a href="#" id="send-tab">Send the PDF or file open in this tab</a></p>
+<p id="picked" class="small hidden"></p>
+
+<form id="form" class="hidden">
+	<label id="org-row" class="hidden">Organization
+		<select id="org"></select>
+	</label>
+	<label>Send as
+		<select id="dest">
+			<option value="inbox">The inbox (sort it out in Ledger later)</option>
+			<option value="statement" class="autosort parsed">Statement: review and post its transactions</option>
+			<option value="bill" class="autosort billish">Bill: read it and track it until paid</option>
+			<option value="receipt" class="autosort billish">Receipt: already paid, matched to its payment</option>
+			<option value="doc-receipt" class="doc">Only file it in Ledger's Documents, as a receipt</option>
+			<option value="doc-statement" class="doc">Only file it in Ledger's Documents, as a statement of an account</option>
+			<option value="doc-invoice" class="doc">Only file it in Ledger's Documents, as an invoice or bill</option>
+			<option value="ledger-file" class="csv">CSV file for Ledger's journal import</option>
+		</select>
+	</label>
+	<div id="statement-opts">
+		<label>Bank or card account <select id="account"><option value="">Loading…</option></select></label>
+		<div id="csv-opts">
+		<label class="inline"><input type="checkbox" id="flip"> Purchases show as positive amounts (flip signs)</label>
+		<label>Dates like 03/04/2026 are
+			<select id="date-order"><option value="auto">Detect</option><option value="mdy">Month/Day/Year</option><option value="dmy">Day/Month/Year</option></select>
+		</label>
+		</div>
+	</div>
+	<button class="btn primary" id="send">Send</button>
+</form>
+
+<p id="msg" class="small"></p>
+<form id="setup" class="setup hidden">
+	<label>Your Ledger's address
+		<input type="text" id="setup-url" placeholder="https://ledger.example.com" autocomplete="url" spellcheck="false">
+	</label>
+	<button class="btn primary" id="setup-save">Allow and continue</button>
+	<p class="muted small">The browser asks once whether the extension may reach this address. It's the only site it talks to.</p>
+</form>
+<p class="muted small foot"><a href="#" id="open-ledger">Open Ledger</a> · <a href="#" id="options">Options</a></p>
+<script src="popup.js"></script>
+</body>
+</html>

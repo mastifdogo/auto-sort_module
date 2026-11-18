@@ -24,10 +24,13 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Release the manifest's version if it isn't released yet
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -38,6 +41,7 @@ jobs:
             exit 1
           fi
           tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "$tag is already released; nothing to do."
             exit 0
@@ -49,3 +53,74 @@ jobs:
             gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes --latest
           fi
           echo "Released $tag: $(gh release view "$tag" --json url --jq .url)"
+
+  # The phone app (android/, the Android app for receipts that came with the
+  # Import module), signed with the key in this repository's secrets and
+  # attached to the release as ledger-import.apk. The same key every time:
+  # Android only installs an update signed like the app it replaces, so the
+  # key is the one the Import module's repository (mastifdogo/download_module)
+  # used. Secrets (Settings → Secrets and variables → Actions):
+  #   APP_KEYSTORE_BASE64    the keystore file, base64
+  #   APP_KEYSTORE_PASSWORD  its password (the key "ledger-import" uses the same)
+  # The app has its own version (appVersion in android/gradle.properties); it
+  # goes in the file's label, where the app's updater reads it.
+  # Run this workflow by hand (Run workflow) to add the app to the latest
+  # release after setting the secrets.
+  app:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is there a signing key?
+        id: key
+        env:
+          APP_KEYSTORE_BASE64: ${{ secrets.APP_KEYSTORE_BASE64 }}
+          APP_KEYSTORE_PASSWORD: ${{ secrets.APP_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$APP_KEYSTORE_BASE64" ] || [ -z "$APP_KEYSTORE_PASSWORD" ]; then
+            echo "::warning::The phone app was not built: add the secrets APP_KEYSTORE_BASE64 and APP_KEYSTORE_PASSWORD (the same key the Import module's repository used), then run this workflow again."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s' "$APP_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/app.jks"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-java@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          gradle-version: 8.11.1
+
+      - name: Build, sign and attach the app
+        if: steps.key.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_KEYSTORE_FILE: ${{ runner.temp }}/app.jks
+          APP_KEYSTORE_PASSWORD: ${{ secrets.APP_KEYSTORE_PASSWORD }}
+          APP_KEY_ALIAS: ledger-import
+          APP_KEY_PASSWORD: ${{ secrets.APP_KEYSTORE_PASSWORD }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -eu
+          if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx ledger-import.apk; then
+            echo "$TAG already has the app; nothing to do."
+            exit 0
+          fi
+          app_version=$(sed -n 's/^appVersion=//p' android/gradle.properties)
+          if ! printf '%s' "$app_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error file=android/gradle.properties::appVersion \"$app_version\" is not x.y.z"
+            exit 1
+          fi
+          gradle -p android --no-daemon assembleRelease
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME"/build-tools/"$(ls "$ANDROID_HOME"/build-tools | sort -V | tail -1)"/apksigner verify --print-certs "$apk" | head -3
+          cp "$apk" ledger-import.apk
+          # The label carries the app's version: the app's updater compares it with the installed one.
+          gh release upload "$TAG" "ledger-import.apk#Ledger Import app $app_version"
+          rm -f "$RUNNER_TEMP/app.jks"

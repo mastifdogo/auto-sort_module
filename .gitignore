@@ -1,2 +1,9 @@
 node_modules/
 .env
+.DS_Store
+# The phone app (android/): build output and local settings
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.jks

@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Ledger server address" />
+
+        <EditText
+            android:id="@+id/server"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="http://192.168.1.20:8080"
+            android:inputType="textUri" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Username" />
+
+        <EditText
+            android:id="@+id/username"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="textNoSuggestions" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Password" />
+
+        <EditText
+            android:id="@+id/password"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="textPassword" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/save"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Save and test" />
+
+        <TextView
+            android:id="@+id/result"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <TextView
+            android:id="@+id/org_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Send receipts to this organization"
+            android:visibility="gone" />
+
+        <Spinner
+            android:id="@+id/org"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:visibility="gone" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/auto"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="Send receipts by itself when connected" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Only on this Wi-Fi (the one your server is on)" />
+
+        <EditText
+            android:id="@+id/wifi"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Any connection"
+            android:inputType="textNoSuggestions"
+            android:maxLength="64" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/wifi_use"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Use the Wi-Fi this phone is on" />
+
+        <TextView
+            android:id="@+id/wifi_help"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/wifi_allow"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/version"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/check"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Check for an update" />
+    </LinearLayout>
+</ScrollView>

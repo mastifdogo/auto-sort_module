@@ -1,12 +1,35 @@
 # Auto sort: a Ledger module
 
-A module for [Ledger (Bookeeping)](https://github.com/mastifdogo/Bookeeping). You upload a bank or
-credit-card statement and an LLM suggests an account from your chart of accounts for each
-transaction. You check the suggestions, then post them as journal entries. It uses Ledger's own
-LLM API: there's no API key to set up in the module.
+A module for [Ledger (Bookeeping)](https://github.com/mastifdogo/Bookeeping) that takes in bank and
+card statements, bills and receipts from wherever they arrive, and gets them into your books with
+you approving every step. The AI suggests an account for each statement line and reads bills and
+receipts; nothing is posted until you say so. It uses Ledger's own LLM API: there's no API key to
+set up in the module.
 
-- **Formats:** CSV exports (columns are found from the header, or guessed from the data when there's
-  no header; single amount or debit/credit columns) and **OFX / QFX / QBO**.
+Since 0.17.0 it is also what the **Import** module (`mastifdogo/download_module`) was: the inbox,
+the browser extension, email import, the scanner, the phone camera and the Android app are part of
+Auto sort now. See [Coming from the Import module](#coming-from-the-import-module).
+
+**Where files come from**
+
+- **Uploads** on the page, of any size the inbox takes (25 MB unless changed).
+- **Your browser:** the [Send to Ledger extension](#the-browser-extension) sends a file from a
+  bank's or supplier's site without saving it first.
+- **Email:** attachments of bill-like emails in Ledger's mailbox, with a check that
+  [learns](#what-the-email-check-learns) what you don't want. See [Email](#email).
+- **A scanner** on your network, a **phone's camera**, or the **Android app** for receipts. See
+  [Scanner](#scanner) and [The phone app](#the-phone-app-android).
+- **Other modules**, through Ledger's file exchange. See [Files from other modules](#files-from-other-modules).
+
+Everything lands in the **Inbox**, and every file is kept in **Ledger's Documents**, never by the
+module itself. See [Files, tags and reading a file once](#files-tags-and-reading-a-file-once).
+
+**What it does with them**
+
+- **Statements:** CSV exports (columns are found from the header, or guessed from the data when
+  there's no header; single amount or debit/credit columns) and **OFX / QFX / QBO**. A PDF or a
+  photographed statement is read by the AI in the inbox (**Extract data**); you check and correct
+  what it read before it is used.
 - **AI:** whichever LLM connection the admin set up under **Settings → LLM API** in Ledger: any
   provider Ledger supports, including a model on your own network so statements stay there.
 - **Uses your books:** the prompt includes your chart of accounts and how you booked similar
@@ -24,50 +47,54 @@ LLM API: there's no API key to set up in the module.
   to merge. See [Duplicates](#duplicates).
 - **New accounts:** when none of your accounts fits, the AI suggests one (code, name, type) that you
   can edit before it's created. See [New accounts](#new-accounts).
-- **From other modules:** other Ledger modules can hand Auto sort statements, transaction lists,
-  bills and receipts (Ledger's file exchange). See [Files from other modules](#files-from-other-modules).
-- **Organizations:** each organization's statements, bills and rules stay in its own books.
+- **Organizations:** each organization's inbox, statements, bills and rules stay in its own books.
 - **Already in the journal?** Staged lines, bills and receipts that are already recorded (entered by
   hand, or by another module) are found and linked instead of being posted twice. See
   [Journal matches and Auto sort](#journal-matches-and-auto-sort).
-- **Auto sort button:** on an open statement, bill or receipt, the LLM looks for the same
+- **Auto sort button:** on an open statement, bill or receipt, the AI looks for the same
   transaction among unposted lines and posted journal entries; you approve each match.
-- **Bills and receipts:** upload a PDF, photo or saved email (or let another module send it); the
-  LLM reads it, you approve it, and it's matched to the bank transaction that pays it. See [Bills](#bills).
+- **Bills and receipts:** a PDF, a photo or a saved email; the AI reads it, you approve it, and it's
+  matched to the bank transaction that pays it. See [Bills](#bills).
+- **Sends on:** a file can also be handed to another module, filed in Ledger's Documents as what it
+  is, or saved to Ledger's CSV files for the journal import.
 
 ## Install
 
-Needs **Ledger 0.19.1 or newer** (the shared Documents store, any LLM provider, customers and vendors shared with Ledger, account tags and
-sub-accounts, module file storage, Import from CSV, the shared LLM API and its
-connection for images, journal entry links, the New account dialog, file exchange between modules,
-organizations, settings forms, roles, search, drawn icons).
+Needs **Ledger 0.27.0 or newer** (one file store for every kind of file, tags on files, and the data
+read out of a file kept with it).
 
-1. In Ledger, open **Settings → Modules**, enter `mastifdogo/llm-api-module` and press **Add**.
+1. In Ledger, open **Settings → Modules**, enter `mastifdogo/auto-sort_module` and press **Add**.
    **Auto sort** appears in the sidebar with a robot icon. You can hide or reorder it under
    Settings → Sidebar. Updates install on Ledger's update schedule, or with **Update modules now**.
 2. An admin allows the module under **Settings → LLM API**: set up a connection and tick **Auto
    sort** under the modules allowed to use it. A connection for images reads photos of bills and
-   receipts, and bill PDFs when it can read PDFs (the Status tab says whether it does). Larger
+   receipts, and PDFs when it can read PDFs (the Status tab says whether it does). Larger
    local models (14B and up) categorise noticeably better than small ones.
-3. Options are under **Settings → Auto sort** (per organization): review threshold, transactions
-   per AI request, and the accounts payable account.
-4. The module's **Status** tab shows whether the LLM API is ready, and what's missing if not.
+3. To import from email, an admin connects a mailbox under **Settings → Mail** and allows **Auto
+   sort** to read it. See [Email](#email).
+4. Options are under **Settings → Auto sort** (per organization), on five tabs: **Sorting** (review
+   threshold, lines per AI request), **Bills** (the accounts payable account), **Inbox** (largest
+   file, how long sent and archived entries are kept), **Email** (whether and how often mail is
+   read, keywords, and importing a date range) and **Scanner**.
+5. The module's **Status** tab shows whether the LLM API is ready, and what's missing if not.
 
-**Updating to 0.6.0:** the email checker is gone (Gmail and IMAP). Bills and receipts already read
-from email stay. Upload new ones on the Bills or Receipts tab, or let another module send them. Ledger may
-keep the old email settings' values (including an IMAP password) in its settings table until the
-module is removed; they're no longer used. You can disallow Auto sort under Settings → Gmail.
+**Updating to 0.17.0** (from 0.16.0 or older):
+
+- Update Ledger to 0.27.0 first; older Ledgers refuse this version and keep the one they have.
+- The module no longer keeps any file itself. CSV and OFX statements (and a few pictures) that
+  older versions kept in the module's own storage are filed in Ledger's Documents when Ledger
+  starts, in every organization, a few at a time; it is safe to restart in the middle. The Status
+  tab says if any are left, with a **Move them now** button.
+- Migration 020 drops the columns that once held file bytes (before 0.8.0). It refuses to run, and
+  changes nothing, if a row still holds bytes: the version you have keeps running and moves them
+  out when Ledger starts. Restart Ledger, wait a minute, and update again.
+- If the **Import** module is installed, see [Coming from the Import module](#coming-from-the-import-module).
+- The old browser extension and the old phone app send to the Import module: get the new ones (see
+  [The browser extension](#the-browser-extension) and [The phone app](#the-phone-app-android)).
 
 The module was called "LLM API" before 0.1.2 (and this repository llm-api-module). Its id stays
 `categorizer` (its page is `/apps/categorizer` and its data lives in the `mod_categorizer`
 schema), so renaming it and updating keep all existing data.
-
-**Updating from 0.0.x:** the module used to have its own AI key, model and mail settings. On the
-first start of 0.1.0 it copies the options that still exist (review threshold, batch size, payables
-account, mail interval, keywords, IMAP details) to Settings → Auto sort, and deletes its old settings,
-including any stored AI key and Gmail bridge token. Then the admin allows the module under Settings
-→ AI (and Settings → Gmail). The Apps Script you may have deployed for 0.0.2 is no longer used:
-delete it at script.google.com.
 
 ### Accounts it expects
 
@@ -93,17 +120,27 @@ The module creates no accounts. It works with your chart of accounts:
   the whole line in bright red, Ledger's dashboard needs a small change of its own (not part of this
   module).
 - A **to-do** while there are possible duplicates, and one while Auto sort has matches to review.
+- A **notification** while files wait in the inbox ("3 files waiting in Auto sort's inbox"), and a
+  **to-do** while something the AI read from a file waits to be checked.
+- A **notification** when the email check fails (no mailbox, not allowed to read it).
+- A **to-do** while the Import module's data waits to be taken over.
 
 ## Use
 
 The page has these tabs:
 
+- **Inbox:** every file that came in, with where it came from. **Send…** on a file makes it a
+  statement, a bill or a receipt, hands it to another module, files it in Ledger's Documents, saves
+  it to Ledger's CSV files, or has the AI read its transactions (**Extract data**). Also **Check
+  email now**, **What it learned**, and **Get the browser extension**.
 - **Statements:** **Upload a statement**, **Sort now**, and each statement to categorise and post,
   with **Auto sort** and **Create bill** (from what a card or loan statement says is owed).
 - **Bills** and **Receipts:** **Upload a bill/receipt** (PDF, photo or saved email) or add one by
   hand; approve, match, **Split** and mark billable to a customer.
 - **Duplicates:** duplicates and things already in the journal, to merge or link.
-- **Learned rules** and **Status** (also lists files other modules sent).
+- **Learned rules.**
+- **Scan:** the network scanner, a phone's camera, the Android app, and plain uploads to the inbox.
+- **Status** (also lists files other modules sent).
 
 1. **Upload a statement** (Statements tab): choose the file and the bank or card account it belongs to. For credit-card
    exports that show purchases as positive numbers, tick *flip signs*.
@@ -117,6 +154,268 @@ transaction ID (or `categorizer <statement>/<row>`) as the reference.
 
 Money in → debit the statement account. Money out → credit it. So a purchase on a card
 (liability) account credits the card, and a deposit to chequing debits chequing.
+
+## The inbox
+
+Files wait in the inbox until you say what they are. Each row shows the file, where it came from
+(a website, an email's sender, the scanner, a phone), Ledger's tags on it, and what it became.
+
+**Send…** opens the file's panel, with a preview and, for a file from email, **View the email**:
+
+- **Statement:** choose the bank or card account (and *flip signs* for a card export that shows
+  purchases as positive amounts). A CSV, OFX, QFX or QBO file is parsed and its lines are staged on
+  the Statements tab. A PDF or picture can be staged once its transactions have been read (below).
+- **Bill** or **Receipt:** a PDF, a photo or a saved email. The AI reads the vendor, amount, dates
+  and line items; it lands on the Bills or Receipts tab as **Needs review**.
+- **Extract data:** the AI reads the transactions out of a PDF, a photo or a text file. You get the
+  rows to check, correct, add to or remove; nothing is kept until you press **Approve**. Then the
+  transactions are saved with the file in Ledger's Documents, and **Statement** stages them as they
+  are. **CSV of its transactions** downloads them, and **Ledger's CSV files** sends them to the
+  journal import.
+- **Another module** that takes that kind of file (Ledger's file exchange). The module is handed
+  the document itself; no copy is made. The row then shows what that module did with it.
+- **Ledger's Documents:** only say what the file is there (a receipt, a statement of an account,
+  an invoice), where Reconcile and other modules pick it up.
+- **Ledger's CSV files**, for a CSV.
+
+Inside this module nothing is "sent": the statement or bill simply points at the same document
+as the inbox row. **Archive** puts a row aside; **Delete** removes the row, and its document too
+only if the inbox added it, it was never sent on, and no bill or statement here uses it.
+
+Uploads from the page, the extension and the phone app arrive in pieces of 512 KB (Ledger takes
+requests up to 1 MB). The pieces wait in temporary files on the server until the last one is in;
+then the file is filed in Documents and the temporary files are deleted. An upload that is never
+finished is swept away after a day.
+
+## The browser extension
+
+**Send to Ledger** (Chrome, Edge, Brave and Firefox 128+) sends a file from any website straight
+to Ledger without saving it to your computer: right-click a download link and choose **Send to
+Ledger…**, send the PDF open in a tab, or drop a file on its toolbar button. It can put the file
+in the inbox, or make it a statement, a bill or a receipt right away.
+
+Get it with **Get the browser extension** on the Inbox tab, which downloads it as a zip that
+already knows this Ledger's address. It is in `ui/extension/` in this repository;
+[its README](ui/extension/README.md) has the installation steps, how it signs in and its limits.
+The extension from the Import module (0.5.0 or older) sends to the Import module: replace it with
+this one (0.6.0), unzipped over the same folder.
+
+## Email
+
+The module has one mail check. It reads the mailbox Ledger is connected to (**Settings → Mail**: an
+IMAP account such as Proton Mail Bridge, or Gmail), which an admin must allow Auto sort to read.
+On a schedule (every 60 minutes unless changed), and with **Check email now** on the Inbox tab, it
+looks at new messages and puts the documents of bill-like emails in the inbox: PDFs, statements
+(CSV, OFX, spreadsheets) and photos big enough to be a receipt. With **Save emails without
+attachments** on, a matching email with no document is saved itself, as an `.eml` file, which the
+Bills tab reads like any bill.
+
+- **Keywords** (Settings → Auto sort → Email) decide which emails are bill-like. Empty: every email.
+- **Read email:** *In the main books only* (the default) reads the mailbox in the main books and
+  not in other organizations, so one mailbox isn't imported into several books. Choose *Yes* or
+  *No* per organization.
+- **Nothing is imported twice:** each message is looked at once per mailbox; a file whose bytes are
+  already in the inbox, or already a bill's or a statement's document, is left out; and a saved
+  email that became a bill before is recognised by its Message-ID. Mail you sent yourself is
+  skipped.
+- **Import a date range** (Settings → Auto sort → Email) reads the email of some days again, for
+  mail from before the module was set up. What is already here is left out.
+- **View the email** in a file's Send panel shows the email a file is, or came from, with its other
+  attachments, before you decide what the file is. The HTML of an email is never rendered: you see
+  its text.
+
+No AI is involved in the email check. Reading mail never marks it read or changes the mailbox.
+
+Before 0.6.0 Auto sort had an email checker of its own; it was removed then, and there is nothing
+of it left to migrate (Ledger may still hold its old settings' values until the module is removed;
+they are not used). The check described here is the Import module's.
+
+### What the email check learns
+
+Deleting a file that came from email asks: **Delete and learn** (files like this aren't wanted) or
+**Just delete** (a duplicate, a one-off). Files you send on (made a statement, a bill or a receipt,
+read with Extract data, sent to another module or Ledger's CSV files) count as wanted. Each check then scores every attachment against what
+you taught about **its own sender**: the sender and its domain, words in the subject and in the file
+name, the file type. It's skipped when it looks like what you deleted (85% sure or more), and only
+with a file like the deleted ones (a file name word in common, or an email without attachments),
+so deleting one sender's `terms-and-conditions.pdf` skips those, not its invoices; a sender whose
+files you deleted three times and never kept is skipped whatever the file. A new sender is never
+skipped. No AI is involved: it's word counting over your own choices.
+
+*What it learned* (next to *Check email now*) lists the senders with what you deleted and kept, with
+*Forget* for each, and the **skipped emails with the reason** and **Import anyway** (which also
+teaches it that such files are wanted). **Download the training file** saves everything learned as
+JSON (`"format": "ledger-import-email-training"`, the same as the Import module's, so its training
+files load here); **Load a training file** adds one, e.g. in another organization or after a
+reinstall; examples it already knows are skipped.
+
+## Scanner
+
+On the **Scan** tab an admin presses **Find scanners** (the Ledger server looks for AirScan scanners
+on its network) and **Use** one, or types its address (on the scanner's screen or network settings
+page, e.g. `192.168.1.40`). It's saved as *Network scanner* under Settings → Auto sort → Scanner. Then anyone can
+scan. Only addresses on your local network are accepted (private, link-local, Tailscale, and the
+Ledger machine itself).
+
+- **Find scanners finds nothing:** the Ledger server must be on the scanner's network; in a
+  container it may need host networking. Enter the address instead.
+- **USB scanners:** a web page can't reach USB, so the computer the scanner is plugged into (your
+  PC, or the Ledger server itself) runs the **scan bridge**, which shares it as an AirScan scanner;
+  then it scans from the Scan tab on any device. Download it on the Scan tab (*Scanner plugged into a
+  computer by USB?*):
+  - **Windows:** `ledger-scan-bridge.ps1` uses Windows' own scanner support (WIA), nothing to
+    install. Run it once as Administrator (`powershell -ExecutionPolicy Bypass -File
+    .\ledger-scan-bridge.ps1` in *Terminal (Admin)*): it reserves port 8090 and opens it in the
+    firewall for private networks (if Windows calls your network *Public*, make it *Private*).
+  - **Mac and Linux:** `ledger-scan-bridge.py` uses SANE (`brew install sane-backends`, or
+    `sudo apt install sane-utils`; version 1.0.28 or newer): `python3 ledger-scan-bridge.py`.
+  - It prints the address to enter as the scanner (e.g. `http://192.168.1.25:8090/eSCL`; on the
+    Ledger server itself `http://127.0.0.1:8090/eSCL`). Only computers on your local network can
+    use it; `-Allow` / `--allow <Ledger server's address>` narrows that. Leave it running.
+
+  Or scan with the scanner's own app and **Upload files**, or use
+  [AirSane](https://github.com/SimulPiscator/AirSane), which does the same as the bridge on Linux.
+- A scan runs on the server in the background (a feeder of pages takes a while) and becomes a PDF
+  with one page per sheet, filed in Documents and listed in the inbox; it must fit the *Largest
+  file* setting.
+
+## The phone app (Android)
+
+**Ledger Import** is a small Android app for receipts, in `android/` of this
+repository (it came with the Import module and keeps its name). Each release
+of the module carries it as `ledger-import.apk`; the Scan tab has the
+download link.
+
+- **Scan:** the camera finds the receipt's edges by itself, takes the
+  picture, straightens it and makes a PDF (several pages if you like). This
+  is Google's document scanner, so the phone needs Google Play services.
+- **Account and note:** choose the account the receipt belongs under (the
+  list comes from Ledger and is kept on the phone) and add a note, typed or
+  spoken. Speech is turned into text by the phone's own speech-to-text;
+  nothing is sent to an AI service.
+- **Organization:** with more than one organization on the server, Settings
+  has *Send receipts to this organization*: the one receipts go to unless
+  you choose another for a receipt. Each organization has its own accounts
+  and its own inbox.
+- **Sending:** the receipt goes to Auto sort's inbox, marked "phone app",
+  with the account and the note; made a receipt there, it gets that account. With no connection, or away from the server, it
+  stays on the phone and is sent by itself when the server can next be
+  reached (or with **Send now**; sending by itself can be turned off).
+- **Only on your Wi-Fi:** under Settings, *Only on this Wi-Fi* takes the name
+  of the Wi-Fi your server is on (*Use the Wi-Fi this phone is on* fills it
+  in). Receipts are then sent by themselves only while the phone is on that
+  Wi-Fi, a few minutes after it joins at the latest; **Send now** still
+  sends from anywhere. Android gives a Wi-Fi's name only to apps with the
+  location permission and with Location turned on, and while the app is
+  closed only when location is allowed "all the time" (the app offers
+  both; it never reads where the phone is). When Android won't give the
+  name, the app tries on whatever Wi-Fi the phone is on, never on mobile
+  data.
+- **Changing a receipt:** tap a receipt that still waits on the phone to
+  change its account, note, name or organization, or to delete it. Once
+  sent, change it in Ledger.
+- **Setting up:** the server's address, your Ledger username and password.
+  The password is kept encrypted on the phone and used to log in again when
+  the session runs out. The app needs to reach the server: the same network,
+  or a VPN such as Tailscale.
+- **Updates:** the app checks this repository's releases
+  (`mastifdogo/auto-sort_module`) once a day and when opened, and installs
+  a newer version. Android asks once to allow it; from Android 12 later
+  updates install without asking. The app has its own version number
+  (0.22.0 now), apart from the module's.
+- **Coming from the Import module's app (0.21.1 or older):** that app sends
+  to the Import module and looks for updates in its repository. Install
+  0.22.0 or newer over it (same app, same signing key; nothing on the phone
+  is lost): download it from the Scan tab.
+
+**Signing key.** Android only installs an update signed with the same key
+as the app it replaces, so releases are signed with one key kept in this
+repository's secrets (Settings → Secrets and variables → Actions):
+`APP_KEYSTORE_BASE64` (the keystore file, base64) and
+`APP_KEYSTORE_PASSWORD`. Keep a copy of the keystore and its password
+somewhere safe: if they are lost, phones must uninstall the app and install
+it again. This repository must hold the same key the Import module's
+repository had, or the app from here can't be installed over the one from
+there. Without the secrets a release is published without the app; add
+them and run the Release workflow by hand to attach it.
+
+## Files, tags and reading a file once
+
+**The module keeps no files.** Every file it receives or handles, of any type (PDFs and scans, CSV,
+OFX and QFX statements, saved emails), is one of **Ledger's Documents** (in the sidebar), the one
+file store Ledger and every module share (Ledger 0.27.0). The module's tables hold only the
+document's number. You can open, rename, search and tag the files there, and backups carry them.
+
+- A statement is filed under its bank or card account once that is known; a bill as an invoice and
+  a receipt as a receipt, with the vendor and date once you approve it.
+- A file Ledger already has is used as it is, never stored twice: uploading the same file again
+  gives the same document.
+- Deleting a bill, a statement or an inbox row removes the document only if this module filed it
+  and nothing else here uses it. Documents you or another module added always stay.
+
+**Tags on files.** Ledger has one tag system for files, shared by every module, and Auto sort keeps
+it in line with its own records:
+
+| Tag | On | When |
+|---|---|---|
+| `posted` | a bill's or receipt's document | it is in the books; the note names the entry ("entry 12", or "entry 12, paid by entry 15") |
+| `paid` | a bill's or receipt's document | the bill is paid |
+| `overdue` | a bill's document | it is approved and past its due date (checked hourly) |
+| `posted` | a statement's document | every one of its lines is dealt with and at least one is posted ("34 entries") |
+| `extracted` | any document | set by Ledger while what was read out of the file is kept with it |
+
+A tag belongs to the file, not to who set it. If you (on the Documents page) or another module tag
+a bill's document **paid**, the bill becomes paid here too, without anything being posted; take
+the tag off and it is unpaid again, unless its payment is in the journal (then the tag goes back).
+**posted** taken off a file that is in the books is put back. Tags this module didn't set are
+otherwise left alone. The same holds for the tags on journal entries (see [Bills](#bills)); the two
+are kept consistent.
+
+**A file is read once.** What is read out of a file is kept with the document in Ledger, for every
+module, and Auto sort looks there before parsing a file or sending it to the AI:
+
+- What a parser reads (CSV, OFX, QFX) is saved straight away: the transactions, the period, an
+  OFX file's closing balance. Staging the same file again, here or in another module, uses that.
+- What the **AI** reads is only a suggestion, and is saved with the document only once you approve
+  it: the rows of **Extract data** when you press Approve, a bill's or receipt's details (vendor,
+  number, dates, total, line items) when you approve the bill, a PDF statement another module sent
+  when you post from it.
+- A bill or receipt whose details are already with the document (approved here before, or read by
+  another module) is made from them: the AI isn't asked. So is **Create bill** from a statement
+  whose document says what is owed.
+
+The data uses the keys Ledger's modules share (`type`, `vendor`, `number`, `date`, `due_date`,
+`currency`, `total_cents`, `items`, `period`, `closing_balance_cents`, `transactions`), with money
+in integer cents and money out negative. What only Auto sort needs (the parser's format, each
+line's bank id and memo, whether the file's signs were flipped) is under `categorizer`.
+
+## Coming from the Import module
+
+The Import module (`mastifdogo/download_module`, id `downloads`) is merged into Auto sort. Its last
+version only hands its data over; everything it did is done here.
+
+1. **Update Import** to its last version first (Settings → Modules). It moves every file it holds
+   into Ledger's Documents.
+2. **Update Auto sort** to 0.17.0 or newer.
+3. On Auto sort's **Inbox** tab a notice says what waits (there is also a to-do on the dashboard).
+   An **admin** presses **Take it over**. This is asked because it moves your data from one module
+   to another; nothing happens before.
+4. Then remove the Import module, replace the browser extension, and update the phone app.
+
+What is taken over, per organization: the inbox entries (each with its document, status, where it
+came from, the email it came from, where it was sent), what the AI read (and what you approved
+there is saved with the original document), the email check's log of messages already looked at,
+what it learned, its last-run state, and Import's settings. **Rows only:** no file is copied or
+moved, and nothing in Import's own tables is changed or deleted.
+
+- **Safe to do again.** Every row remembers the one it came from, so nothing is taken twice.
+  Settings are copied the first time only.
+- **Files not in Documents yet** (Import wasn't updated, or a file was lost) are counted and
+  reported, not taken; update Import and press the button again.
+- **Email isn't read here until then**, so the mail Import already looked at isn't imported a
+  second time. An admin who doesn't want Import's data chooses **Don't take it over**.
+- Allow **Auto sort** to read mail under Settings → Mail (the permission is per module), and turn
+  Import's own email off if it is still running.
 
 ## Transfers between your accounts
 
@@ -215,8 +514,11 @@ exchange (`ctx.files`, Ledger 0.11.0). A module offering "send to…" lists it a
   remembered for that module and account number. What the statement says is owed can come along in
   `meta.amount_due`, `due_date`, `statement_date`, `minimum_payment`, `reference`, `vendor` and
   `currency`, so **Create bill** needs no LLM.
-- **Bills and receipts** (PDF or a saved `.eml`) go to the Bills or Receipts tab; the sender's label
-  decides which.
+- **Bills and receipts** (a PDF, a picture or a saved `.eml`) go to the Bills or Receipts tab; the
+  sender's label decides which.
+- A file handed over is a document in Ledger (`summary.document_id`, Ledger 0.27.0): Auto sort
+  keeps that id, never a copy, and uses what was already read out of the document instead of
+  parsing it or asking the AI again.
 - Each file is marked **done** with what it became (e.g. "12 transactions staged") or **rejected**
   with why, which the sender sees. A file the AI read (bills, receipts, PDF statements) stays
   *accepted* until you approve it: **Approve** on the Status tab, approving the bill, or posting from
@@ -357,7 +659,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 
 | Method | Path | |
 |---|---|---|
-| `POST` | `/statements` | `{filename, content, account_code, flip_signs?, date_order?: "auto"\|"mdy"\|"dmy"}` stages a statement and starts categorising it |
+| `POST` | `/statements` | `{filename, content, account_code, flip_signs?, date_order?: "auto"\|"mdy"\|"dmy"}` files the text as a document, stages the statement and starts categorising it (up to about 1 MB; larger files go through `/inbox`) |
 | `GET` | `/statements`, `/statements/:id` | list; one statement with its transactions |
 | `POST` | `/statements/:id/categorize` | `{all?: true}` asks the model again (only unposted rows) |
 | `POST` | `/statements/:id/post` | `{ids?: [...]}` posts rows that have an account |
@@ -374,7 +676,31 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/duplicates/dismiss` | `{tx_id, other_id}` or `{tx_id, entry_id}`: not duplicates |
 | `POST` | `/transactions/:id/unmerge` | a merged row back to review |
 | `POST` | `/accounts` | `{code, name, type, currency?, description?, transaction_ids?, proposal?}`: create an account in Ledger and book those rows (or every row the AI proposed it for) to it |
-| `GET` | `/files?limit=` | files other modules sent, with what each became; `POST /files/:id/retry`, `DELETE /files/:id` |
+| `GET` | `/files?limit=` | files other modules sent, with what each became; `POST /files/:id/approve`, `/reject`, `/retry`, `DELETE /files/:id` |
+| `POST` | `/inbox` | `{name, content_type, size, source_url?, origin?: "camera"\|"upload"\|"app", note?, account_code?, device?}` starts an upload: `{id, chunk_size, chunks}` |
+| `PUT` | `/inbox/:id/chunks/:index` | `{data: base64}`, one piece (each `chunk_size` bytes but the last) |
+| `POST` | `/inbox/:id/complete` | puts the pieces together and files the file in Documents: the inbox entry |
+| `GET` | `/inbox?status=new\|sent\|archived\|all`, `/inbox/:id` | the inbox, with each file's document (kind, account, tags, whether its data was read) |
+| `POST` | `/inbox/:id/statement` | `{account_code, flip_signs?, date_order?}`: stage it as a statement |
+| `POST` | `/inbox/:id/bill` | `{kind?: "bill"\|"receipt"}`: read it as a bill or receipt (what was read before is used) |
+| `POST` | `/inbox/:id/extract` | `{instructions?, reread?}`: the AI reads its transactions; a pending suggestion |
+| `GET` | `/extractions?status=`, `/extractions/:id` | what the AI read, to review |
+| `POST` | `/extractions/:id/approve`, `/reject` | `{rows?}`: approve (saved with the document) or turn down |
+| `GET` | `/inbox/:id/transactions` | the transactions kept with the file, as rows `{date, description, amount, balance}` |
+| `POST` | `/inbox/:id/file-as` | `{kind: "receipt"\|"statement"\|"invoice"\|"other", account_code?}`: say what it is in Documents |
+| `POST` | `/inbox/:id/handoff` | `{to, kind, account_code?, note?}`: hand it to another module; `GET /targets` lists them |
+| `POST` | `/inbox/:id/sent` | `{to, link?}`: the page sent it somewhere itself (Ledger's CSV files) |
+| `PATCH`/`DELETE` | `/inbox/:id` | `{status?: "new"\|"archived", note?, name?}`; delete (`?learn=1` also teaches the email check) |
+| `GET` | `/inbox/:id/email`, `/inbox/:id/email/attachment?attachment=` | the email a file is or came from |
+| `GET`/`POST` | `/mail`, `/mail/check` | the email check's state; check now |
+| `GET`/`POST` | `/mail/range` | import a date range `{from, to}`, in the background; its progress |
+| `GET`/`POST` | `/mail/message?id=&folder=`, `/mail/message/attachment`, `/mail/message/import` | look at one email, then import what is ticked |
+| `GET`/`POST` | `/mail/skipped`, `/mail/skipped/import` | emails the check skipped from what it learned; import one anyway |
+| `GET`/`POST`/`DELETE` | `/training`, `/training/file`, `/training/forget`, `/training/:id` | what the email check learned; the training file |
+| `GET`/`POST` | `/scanner`, `/scanner/find`, `/scans`, `/scans/:id` | the network scanner (admins set it up); start a scan and follow it |
+| `GET`/`POST` | `/adoption`, `/adoption/dismiss` | the Import module's data: what waits; `POST /adoption {confirm: true}` takes it over (admins) |
+| `GET` | `/app`, `/me`, `/ai` | the phone app's download address; who is asking; whether the AI can read text, pictures and PDFs |
+| `POST` | `/documents/move` | file what is still in the module's old storage in Documents now |
 | `POST` | `/suggest` | `{account_code, transactions: [{date, description, amount, memo?}]}` returns suggestions without storing anything (for scripts or other modules) |
 | `GET`/`DELETE` | `/rules`, `/rules/:key` | learned payee rules |
 | `GET` | `/status` | Ledger's LLM API status for this module, the options in effect, the user's role, the organization |
@@ -383,9 +709,9 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `GET` | `/match-suggestions?statement_id=\|bill_id=` | Auto sort's pending matches, with what they point to |
 | `POST` | `/match-suggestions/:id/approve`, `/reject` | carry a match out, or turn it down |
 | `GET`/`POST` | `/bills?status=unpaid\|new\|open\|paid\|ignored&kind=bill\|receipt`, `/bills` | list; add by hand `{vendor, amount, due_date, ...}` |
-| `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF, a picture or an `.eml` |
+| `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF, a picture or an `.eml` (up to about 700 KB; larger files go through `/inbox`) |
 | `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payment and lines; edit fields (incl. `billable`, `customer_name`, `customer_ref`) or `status`; delete |
-| `GET` | `/bills/:id/document` | the stored PDF, base64 |
+| `GET` | `/bills/:id/document` | the bill's document, base64 (it also opens at `document_url`, in Ledger's Documents) |
 | `POST` | `/bills/:id/approve`, `/unapprove` | approve (posts to payables if configured); undo (reverses that entry) |
 | `GET`/`POST` | `/bills/:id/candidates`, `/match {transaction_id}`, `/unmatch` | manual matching |
 | `POST` | `/statements/:id/bill-draft` | `{reread?}`: what the statement says is owed (nothing saved), from what was already read, else read by the LLM; create it with `POST /bills {..., statement_id}` |
@@ -401,7 +727,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 
 Options are Ledger's module settings (`GET`/`PUT /api/v1/modules/categorizer/settings`, admins
 only). Viewers can look but not change anything; Ledger enforces that. Ledger's search bar finds
-bills, statements and transactions; the links open them on the module's page.
+bills, statements, transactions and inbox files; the links open them on the module's page.
 
 ## Changes made in Ledger
 
@@ -431,24 +757,21 @@ point at a journal entry that no longer exists.
 
 ## Backups and files
 
-**Documents** (Ledger 0.19.0): PDFs and PNG/JPEG scans of bills and receipts, and PDF statements,
-are filed in Ledger's **Documents** (in the sidebar), the one store for PDFs that Ledger and every
-module share; you can see, rename and search them there, and backups carry them. A bill is filed
-as an invoice and a receipt as a receipt, with the vendor and date once you approve it; a statement
-under its bank or card account. A file that's already in Documents is used as it is, not added
-twice. Deleting a bill removes the document only if Auto sort filed it; ones you added stay.
-
-PDFs and scans that 0.8–0.9 saved in Auto sort's own storage stay there until you press **Move them
-to Documents** on the Status tab (they keep opening either way). Other files (CSV and OFX
-statements, GIF and WebP pictures) stay in the module's storage, which backups carry under
-`files/categorizer/`.
+Files are in Ledger's Documents (see [Files, tags and reading a file once](#files-tags-and-reading-a-file-once)),
+which Ledger's backups carry; the module has no files of its own to back up. After a restore from
+a dump file, which brings back only the tables, a row can point at a file that isn't there: the
+inbox says so (**The file itself is missing**) and the row can be deleted; a bill or statement
+simply has no file to show.
 
 Since Ledger 0.13.0 each backup also saves Auto sort's tables as CSV files you can open in a
 spreadsheet: `statements` and `transactions` (what was uploaded and how each line was categorised
 and posted), `bills` and `bill_lines`, `rules` (learned payee rules), `statement_sources` (which
 account a sender's statements go to), `received_files`, `match_suggestions` and `not_duplicates`.
-`bill_documents` and `statement_files` say what each stored file is: its name, type, size, date and
-where it's stored. No secrets are kept in any table.
+`bill_documents` and `statement_files` say which document a bill's or statement's file is (its
+name, type, size and date). `inbox_files` is the inbox, `inbox_extractions` what the AI read from
+files, `mail_seen` the email check's log, `mail_training` what it learned, and `module_state` its
+last run and the record of the hand-over from Import. No file bytes and no secrets are kept in any
+table.
 
 ## Import from CSV
 
@@ -468,14 +791,21 @@ amount, your account codes, names and descriptions, and descriptions of recent e
 statement account are sent to that provider, and so are the bills, receipts and photos you upload. Auto sort sends a
 line's or bill's date, description and amount with its candidates (dates, descriptions, amounts and
 account codes of matching entries, lines and bills). With a model on your own network,
-nothing leaves it. Bill documents are kept in Ledger's Documents. Ledger logs each AI call (tokens, not content) under
+nothing leaves it. **Extract data** sends the file you chose. The email check and the scanner use
+no AI. Files are kept in Ledger's Documents, on your server. The network scanner is reached from
+the Ledger server and only at addresses on your local network. The browser extension and the phone
+app talk to your Ledger only. Ledger logs each AI call (tokens, not content) under
 Settings → LLM API.
 
 ## Notes on Ledger's module guidelines
 
 - **No dependencies:** only Node built-ins. `server.mjs` imports its own files from `lib/`, which
   install with the release archive.
-- **AI** goes through `ctx.llm`; the module has no key of its own and makes no outbound calls.
+- **AI** goes through `ctx.llm` and mail through `ctx.mail`; the module has no key or password of
+  its own. Its only outbound calls are to the network scanner you set up (local addresses only).
+- **Files** go in `ctx.documents`, all of them; nothing is put in module storage, in tables or on
+  disk (an upload's pieces wait in temporary files under the system's temporary folder and are
+  deleted once it is filed).
 - **AI only proposes:** see [The AI only suggests](#the-ai-only-suggests).
 - **Secrets:** none.
 - **Layout:** the page works from about 260 px wide (Ledger's side-by-side panes) up to full
@@ -485,14 +815,28 @@ Settings → LLM API.
 
 ```
 ledger-module.json     manifest
-server.mjs             routes, background categorisation, posting
+server.mjs             statements: routes, background categorisation, posting; wires the rest
+lib/files.mjs          every file is a document in Ledger; moving what old versions kept in storage
+lib/extraction.mjs     what was read from a file, in the keys Ledger's modules share (read once)
+lib/doc-tags.mjs       Ledger's tags on files: posted, paid, overdue
+lib/tags.mjs           Ledger's tags on journal entries
+lib/inbox.mjs          the inbox: uploads, what a file becomes, Extract data, hand-offs, clean-up
+lib/uploads.mjs        an upload's pieces in temporary files until it is complete
+lib/extract-data.mjs   Extract data: the prompt and the checks on what the AI read
+lib/mail.mjs           the email check, date ranges, viewing an email
+lib/learn.mjs          what the email check learns (word statistics, no AI)
+lib/eml.mjs            reading a saved email for the viewer
+lib/scanner-routes.mjs the network scanner's routes
+lib/escl.mjs           the eSCL (AirScan) client and scanner discovery
+lib/pdf.mjs            JPEG pages into a PDF
+lib/adopt.mjs          the hand-over of the Import module's data
 lib/parse.mjs          CSV / OFX parsing, amounts, dates, payee keys
 lib/categorize.mjs     prompt, schema, rules, batching
 lib/bill-routes.mjs    bill routes, reading uploads and files, matching bills to transactions, linking to entries
 lib/bills.mjs          bill extraction prompt, picture types, duplicates, match scoring
 lib/email-statements.mjs  statements from other modules: account hints, PDF statements, card signs
-lib/mime.mjs           email (MIME) parser for uploaded .eml files
-lib/matching.mjs       journal and Auto sort candidates, the LLM's match prompt
+lib/mime.mjs           email (MIME) parser for bills sent as .eml files
+lib/matching.mjs       journal and Auto sort candidates, the AI's match prompt
 lib/journal-matches.mjs  bills in the journal, the Auto sort routes, approving matches
 lib/dashboard.mjs      notifications and to-dos on Ledger's dashboard
 lib/transfers.mjs      transfer scoring and pairing
@@ -500,9 +844,18 @@ lib/transfer-sync.mjs  linking transfer rows (and existing journal entries), the
 lib/duplicates.mjs     duplicate scoring and pairing
 lib/duplicate-routes.mjs  the Duplicates tab's routes and dashboard to-do
 lib/received-files.mjs files from other modules (ctx.files)
+lib/root-routes.mjs    root mode
+lib/ledger-sync.mjs    renumbered accounts, entries changed in Ledger
 ui/index.html          the page shown in Ledger
+ui/inbox.js, scan.js   the Inbox and Scan tabs
+ui/mail-view.js        the email viewer
+ui/receipt.js          finding and straightening a receipt in a photo
+ui/mail-range.html     Settings → Auto sort → Email: import a date range
+ui/extension/          the Send to Ledger browser extension
+ui/scan-bridge/        small programs that share a USB scanner on the network
+android/               the phone app (Kotlin)
 migrations/            the module's tables (schema mod_categorizer)
-test/                  unit tests: npm test (Node 22+)
+test/                  tests: npm test (Node 22+)
 ```
 
 Ledger installs modules without a build step or `npm install`, so the module has no dependencies.
@@ -512,8 +865,11 @@ Ledger installs modules without a build step or `npm install`, so the module has
 
 Use the `ledger-module` skill in `.claude/skills/`: it checks the module against a real Ledger
 (`sh .claude/skills/ledger-module/scripts/check.sh` with `TEST_DATABASE_URL` set) and links to
-Ledger's module docs. `npm test` runs the unit tests (Node 22+). To try it without spending API
-credit, point Ledger's AI (Settings → LLM API, Server URL) at a local stub server.
+Ledger's module docs. `npm test` runs the tests (Node 22+). The tests of the hand-over from Import
+and of the migrations run against a real PostgreSQL (`TEST_DATABASE_URL`, default the local one)
+with the `pg` driver of a Ledger checkout beside this repository; without either they are
+skipped. To try the module without spending API credit, point Ledger's AI (Settings → LLM API,
+Server URL) at a local stub server.
 
 **Releasing:** bump `version` in `ledger-module.json` and merge to `main`. The Release workflow
 (`.github/workflows/release.yml`) then tags `v<version>` and publishes the GitHub Release that
@@ -522,7 +878,34 @@ version without a change, run it from Actions → Release → Run workflow. If i
 not accessible by integration", allow it under Settings → Actions → General → Workflow permissions
 → "Read and write permissions".
 
+**The phone app** is built, signed and attached to every release as `ledger-import.apk` by the same
+workflow, when the repository has the signing key in its secrets (`APP_KEYSTORE_BASE64`,
+`APP_KEYSTORE_PASSWORD`). It must be the key the Import module's repository used: Android only
+installs an update signed like the app it replaces. The app has its own version, `appVersion` in
+`android/gradle.properties` (0.22.0, above the last app released from the Import module); raise it
+whenever the app changes. The workflow writes it in the label of the release's app file, where the
+app's updater reads it. `.github/workflows/app.yml` builds the app unsigned on every change to
+`android/`, to check that it compiles.
+
+**The browser extension** has its own version in `ui/extension/manifest.json` (0.6.0); it ships
+inside the module and is downloaded from the Inbox tab.
+
 ## Changes
+
+- **0.17.0:** **The Import module is merged in.** The **Inbox** and **Scan** tabs, the Send to
+  Ledger browser extension (0.6.0), the email check with what it learns, the network scanner, the
+  phone camera and the Android app (0.22.0), **Extract data**, sending files on to other modules,
+  Ledger's Documents and Ledger's CSV files are part of Auto sort; an inbox file becomes a
+  statement, a bill or a receipt directly. Import's data is taken over when an admin presses
+  **Take it over** on the Inbox tab. **The module keeps no files of its own** (Ledger 0.27.0):
+  every file of any type is one of Ledger's Documents and tables keep its number; files older
+  versions kept in module storage move there when Ledger starts. **Tags on files:** a bill's
+  document is posted, paid or overdue as the bill is, a statement's document posted when all its
+  lines are; tags a person or another module sets are followed. **A file is read once:** what the
+  parsers read, and what the AI read once you approved it, is kept with the document for every
+  module and used instead of reading again; **Create bill** and re-reading a bill go by it.
+  Uploads of any size go in pieces. Settings have five tabs. Needs Ledger 0.27.0. Migrations 020
+  (drops the columns that once held file bytes) and 021 (the inbox's tables).
 
 - **0.16.0:** **Create bill** from a statement uses what is already known about it without the
   LLM: a PDF statement's balance (now read in the same call as its transactions), an OFX/QFX

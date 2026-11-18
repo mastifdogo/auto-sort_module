@@ -1,6 +1,6 @@
 ---
 name: ledger-module
-description: Work on this Ledger module (a plugin for the Ledger bookkeeping app, installed from this GitHub repository): add features, fix bugs, update it for new Ledger versions, check it, and release it. Use for any change to this repository's module code, manifest, migrations, UI or releases.
+description: Work on this Ledger module (Auto sort, id categorizer: statements, bills and receipts, the inbox with its Send to Ledger browser extension, email import, scanner and Android app; a plugin for the Ledger bookkeeping app, installed from this GitHub repository): add features, fix bugs, update it for new Ledger versions, check it, and release it. Use for any change to this repository's module code, manifest, migrations, UI or releases.
 ---
 
 # Working on this Ledger module
@@ -87,21 +87,40 @@ feature the module uses (the context file says which version added what;
   `links` (`tx:<id>` → `?statement=`, `bill:<id>` → `?bill=`); entries
   linked later use `linkEntry()` (transfers, duplicates).
 - Backups (Ledger 0.13.0) save every table of the schema as a CSV for people:
-  keep table and column names plain, no secrets in tables, and keep big
-  files out of record tables (`bill_documents`, `statement_files` hold the
-  bytes; `bills`/`statements` stay readable). From Ledger 0.13.1 a `bytea`
-  column shows only its size in the CSV, so file tables keep `file_name`,
-  `content_type`, `size_bytes` and `created_at` beside `content`.
-- Files (`lib/files.mjs`): every PDF, PNG or JPEG the module takes in is
-  filed in Ledger's Documents (`ctx.documents.add`, origin `imported`,
-  Ledger 0.19.0) and only `document_id` is kept in `bill_documents` /
-  `statement_files`; a 409 means it's already there (`existingDocumentId()`
-  reads the id). Other files (CSV/OFX statements, GIF/WebP) go to
-  `ctx.storage` (`storage_path`). Never write the `content` column.
-  Statements pass `account_code` only when a person chose the account.
-  Files 0.8–0.9 put in storage move to Documents only on
-  `POST /documents/move` (a person's click on Status): it moves their data.
-  Remove a document only if this module filed it and no other row uses it.
+  keep table and column names plain, no secrets in tables.
+- **Files: the module keeps none** (Ledger 0.27.0, `lib/files.mjs`). Every
+  file of any type (PDF, picture, CSV, OFX, QFX, EML) is filed in Ledger's
+  Documents with `files.fileDocument()` (`ctx.documents.ensure`, origin
+  `imported`; a file the store already has is used, never added twice) and
+  tables keep only `document_id` (`bill_documents`, `statement_files`,
+  `inbox_files`, `received_files`). Never call `ctx.storage.put` (410),
+  never add a `bytea` column (Ledger refuses to start the module), never
+  write a file except an upload's pieces under `os.tmpdir()`
+  (`lib/uploads.mjs`), deleted once the file is filed. A file that already
+  is a document (the inbox, another module's hand-over) is passed on by id
+  (`{ documentId }`), not read and filed again. Statements pass
+  `account_code` only when a person chose the account. Remove a document
+  only with `files.removeDocumentIfUnused()` (this module filed it and no
+  bill, statement or inbox row uses it). `storage_path` only exists for
+  files 0.8–0.16 left in module storage: `moveStorageToDocuments()` files
+  them at startup (`{ announce: false }`: moved, not new) in every
+  organization; drop the column in a later version, not before.
+- **Tags on files** (`lib/doc-tags.mjs`, `ctx.documents.tags`): a bill's
+  document is `posted` (note: the entry), `paid`, `overdue`; a statement's
+  is `posted` once all its lines are dealt with. `tags.syncBill` (wrapped in
+  server.mjs) syncs entry tags and document tags together; a `paid` or
+  `posted` tag changed by a person or another module is followed in
+  `dtags.listen()` (skip `module_id === ctx.id`). Only take off tags this
+  module set.
+- **Read a file once** (`lib/extraction.mjs`): before parsing a file or
+  sending it to the AI, look at `files.extractedOf(documentId)`
+  (`readStatement()` in server.mjs for statements, `billFromData()` in
+  `ingestDocument` for bills, `billInfoFromData()` for Create bill). Save
+  what a parser read straight away (`rememberStatement`); save what the AI
+  read only when a person approved it (`saveBillExtraction` on approve,
+  `POST /extractions/:id/approve`, `approveAiReading` when posting from a
+  PDF statement). Use the shared keys; module-only data goes under
+  `categorizer`.
 - LLM: stay provider-neutral (Ledger 0.18.2). Never branch on
   `status().provider` or a model name, no provider names in prompts or UI;
   go by `configured`, `images.configured`, `readsPdf`. Validate `json()` data.
@@ -199,12 +218,15 @@ Statement upload (CSV, OFX, QFX) with Ledger's LLM API recommending an account
 per transaction, transfers between your own accounts, bills and receipts
 (uploaded PDFs, photos and `.eml` files, or files from other modules) tracked
 until paid and matched to statement payments, and matches with what's already
-in the journal. There is no email checker any more (removed in 0.6.0; never
-add Gmail or IMAP reading back without the user asking).
+in the journal. Since 0.17.0 it is also what the Import module (id
+`downloads`, mastifdogo/download_module) was: the **inbox** for files from
+the Send to Ledger browser extension (`ui/extension/`), email, a network
+scanner, a phone's camera, the Android app (`android/`) and uploads, with
+Extract data and hand-offs to other modules.
 
 - The id is `categorizer` (permanent: it names the schema). The name shown
   is "Auto sort" (it was "LLM API"); messages use `ctx.name`, never a fixed
-  name. Needs Ledger ≥ 0.19.8.
+  name. Needs Ledger ≥ 0.27.0.
 - Layout: `server.mjs` (statements, categorizing, `/status`, search, posting
   with entry links), `lib/bill-routes.mjs` (bill routes, reading uploads and
   module files, `matchBillTx`, `linkBillEntry`), `lib/mime.mjs` (uploaded
@@ -213,8 +235,35 @@ add Gmail or IMAP reading back without the user asking).
   `lib/transfers.mjs` + `lib/transfer-sync.mjs`, `lib/duplicates.mjs` +
   `lib/duplicate-routes.mjs`, `lib/matching.mjs` + `lib/journal-matches.mjs`,
   `lib/received-files.mjs`, `lib/email-statements.mjs` (statements from
-  modules: account hints, PDF statements), `lib/dashboard.mjs`. Tests:
-  `test/*.test.mjs` (`npm test`).
+  modules: account hints, PDF statements), `lib/dashboard.mjs`; the inbox:
+  `lib/inbox.mjs` (routes under `/inbox`, `/extractions`, `/training`),
+  `lib/uploads.mjs`, `lib/extract-data.mjs`, `lib/mail.mjs` + `lib/learn.mjs`
+  + `lib/eml.mjs` (the one mail check, through `ctx.mail`),
+  `lib/scanner-routes.mjs` + `lib/escl.mjs` + `lib/pdf.mjs`, `lib/adopt.mjs`;
+  the page: `ui/index.html` plus `ui/inbox.js`, `ui/scan.js`,
+  `ui/mail-view.js`, `ui/receipt.js`, and `ui/mail-range.html` (a settings
+  tab page). Tests: `test/*.test.mjs` (`npm test`); `test/fake-ledger.mjs`
+  is the stand-in ctx (Documents with tags and extracted data), `test/pg.mjs`
+  a scratch PostgreSQL for the hand-over and migration tests (skipped
+  without one).
+- The inbox: an inbox file becomes a statement (`POST /inbox/:id/statement`)
+  or a bill or receipt (`POST /inbox/:id/bill`) directly, pointing at the
+  same document; never a `ctx.files` hand-off to itself. Other modules get
+  `ctx.files.send({ to, kind, document_id })`. `/files…` routes are the
+  files other modules sent here (received-files), `/inbox…` the inbox.
+- Email: one check (`lib/mail.mjs`), nothing imported twice (`mail_seen`
+  per mailbox, the inbox's sha256, `saveFile(…, { skipKnown })` for bytes
+  that are a bill's or statement's document already, `bills.message_id`).
+  It holds off (`adoption.mailHold()`) until Import's data is taken over.
+- Hand-over from Import (`lib/adopt.mjs`): the only place another module's
+  schema (`mod_downloads`) is read. Rows only, `adopted_from` makes it
+  idempotent, never delete or change anything there, and only on an admin's
+  `POST /adoption {confirm: true}`.
+- The browser extension (`ui/extension/`, its own version in its
+  manifest.json) and the phone app (`android/`, its own `appVersion` in
+  `android/gradle.properties`, kept above 0.21.1; `Updater.kt` reads the
+  version from the release asset's label, written by release.yml) call
+  `/api/v1/m/categorizer/inbox…`. Bump their versions when they change.
 - Changes people make in Ledger (`lib/ledger-sync.mjs`): Ledger rewrites a
   renumbered account's code only in columns named `account_code`,
   `*_account_code`, `*_account`; `suggested_code`, `chosen_code`,
@@ -269,8 +318,9 @@ add Gmail or IMAP reading back without the user asking).
 - Account pickers: `accountOptions()` shows the tree (`parent_code`,
   Ledger 0.15.0); `bankAccountOptions()` puts `kind`-tagged accounts
   (chequing, savings, credit_card; Ledger 0.16.0) first.
-- Restores (Ledger 0.14.0) can leave rows whose stored file is gone: check
-  `ctx.storage.stat()` before linking to a file; reads return null.
+- Restores (Ledger 0.14.0) can leave rows whose document's file is gone:
+  `files.readBillFile()` / `readStatementFile()` return null, `billFileUrl()`
+  null, and the inbox marks the row `missing` (its routes answer 410).
 - Tags (`lib/tags.mjs`, Ledger 0.23.0, feature-detected: `if (ctx.tags)`, so
   `"ledger"` stays lower): a bill's entry (`journal_entry_id`, else
   `paid_entry_id`) carries `vendor`, `paid`, `overdue`; `syncBill()` sets

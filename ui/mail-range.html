@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Import a date range</title>
+<style>
+	:root {
+		--bg: #fff; --panel: #f6f8fa; --text: #1d232b; --muted: #5d6875; --border: #dde1e6; --accent: #1f6feb;
+		--good: #1a7f37; --bad: #cf222e; --good-bg: #dafbe1;
+		color-scheme: light;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root {
+			--bg: #171b21; --panel: #1e242c; --text: #e3e7ec; --muted: #97a1ad; --border: #2c333c; --accent: #4c8dff;
+			--good: #3fb950; --bad: #f85149; --good-bg: #12261a;
+			color-scheme: dark;
+		}
+	}
+	* { box-sizing: border-box; }
+	html, body { background: transparent; }
+	body { margin: 0; padding: 0.25rem 0 0.5rem; color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+	h3 { font-size: 1rem; margin: 0 0 0.25rem; }
+	p { margin: 0 0 0.6rem; }
+	.muted { color: var(--muted); }
+	.small { font-size: 13px; }
+	.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 0.9rem 1rem; max-width: 40rem; }
+	.row { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; }
+	label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 13px; color: var(--muted); }
+	input { padding: 0.35rem 0.55rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+	.btn { padding: 0.4rem 0.8rem; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+	.btn:disabled { opacity: 0.5; cursor: default; }
+	.quick { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 0.5rem 0 0; }
+	.quick button { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; }
+	.status { margin-top: 0.75rem; }
+	.status:empty { display: none; }
+	.bad { color: var(--bad); }
+	.good { color: var(--good); }
+	progress { width: 100%; height: 0.5rem; }
+	ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+<div class="panel">
+	<h3>Import a date range</h3>
+	<p class="muted small">Reads the email of these days (both included) from Ledger's mailbox, with the keywords above and what the email check has learned. Emails already looked at and files already in the inbox are left out, so a range can be imported again safely.</p>
+	<form id="form" class="row">
+		<label>From <input type="date" id="from" required></label>
+		<label>To <input type="date" id="to" required></label>
+		<button class="btn" id="go" type="submit">Import</button>
+	</form>
+	<div class="quick" id="quick">
+		<button type="button" data-days="30">Last 30 days</button>
+		<button type="button" data-days="90">Last 90 days</button>
+		<button type="button" data-year="0">This year</button>
+		<button type="button" data-year="1">Last year</button>
+	</div>
+	<div class="status" id="status" aria-live="polite"></div>
+</div>
+<script>
+(() => {
+	const $ = (id) => document.getElementById(id);
+	const api = async (path, opts = {}) => {
+		const r = await fetch(`/api/v1/m/categorizer${path}`, { credentials: "same-origin", ...opts, headers: { "Content-Type": "application/json" } });
+		const body = await r.json().catch(() => ({}));
+		if (!r.ok) throw new Error(body?.error?.message || body?.message || body?.error || `HTTP ${r.status}`);
+		return body;
+	};
+	const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+	const today = new Date();
+	$("to").value = iso(today);
+	$("from").value = iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 30));
+	$("to").max = $("from").max = iso(today);
+
+	$("quick").addEventListener("click", (e) => {
+		const b = e.target.closest("button");
+		if (!b) return;
+		const t = new Date();
+		if (b.dataset.days) {
+			$("from").value = iso(new Date(t.getFullYear(), t.getMonth(), t.getDate() - Number(b.dataset.days)));
+			$("to").value = iso(t);
+		} else {
+			const y = t.getFullYear() - Number(b.dataset.year);
+			$("from").value = `${y}-01-01`;
+			$("to").value = y === t.getFullYear() ? iso(t) : `${y}-12-31`;
+		}
+	});
+
+	const n = (x, one, many = `${one}s`) => `${x} ${x === 1 ? one : many}`;
+	const el = (tag, cls, ...kids) => {
+		const e = document.createElement(tag);
+		if (cls) e.className = cls;
+		e.append(...kids.filter((k) => k != null && k !== ""));
+		return e;
+	};
+	/** What an import did, as a list (or "nothing new"). */
+	function summary(r) {
+		const items = [];
+		if (r.files) items.push(el("li", "", el("b", "", n(r.files, "file")), " added to the inbox"));
+		if (r.emails_saved) items.push(el("li", "", `${n(r.emails_saved, "email")} saved as .eml`));
+		if (r.duplicates) items.push(el("li", "", `${n(r.duplicates, "duplicate file")} left out (already here)`));
+		if (r.already_seen) items.push(el("li", "", `${n(r.already_seen, "email")} left out (looked at before)`));
+		if (r.filtered) items.push(el("li", "", `${n(r.filtered, "email")} without a keyword`));
+		if (r.learned_skip || r.files_skipped) items.push(el("li", "", `${n(r.files_skipped || r.learned_skip, "file")} skipped from what the email check learned (Inbox tab → What it learned)`));
+		if (r.no_document) items.push(el("li", "", `${n(r.no_document, "email")} with no document`));
+		if (r.sent) items.push(el("li", "", `${n(r.sent, "email")} you sent`));
+		if (r.remaining) items.push(el("li", "bad", `${n(r.remaining, "email")} not reached; import the rest again`));
+		return items.length ? el("ul", "", ...items) : el("p", "muted small", "Nothing new in this range.");
+	}
+	const say = (...nodes) => $("status").replaceChildren(...nodes.filter(Boolean));
+
+	let timer = null;
+	function show(info) {
+		const j = info.job;
+		const busy = j?.status === "running" || (info.checking && !j);
+		$("go").disabled = Boolean(info.missing) || busy;
+		if (info.missing) say(el("p", "bad small", `Can't read email: ${info.missing}.`));
+		else if (!j) say(info.checking ? el("p", "muted small", "Email is being checked right now…") : null);
+		else if (j.status === "running") {
+			const bar = document.createElement("progress");
+			if (j.total) { bar.max = j.total; bar.value = j.done; }
+			say(el("p", "small", `Importing ${j.from} to ${j.to}… ${j.total ? `${j.done} of ${n(j.total, "new email")}` : "finding emails"}`), bar);
+		} else if (j.status === "error") say(el("p", "bad small", `Importing ${j.from} to ${j.to} stopped: ${j.error}`), j.result.looked_at ? summary(j.result) : null);
+		else say(el("p", "good small", `Imported ${j.from} to ${j.to}.`), summary(j.result));
+		clearTimeout(timer);
+		if (busy) timer = setTimeout(refresh, 1500);
+	}
+	async function refresh() {
+		try { show(await api("/mail/range")); }
+		catch (e) { say(el("p", "bad small", e.message)); }
+	}
+
+	$("form").addEventListener("submit", async (e) => {
+		e.preventDefault();
+		$("go").disabled = true;
+		try {
+			await api("/mail/range", { method: "POST", body: JSON.stringify({ from: $("from").value, to: $("to").value }) });
+			await refresh();
+		} catch (err) {
+			say(el("p", "bad small", err.message));
+			$("go").disabled = false;
+		}
+	});
+	refresh();
+})();
+</script>
+</body>
+</html>

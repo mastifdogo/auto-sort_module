@@ -1,4 +1,5 @@
-// Auto sort (module id "categorizer", formerly "LLM API"): Ledger loads this file at startup and calls register(ctx).
+// Auto sort (module id "categorizer", formerly "LLM API"; since 0.17.0 also what the Import module, id "downloads",
+// did): Ledger loads this file at startup and calls register(ctx).
 // The module API is described in Ledger's docs/MODULE_LLM_CONTEXT.md. AI goes
 // through Ledger's LLM API (ctx.llm, Settings → LLM API); options are the
 // manifest's settings form (ctx.settings, the module's tab under Settings).
@@ -16,6 +17,15 @@
 // another module or a person makes the bill paid; rows are offered the tagged entries they could pay.
 // Transfers (lib/transfer-sync.mjs): the two rows of a transfer between your
 // own accounts are linked and posted as one entry.
+//
+// Files (Ledger 0.27.0): the module keeps none of its own. Every file, of any type, is one of
+// Ledger's Documents (ctx.documents; lib/files.mjs) and tables keep its id. What a file is (posted,
+// paid, overdue) is said with Ledger's tags on files (lib/doc-tags.mjs), and what was read out of
+// it is kept with it by Ledger, so it is read once (lib/extraction.mjs).
+// Inbox (lib/inbox.mjs, the Import module's part): files from the browser extension, email
+// (lib/mail.mjs), a network scanner (lib/scanner-routes.mjs), a phone and uploads wait there until
+// a person makes them a statement, a bill or a receipt, or sends them on.
+// Hand-over (lib/adopt.mjs): the Import module's data, taken over once an admin says so.
 
 import { createHash } from "node:crypto";
 import { registerBills } from "./lib/bill-routes.mjs";
@@ -29,10 +39,16 @@ import { registerReceivedFiles } from "./lib/received-files.mjs";
 import { registerDuplicates } from "./lib/duplicate-routes.mjs";
 import { registerJournalMatches } from "./lib/journal-matches.mjs";
 import { entryTags } from "./lib/tags.mjs";
+import { documentTags } from "./lib/doc-tags.mjs";
+import { MODULE_KEY, billInfoData, flippedData, parsedFromExtraction, statementData } from "./lib/extraction.mjs";
+import { registerInbox } from "./lib/inbox.mjs";
+import { registerScanner } from "./lib/scanner-routes.mjs";
+import { registerAdoption } from "./lib/adopt.mjs";
 import { candidateAccounts, examplesFromEntries, pickable, proposeCode, suggest } from "./lib/categorize.mjs";
 import { ParseError, parseAmount, parseDate, parseStatement, payeeKey } from "./lib/parse.mjs";
 
 const MAX_CONTENT_CHARS = 1_000_000;
+const DATE_ORDERS = ["auto", "mdy", "dmy"];
 /** Settings this module kept in its own table before Ledger 0.10.0 (copied to ctx.settings once, then deleted). */
 const OLD_SETTINGS = ["batch_size", "review_threshold", "ap_account"];
 
@@ -45,6 +61,17 @@ export default async function register(ctx) {
 	const files = moduleFiles(ctx, { q, T });
 	// Ledger's shared tags on journal entries (0.23.0); does nothing on an older Ledger.
 	const tags = entryTags(ctx, { q, T });
+	// Ledger's tags on files (0.27.0): a bill's document is posted, paid or overdue as the bill is.
+	const dtags = documentTags(ctx, { q, T });
+	{
+		// Wherever a bill's entry tags are brought in line, so are the tags on its document.
+		const entrySync = tags.syncBill;
+		tags.syncBill = async (b, user) => {
+			const became = await entrySync(b, user);
+			const also = await dtags.syncBill(became === "paid" ? { ...b, status: "paid" } : b, user).catch((err) => void ctx.log.warn("document tags not synced", { bill: String(b.id), err: String(err?.message || err) }));
+			return became ?? also ?? null;
+		};
+	}
 
 	// -----------------------------------------------------------------------
 	// Settings
@@ -276,13 +303,68 @@ export default async function register(ctx) {
 	}
 
 	/**
+	 * Read once (Ledger 0.27.0): the statement a file is, from what Ledger already keeps of the
+	 * document (its extracted data: parsed here before, read by the AI and approved, or read by
+	 * another module), else by parsing its text. text: the file's text, a function giving it, or null
+	 * when it can't be parsed (a PDF). → parsed (fromExtraction: true when nothing was parsed), or
+	 * null when there is nothing to go by. A file that isn't a statement answers 422.
+	 */
+	async function readStatement({ documentId = null, filename = "", dateOrder = "auto", text = null }) {
+		if (documentId !== null && documentId !== undefined) {
+			const x = await files.extractedOf(documentId);
+			const p = parsedFromExtraction(x?.data);
+			// A date order the person names now, other than the one it was parsed with, means: read it again.
+			const usedOrder = x?.data?.[MODULE_KEY]?.date_order;
+			if (p && (dateOrder === "auto" || !usedOrder || usedOrder === dateOrder)) return { ...p, fromExtraction: true, extracted: x.data };
+		}
+		if (text === null) return null;
+		const content = typeof text === "function" ? await text() : text;
+		try {
+			return { ...parseStatement(content, { filename, dateOrder }), dateOrder };
+		} catch (err) {
+			if (err instanceof ParseError) throw bad(err.message);
+			throw err;
+		}
+	}
+
+	/**
+	 * Saves what was read with the statement's document, for every module: what a parser read
+	 * (CSV, OFX, QFX) straight away; what the AI read only once a person approved it (elsewhere).
+	 * Read from the document's own extracted data, only the person's "flip signs" choice is noted.
+	 */
+	async function rememberStatement(documentId, parsed, { flip = false, account = null, hint = "", user } = {}) {
+		if (documentId === null || documentId === undefined) return;
+		if (parsed.fromExtraction) {
+			const turned = flippedData(parsed.extracted, flip === true);
+			if (turned) await files.saveExtracted(documentId, { data: turned }, user);
+			return;
+		}
+		if (parsed.format === "pdf") return;
+		const data = statementData(parsed, { flipped: flip === true, currency: account?.currency ?? "", accountHint: hint });
+		data[MODULE_KEY].date_order = parsed.dateOrder ?? "auto";
+		await files.saveExtracted(documentId, { data }, user);
+	}
+
+	/** A person posted from (or approved) a statement the AI read: its reading is saved with the document. */
+	async function approveAiReading(statementId, user) {
+		const { rows } = await q(
+			`SELECT s.ai_reading, f.document_id FROM ${T("statements")} s LEFT JOIN ${T("statement_files")} f ON f.statement_id = s.id WHERE s.id = $1 AND s.ai_reading IS NOT NULL`,
+			[String(statementId)],
+		);
+		if (!rows[0]) return false;
+		if (rows[0].document_id == null || !(await files.saveExtracted(rows[0].document_id, { data: rows[0].ai_reading }, user))) return false;
+		await q(`UPDATE ${T("statements")} SET ai_reading = NULL WHERE id = $1`, [String(statementId)]);
+		return true;
+	}
+
+	/**
 	 * Stages a parsed statement's transactions (from an upload or another module) and starts the
 	 * suggestions. account: the statement account, or null when it isn't known yet (the statement
 	 * then waits as 'needs_account' until someone chooses). Transactions already staged for the
 	 * account are skipped. Returns { id, transactions, duplicates }; with no new transactions the
 	 * statement isn't kept (id null).
 	 */
-	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, mail = null, source = mail ? "email" : "upload", guess = null, document = null, billInfo = null }) {
+	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, user, mail = null, source = mail ? "email" : "upload", guess = null, document = null, billInfo = null, aiReading = null, hint = "" }) {
 		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -t.amount_cents : t.amount_cents }));
 		const code = account?.code ?? "";
 		// What the statement says is owed, when the file or its reading already told (Create bill then needs no LLM).
@@ -291,8 +373,8 @@ export default async function register(ctx) {
 			billInfo ??
 			(parsed.balance ? billInfoOf({ balance_cents: flip ? -parsed.balance.amount_cents : parsed.balance.amount_cents, balance_date: parsed.balance.date }, parsed.format === "pdf" ? "pdf" : "ofx") : null);
 		const { rows } = await q(
-			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key, account_guess, bill_info)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+			`INSERT INTO ${T("statements")} (filename, account_code, format, uploaded_by, status, source, message_id, mail_from, mail_subject, source_key, account_guess, bill_info, ai_reading)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
 			[
 				(filename || `statement.${parsed.format}`).slice(0, 200),
 				code,
@@ -306,13 +388,27 @@ export default async function register(ctx) {
 				mail?.sourceKey ?? null,
 				account ? null : guess,
 				info ? JSON.stringify(info) : null,
+				aiReading ? JSON.stringify(aiReading) : null,
 			],
 		);
 		const id = rows[0].id;
-		// The file itself (≤ 5 MB), so the LLM can read the statement's balance later (Create bill): a PDF
-		// in Ledger's Documents (under its account when that's known, never a guess), a CSV or OFX in storage.
-		if (document && document.data.length <= 5 << 20) {
-			await files.saveStatementFile(id, { filename: (filename || `statement.${parsed.format}`).slice(0, 200), contentType: document.type, data: document.data }, { account_code: code });
+		// The file itself is one of Ledger's Documents, whatever its type (under its account when that's
+		// known, never a guess): document.documentId when it is one already (the inbox, another module),
+		// else its bytes are filed now. statement_files keeps the document's id.
+		let fileRef = { document_id: null, added: false };
+		if (document) {
+			const name = (filename || `statement.${parsed.format}`).slice(0, 200);
+			try {
+				fileRef = await files.saveStatementFile(
+					id,
+					document.documentId != null ? { filename: name, contentType: document.type, size: document.size, documentId: document.documentId } : { filename: name, contentType: document.type, data: document.data },
+					{ account_code: code },
+					user,
+				);
+			} catch (err) {
+				await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [id]);
+				throw err;
+			}
 		}
 		const { rowCount } = await q(
 			`INSERT INTO ${T("transactions")} (statement_id, line_no, account_code, fingerprint, tx_date, description, memo, amount_cents, fitid)
@@ -335,13 +431,49 @@ export default async function register(ctx) {
 		const duplicates = txs.length - rowCount;
 		if (rowCount === 0) {
 			await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [id]);
-			return { id: null, transactions: 0, duplicates };
+			// Nothing new in it: a document filed just now for it goes again, unless something else here uses it.
+			if (fileRef.added && (await files.removeDocumentIfUnused(fileRef.document_id))) return { id: null, transactions: 0, duplicates, document_id: null };
+			await rememberStatement(fileRef.document_id, parsed, { flip, account, hint, user });
+			return { id: null, transactions: 0, duplicates, document_id: fileRef.document_id };
 		}
 		await q(`UPDATE ${T("statements")} SET duplicates = $2 WHERE id = $1`, [id, duplicates]);
+		// What was read is kept with the document, so no module reads the file again.
+		await rememberStatement(fileRef.document_id, parsed, { flip, account, hint, user });
+		// What the sending module said is owed isn't the AI's reading: it is kept with the document too.
+		if (billInfo?.from === "module" && fileRef.document_id !== null) {
+			const owed = billInfoData(billInfo);
+			const have = (await files.extractedOf(fileRef.document_id))?.data?.[MODULE_KEY];
+			if (owed) await files.saveExtracted(fileRef.document_id, { data: { ...owed.data, [MODULE_KEY]: { ...(have && typeof have === "object" ? have : {}), ...owed.mine } } }, user);
+		}
+		// A statement whose account is known is filed as that account's statement, where Reconcile picks it up.
+		if (account && fileRef.document_id !== null) await files.updateDocument(fileRef.document_id, { kind: "statement", account_code: code }, { onlyOwn: false });
 		if (account) enqueue(id);
 		else await syncStatementNotice(id);
-		ctx.log.info("statement staged", { statement: String(id), account: code || "(to choose)", source, transactions: rowCount, duplicates, by: uploadedBy });
-		return { id, transactions: rowCount, duplicates };
+		ctx.log.info("statement staged", { statement: String(id), account: code || "(to choose)", source, transactions: rowCount, duplicates, by: uploadedBy, document: fileRef.document_id === null ? undefined : String(fileRef.document_id), read: parsed.fromExtraction ? "extracted data" : parsed.format });
+		return { id, transactions: rowCount, duplicates, document_id: fileRef.document_id, from_extraction: parsed.fromExtraction === true };
+	}
+
+	/**
+	 * Once per organization: the documents of bills and statements from before 0.17.0 get Ledger's
+	 * file tags (posted, paid, overdue), as new ones do when they change. module_state remembers.
+	 */
+	async function tagOldDocuments() {
+		if (!dtags.on) return 0;
+		const { rows: done } = await q(`SELECT 1 FROM ${T("module_state")} WHERE key = 'file_tags_backfilled'`);
+		if (done.length > 0) return 0;
+		const { rows: billRows } = await q(
+			`SELECT b.id, b.kind, b.status, b.due_date::text AS due_date, b.journal_entry_id, b.paid_entry_id, d.document_id
+			   FROM ${T("bills")} b JOIN ${T("bill_documents")} d ON d.bill_id = b.id
+			  WHERE d.document_id IS NOT NULL AND (b.status IN ('open', 'paid') OR COALESCE(b.journal_entry_id, b.paid_entry_id) IS NOT NULL) ORDER BY b.id`,
+		);
+		for (const b of billRows) await dtags.syncBill(b);
+		const { rows: stRows } = await q(
+			`SELECT f.statement_id FROM ${T("statement_files")} f WHERE f.document_id IS NOT NULL
+			    AND EXISTS (SELECT 1 FROM ${T("transactions")} t WHERE t.statement_id = f.statement_id AND t.status = 'posted') ORDER BY f.statement_id`,
+		);
+		for (const r of stRows) await dtags.syncStatement(r.statement_id);
+		await q(`INSERT INTO ${T("module_state")} (key, value) VALUES ('file_tags_backfilled', $1::jsonb) ON CONFLICT (key) DO NOTHING`, [JSON.stringify({ at: new Date().toISOString(), bills: billRows.length, statements: stRows.length })]);
+		return billRows.length + stRows.length;
 	}
 
 	const requeue = async (ids) => {
@@ -350,12 +482,12 @@ export default async function register(ctx) {
 			if (rowCount > 0) enqueue(sid);
 		}
 	};
-	const billHelpers = { q, T, bad, ai, requeue, stageStatement, settleFile: null, files, tags };
+	const billHelpers = { q, T, bad, ai, requeue, stageStatement, readStatement, settleFile: null, files, tags, dtags };
 	const bills = registerBills(ctx, billHelpers);
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
 	const journal = registerJournalMatches(ctx, { q, T, bad, ai, bills, duplicates, transfers, syncStatementNotice });
-	registerRoot(ctx, { q, T, dash, syncStatementNotice, syncTodo: () => journal.syncTodo() });
+	registerRoot(ctx, { q, T, dash, syncStatementNotice, syncTodo: () => journal.syncTodo(), dtags });
 
 	// A person renumbered an account (Ledger 0.19.3): Ledger has rewritten the columns it recognises; these follow.
 	// It runs in that person's organization.
@@ -364,13 +496,25 @@ export default async function register(ctx) {
 	}
 
 	await migrateOldSettings().catch((err) => ctx.log.error("moving old settings failed", { err: String(err?.message || err) }));
-	// Files kept in the database before 0.8.0 move to Ledger's storage, in the background.
+	// Files an older version kept in the module's own storage (CSV and OFX statements, some pictures)
+	// are filed in Ledger's Documents, in every organization, in the background: the module keeps no
+	// files of its own (Ledger 0.27.0). Safe to run again; a file that can't be moved is tried next start.
 	ctx.orgs
 		.forEach(async (org) => {
-			const n = await files.moveOldFiles();
-			if (n) ctx.log.info("files moved to storage", { organization: org.id, files: n });
+			try {
+				const r = await files.moveStorageToDocuments();
+				if (r.moved || r.missing) ctx.log.info("files moved from the module's storage to Documents", { organization: org.id, ...r });
+			} catch (err) {
+				ctx.log.warn("moving files to Documents failed", { organization: org.id, err: String(err?.message || err) });
+			}
+			try {
+				const n = await tagOldDocuments();
+				if (n) ctx.log.info("documents of earlier bills and statements tagged", { organization: org.id, documents: n });
+			} catch (err) {
+				ctx.log.warn("tagging earlier documents failed", { organization: org.id, err: String(err?.message || err) });
+			}
 		})
-		.catch((err) => ctx.log.warn("moving files to storage failed", { err: String(err?.message || err) }));
+		.catch((err) => ctx.log.warn("moving files to Documents failed", { err: String(err?.message || err) }));
 	// The email checker is gone (0.6.0): forget its state and its error notice in every organization.
 	await ctx.orgs
 		.forEach(async () => {
@@ -402,7 +546,7 @@ export default async function register(ctx) {
 			  WHERE status = 'posting'`,
 		);
 	});
-	const received = registerReceivedFiles(ctx, { q, T, bills });
+	const received = registerReceivedFiles(ctx, { q, T, bills, approveAiReading });
 	// Approving a bill, posting from a statement or discarding it settles the file it came from.
 	bills.settleFile = billHelpers.settleFile = received.settle;
 
@@ -417,14 +561,14 @@ export default async function register(ctx) {
 		// Organizations (separate books): which one this request works in; the full list only for admins.
 		const organization = await ctx.orgs.current();
 		const organizations = req.user.role === "admin" ? await ctx.orgs.list() : [];
-		const files_for_documents = await files.pendingForDocuments();
-		return { name: ctx.name, files_for_documents, llm, settings: { ...cfg, ap_account: String(ap_account ?? "") }, role: req.user.role, ledger: ctx.ledgerVersion, version: ctx.version, organization, organizations };
+		const files_for_documents = await files.pendingInStorage();
+		return { name: ctx.name, id: ctx.id, files_for_documents, llm, settings: { ...cfg, ap_account: String(ap_account ?? "") }, role: req.user.role, username: req.user.username, root: req.user.root === true, ledger: ctx.ledgerVersion, version: ctx.version, organization, organizations };
 	});
 
-	// POST /documents/move: file the PDFs and scans still in the module's storage (from before 0.10.0)
-	// in Ledger's Documents. A person asks for it: it moves their files.
+	// POST /documents/move: file what is still in the module's old storage in Ledger's Documents now
+	// (it also happens by itself each time Ledger starts).
 	ctx.route("POST", "/documents/move", async (req) => {
-		const r = await files.moveToDocuments(req.user);
+		const r = await files.moveStorageToDocuments(req.user);
 		ctx.log.info("files moved to Documents", { ...r, by: req.user.username });
 		return r;
 	});
@@ -560,27 +704,39 @@ export default async function register(ctx) {
 		if (typeof b.content !== "string" || b.content.trim() === "") throw bad("content (the statement file's text) is required");
 		if (b.content.length > MAX_CONTENT_CHARS) throw bad("the file is too large; split it into smaller statements");
 		if (typeof b.account_code !== "string" || b.account_code === "") throw bad("account_code (the bank or card account) is required");
-		const dateOrder = ["auto", "mdy", "dmy"].includes(b.date_order) ? b.date_order : "auto";
+		if (b.date_order !== undefined && !DATE_ORDERS.includes(b.date_order)) throw bad("date_order must be auto, mdy or dmy");
+		if (b.flip_signs !== undefined && typeof b.flip_signs !== "boolean") throw bad("flip_signs must be true or false");
+		const dateOrder = b.date_order ?? "auto";
 		const { account } = await statementAccount(b.account_code);
 		if (!account.is_active) throw bad(`account ${account.code} is inactive`);
 		if (!pickable(account)) throw bad(`account ${account.code} is a hidden or clearing account; choose a bank or card account`);
 
+		// The file goes in Ledger's Documents first (any type since Ledger 0.27.0), as this account's
+		// statement; what Ledger already keeps of it is used instead of parsing it again.
+		const data = Buffer.from(b.content, "utf8");
+		const name = filename || "statement.csv";
+		const type = /\.(ofx|qfx|qbo)$/i.test(name) || /<OFX>|OFXHEADER/i.test(b.content.slice(0, 2000)) ? "application/x-ofx" : "text/csv";
+		const doc = await files.fileDocument({ kind: "statement", filename: name, data, content_type: type, account_code: account.code }, req.user);
 		let parsed;
 		try {
-			parsed = parseStatement(b.content, { filename, dateOrder });
+			parsed = await readStatement({ documentId: doc.id, filename, dateOrder, text: b.content });
 		} catch (err) {
-			if (err instanceof ParseError) throw bad(err.message);
+			if (doc.added) await files.removeDocumentIfUnused(doc.id);
 			throw err;
 		}
 		const r = await stageStatement(parsed, {
-			filename,
+			filename: name,
 			account,
 			flip: b.flip_signs === true,
 			uploadedBy: req.user.username,
-			document: { data: Buffer.from(b.content, "utf8"), type: parsed.format === "csv" ? "text/csv" : "application/x-ofx" },
+			user: req.user,
+			document: { documentId: doc.id, type, size: data.length },
 		});
-		if (r.transactions === 0) throw new ctx.HttpError(409, `all ${r.duplicates} transactions in this file were uploaded before`);
-		return ctx.response(201, { id: r.id, transactions: r.transactions, duplicates: r.duplicates, warnings: parsed.warnings.slice(0, 50) });
+		if (r.transactions === 0) {
+			if (doc.added) await files.removeDocumentIfUnused(doc.id);
+			throw new ctx.HttpError(409, `all ${r.duplicates} transactions in this file were uploaded before`);
+		}
+		return ctx.response(201, { id: r.id, transactions: r.transactions, duplicates: r.duplicates, document_id: r.document_id, warnings: parsed.warnings.slice(0, 50) });
 	});
 
 	async function statementReconciled(id) {
@@ -620,8 +776,12 @@ export default async function register(ctx) {
 		const suggested_account = statement.status === "needs_account" ? await suggestStatementAccount(statement) : null;
 		const { rows: made } = await q(`SELECT id, status FROM ${T("bills")} WHERE statement_id = $1 AND status <> 'ignored' ORDER BY id LIMIT 1`, [statement.id]);
 		statement.bill_id = made[0]?.id ?? null;
-		const { rows: docs } = await q(`SELECT 1 FROM ${T("statement_files")} WHERE statement_id = $1`, [statement.id]);
+		const { rows: docs } = await q(`SELECT document_id FROM ${T("statement_files")} WHERE statement_id = $1`, [statement.id]);
 		statement.has_document = docs.length > 0;
+		// The file in Ledger's Documents: where it opens, and Ledger's tags on it (posted, extracted, …).
+		statement.document_id = docs[0]?.document_id ?? null;
+		statement.document_url = await files.statementFileUrl(statement.id);
+		statement.document_tags = statement.document_id === null ? [] : ((await dtags.of(statement.document_id)) ?? []).map((t) => ({ tag: t.tag, note: t.note, module_id: t.module_id, set_by: t.set_by }));
 		// Ledger 0.19.4: a statement filed in Documents says whether an account has been reconciled against it.
 		statement.reconciled = await statementReconciled(statement.id);
 		// Ledger 0.19.5: a person may have changed a posted entry's amounts since; show both, overwrite neither.
@@ -676,6 +836,21 @@ export default async function register(ctx) {
 				[rows[0].source_key, account.code, flip, req.user.username],
 			);
 		}
+		// The statement's document follows: it is this account's statement, and "flip signs" turns round what is kept of it.
+		const docId = await files.statementDocumentId(statement.id);
+		if (docId !== null) {
+			await files.updateDocument(docId, { kind: "statement", account_code: account.code }, { onlyOwn: false });
+			if (flip) {
+				const x = await files.extractedOf(docId);
+				const turned = x?.data ? flippedData(x.data, x.data[MODULE_KEY]?.flipped !== true) : null;
+				if (turned) await files.saveExtracted(docId, { data: turned }, req.user);
+			}
+		}
+		if (flip) {
+			const { rows: kept } = await q(`SELECT ai_reading FROM ${T("statements")} WHERE id = $1 AND ai_reading IS NOT NULL`, [statement.id]);
+			const turned = kept[0] ? flippedData(kept[0].ai_reading, kept[0].ai_reading[MODULE_KEY]?.flipped !== true) : null;
+			if (turned) await q(`UPDATE ${T("statements")} SET ai_reading = $2 WHERE id = $1`, [statement.id, JSON.stringify({ ...kept[0].ai_reading, ...turned })]);
+		}
 		const { rows: left } = await q(`SELECT count(*)::int AS n FROM ${T("transactions")} WHERE statement_id = $1`, [statement.id]);
 		if (left[0].n === 0) {
 			await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [statement.id]);
@@ -696,7 +871,7 @@ export default async function register(ctx) {
 			// The statement goes (nothing of it was posted): so does its file.
 			await files.removeStatementFile(statement.id);
 			await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [statement.id]);
-		}
+		} else await dtags.syncStatement(statement.id, req.user); // what is left of it is posted
 		await syncStatementNotice(statement.id);
 		// Auto sort's matches for the rows that went are no longer to review.
 		await journal.syncTodo();
@@ -880,6 +1055,13 @@ export default async function register(ctx) {
 		if (results.posted > 0) await journal.syncTodo();
 		// Someone posted from it: the file it came from (if another module sent it) is done.
 		if (results.posted > 0) await bills.settleFile?.({ statementId: statement.id }, "done", `${results.posted} transaction${results.posted === 1 ? "" : "s"} posted by ${req.user.username}`, req.user.username);
+		if (results.posted > 0) {
+			// A person posted from what the AI read (a PDF statement): that reading is now kept with the document.
+			await approveAiReading(statement.id, req.user).catch((err) => ctx.log.warn("the AI's reading was not saved with the document", { statement: String(statement.id), err: String(err?.message || err) }));
+			// Its document is "posted" once every line is dealt with (Ledger's tags on files).
+			await dtags.syncStatement(statement.id, req.user).catch((err) => ctx.log.warn("document tags not synced", { statement: String(statement.id), err: String(err?.message || err) }));
+			for (const sid of otherStatements) if (String(sid) !== String(statement.id)) await dtags.syncStatement(sid, req.user).catch(() => {});
+		}
 		ctx.log.info("transactions posted", { statement: String(statement.id), posted: results.posted, failed: results.failed.length, by: req.user.username });
 		return results;
 	});
@@ -938,7 +1120,7 @@ export default async function register(ctx) {
 		const term = String(query ?? "").trim();
 		if (term.length < 2) return [];
 		const n = Math.min(limit, 20);
-		const [b, st, tx] = await Promise.all([
+		const [b, st, tx, inboxFiles] = await Promise.all([
 			q(
 				`SELECT id, vendor, invoice_number, due_date::text AS due_date, amount_cents, currency, status FROM ${T("bills")}
 				  WHERE vendor ILIKE $1 OR invoice_number ILIKE $1 OR mail_subject ILIKE $1 ORDER BY id DESC LIMIT $2`,
@@ -948,6 +1130,11 @@ export default async function register(ctx) {
 			q(
 				`SELECT t.id, t.statement_id, t.tx_date::text AS date, t.description, t.amount_cents, t.account_code, t.status FROM ${T("transactions")} t
 				  WHERE t.description ILIKE $1 OR t.memo ILIKE $1 ORDER BY t.tx_date DESC LIMIT $2`,
+				[like(term), n],
+			),
+			q(
+				`SELECT id, name, status, size_bytes, received_at FROM ${T("inbox_files")}
+				  WHERE status <> 'uploading' AND (name ILIKE $1 OR source_url ILIKE $1 OR note ILIKE $1 OR origin_detail ILIKE $1) ORDER BY received_at DESC LIMIT $2`,
 				[like(term), n],
 			),
 		]);
@@ -963,8 +1150,23 @@ export default async function register(ctx) {
 				subtitle: `${r.date} · ${money(r.amount_cents)} · account ${r.account_code} · ${r.status === "new" ? "to post" : r.status}`,
 				href: `/apps/${ctx.id}?statement=${r.statement_id}`,
 			})),
+			...inboxFiles.rows.map((r) => ({
+				title: `File: ${r.name}`,
+				subtitle: `${r.status === "new" ? "in the inbox" : r.status} · ${(Number(r.size_bytes) / 1024).toFixed(0)} KB · ${new Date(r.received_at).toISOString().slice(0, 10)}`,
+				href: `/apps/${ctx.id}?file=${r.id}`,
+			})),
 		].slice(0, limit);
 	});
+
+	// -----------------------------------------------------------------------
+	// The inbox (files from the browser extension, email, the scanner, a phone, uploads), the
+	// scanner, and the hand-over of the Import module's data
+	// -----------------------------------------------------------------------
+
+	const adoption = registerAdoption(ctx, { q, T, bad, files });
+	const inbox = registerInbox(ctx, { q, T, bad, ai, files, dtags, bills, stageStatement, readStatement, statementAccount, mailHold: adoption.mailHold });
+	registerScanner(ctx, { q, T, bad, saveFile: inbox.saveFile, options: inbox.options, syncNotice: inbox.syncNotice });
+	adoption.onAdopted(() => inbox.syncNotice());
 
 	ctx.log.info("module ready", { resumed });
 }

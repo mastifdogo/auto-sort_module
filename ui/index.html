@@ -21,6 +21,7 @@
 	body { margin: 0; padding: 1rem 1.25rem 3rem; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
 	h1 { font-size: 1.35rem; margin: 0 0 0.75rem; }
 	h2 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; }
+	a { color: var(--accent); }
 	.muted { color: var(--muted); }
 	.small { font-size: 13px; }
 	nav.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; overflow-x: auto; }
@@ -96,19 +97,184 @@
 	iframe.pdf { width: 100%; height: 520px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 	tr.selected td { background: var(--panel); }
 	textarea { padding: 0.4rem 0.55rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: inherit; font: inherit; }
+	/* Inbox and Scan tabs */
+	a.btn { text-decoration: none; display: inline-block; white-space: normal; max-width: 100%; overflow-wrap: anywhere; }
+	.actions .btn { white-space: normal; text-align: left; }
+	label.btn { display: inline-flex; flex-direction: row; align-items: center; justify-content: center; font-weight: normal; }
+	.fname { overflow-wrap: anywhere; font-weight: 500; }
+	.bad { color: var(--bad); }
+	.root-mark { color: #fff; background: var(--bad); border-radius: 999px; padding: 0 0.5rem; font-size: 12px; font-weight: 700; }
+	.review-note { margin-top: 0.3rem; color: var(--warn); }
+	.review-wrap { max-height: 60vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+	table.review th, table.review td { padding: 0.2rem 0.3rem; }
+	table.review input { width: 100%; padding: 0.2rem 0.35rem; font-size: 13px; }
+	table.review .cell-date { min-width: 6.8rem; }
+	table.review .cell-desc { min-width: 9rem; }
+	table.review .cell-num { min-width: 5.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+	.small-btn { padding: 0.1rem 0.45rem; }
+	.btn.big { padding: 0.7rem 1rem; font-size: 16px; }
+	.scan-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+	.scan-actions label { flex: 1 1 10rem; text-align: center; }
+	.visually-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
+	.scan-pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); gap: 0.6rem; margin-top: 0.9rem; }
+	.scan-page { position: relative; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--panel); }
+	.scan-page img { display: block; width: 100%; height: 10rem; object-fit: contain; }
+	.scan-page .cap { display: flex; justify-content: space-between; align-items: center; padding: 0.2rem 0.4rem; font-size: 12px; color: var(--muted); }
+	label.stacked { font-size: 13px; color: var(--muted); font-weight: normal; }
+	label.stacked input { font-size: 16px; color: var(--text); }
+	.actions { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.4rem; }
+	.forward { margin-top: 0.5rem; }
+	.forward select, .forward input[type=text] { max-width: 100%; }
+	.look { margin-bottom: 0.6rem; display: flex; flex-direction: column; gap: 0.4rem; }
+	.look summary { cursor: pointer; color: var(--muted); }
+	.look iframe { display: block; width: 100%; height: min(60vh, 36rem); margin-top: 0.3rem; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+	.look img { display: block; max-width: 100%; max-height: 70vh; margin-top: 0.3rem; border: 1px solid var(--border); border-radius: 6px; }
+	ol { padding-left: 1.2rem; margin: 0.4rem 0; }
+	code { font-size: 13px; overflow-wrap: anywhere; }
+	#in-adopt { border-color: var(--warn); }
+	@media (max-width: 640px) {
+		table.rows > thead { display: none; }
+		table.rows, table.rows > tbody, table.review, table.review > tbody { display: block; width: 100%; }
+		table.rows > tbody > tr { display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; padding: 0.55rem 0; border-bottom: 1px solid var(--border); }
+		table.rows > tbody > tr > td { border: 0; padding: 0; }
+		table.rows > tbody > tr > td.wide { flex-basis: 100%; min-width: 0; }
+		table.rows > tbody > tr > td.num { margin-left: auto; }
+		table.review > thead { display: none; }
+		table.review > tbody > tr { display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0.35rem; border-bottom: 1px solid var(--border); }
+		table.review > tbody > tr > td { border: 0; padding: 0; flex: 1 1 5rem; min-width: 0; }
+		table.review > tbody > tr > td.wide { flex-basis: 100%; order: 5; }
+		table.review > tbody > tr > td:last-child { flex: 0 0 auto; }
+		table.review input, table.review .cell-date, table.review .cell-desc, table.review .cell-num { min-width: 0; }
+	}
 	.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -1px; }
 	@keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
 <nav class="tabs">
+	<button data-tab="inbox">Inbox<span id="inbox-count" class="badge hidden"></span></button>
 	<button data-tab="review" class="active">Statements</button>
 	<button data-tab="bills">Bills</button>
 	<button data-tab="receipts">Receipts</button>
 	<button data-tab="duplicates">Duplicates<span id="dup-count" class="badge hidden"></span></button>
 	<button data-tab="rules">Learned rules</button>
+	<button data-tab="scan">Scan</button>
 	<button data-tab="settings">Status</button>
 </nav>
+
+<!-- Inbox: files from the browser extension, email, the scanner, a phone and uploads -->
+<section id="tab-inbox" class="hidden">
+<div id="in-adopt" class="panel small hidden" style="margin-bottom:0.75rem"></div>
+<div class="row">
+	<label class="inline">Show
+		<select id="in-filter">
+			<option value="new">Inbox</option>
+			<option value="sent">Sent</option>
+			<option value="archived">Archived</option>
+			<option value="all">All</option>
+		</select>
+	</label>
+	<span id="in-counts" class="muted small"></span>
+	<span id="in-root-mark" class="root-mark hidden" title="Ledger's root mode is on: deletions go through Ledger and can be put back from its Root log">Root</span>
+	<span class="spacer"></span>
+	<button class="btn" id="in-get-ext">Get the browser extension</button>
+</div>
+
+<div id="in-mail" class="row small hidden" style="margin-top:0.5rem"></div>
+<div id="in-training" class="panel small hidden" style="margin-top:0.5rem"></div>
+
+<div id="in-ext" class="panel small hidden" style="margin-top:0.75rem">
+	<strong>Send to Ledger</strong>: a Chrome and Firefox extension that sends files from any website straight into this inbox (or makes them a statement, a bill or a receipt right away), without saving them to your computer. Right-click a download link and choose <em>Send to Ledger…</em>, or drop a file on its toolbar button.
+	<div class="row" style="margin:0.6rem 0"><button class="btn primary" id="in-dl-ext">Download the extension (.zip)</button><span class="muted small" id="in-ext-msg"></span></div>
+	<ol>
+		<li><strong>Chrome, Edge, Brave:</strong> unzip it, open <code>chrome://extensions</code>, turn on <em>Developer mode</em>, choose <em>Load unpacked</em> and pick the unzipped folder.</li>
+		<li><strong>Firefox:</strong> open <code>about:debugging#/runtime/this-firefox</code> → <em>Load Temporary Add-on…</em> → pick <code>manifest.json</code> in the unzipped folder (until Firefox restarts; to keep it, sign it for yourself on addons.mozilla.org, see the README).</li>
+		<li>Click the extension's toolbar button. It already knows this Ledger (<code id="in-ext-url"></code>): press <em>Allow and continue</em> and accept the browser's question. That's all.</li>
+		<li><strong>Updating it later:</strong> unzip the new download over the same folder and press <em>Reload</em> on the extensions page. Loading it from a new folder makes the browser treat it as a new extension that has to be allowed again.</li>
+	</ol>
+</div>
+
+<div class="table-wrap" style="margin-top:0.75rem">
+	<table id="in-files" class="rows">
+		<thead><tr><th>File</th><th class="num">Size</th><th>From</th><th>Received</th><th>Status</th></tr></thead>
+		<tbody></tbody>
+	</table>
+</div>
+<p id="in-empty" class="muted hidden">Nothing here. Files arrive from the Send to Ledger browser extension, from email, and from the Scan tab (scanner, phone camera, the Android app, uploads). Each one is kept in Ledger's Documents; from here you make it a statement, a bill or a receipt.</p>
+</section>
+
+<!-- Scan: the network scanner, a phone's camera, the Android app, uploads. Everything goes to the inbox. -->
+<section id="tab-scan" class="hidden">
+	<details id="phone-app" class="small" style="margin-bottom:0.75rem">
+		<summary>Scan receipts with the Android app</summary>
+		<div class="panel" style="margin-top:0.4rem">
+			<p style="margin-top:0">The <strong>Ledger Import</strong> app finds the receipt in the camera by itself, turns it into a PDF, lets you pick the account and add a note (typed or spoken), and sends it to the inbox. With no connection it keeps receipts on the phone and sends them when it next reaches the server (or only on your own Wi-Fi, if you set that); until then a receipt can still be changed. It updates itself.</p>
+			<div class="actions"><a class="btn primary" id="app-apk" href="#" rel="noopener">Download the app (Android)</a></div>
+			<ol style="margin-bottom:0">
+				<li>Open this page on the phone and download the app, or send the link to the phone. Android asks once to allow installing from your browser.</li>
+				<li>In the app, enter this server's address (the one in the browser's address bar, e.g. <code id="app-server"></code>), your Ledger username and password.</li>
+				<li>With several organizations, choose in the app's Settings which one receipts go to.</li>
+				<li>Receipts arrive in the Inbox marked "phone app", with the account you chose.</li>
+			</ol>
+		</div>
+	</details>
+	<h2 style="margin-top:0">Scanner</h2>
+	<div id="scanner" class="panel small"><span class="muted">Looking for the scanner…</span></div>
+	<details id="bridge" class="small" style="margin-top:0.5rem">
+		<summary>Scanner plugged into a computer by USB?</summary>
+		<div class="panel" style="margin-top:0.4rem">
+			<p style="margin-top:0">A web page can't reach a USB scanner, so a small program on the computer it's plugged into (your PC, or the Ledger server itself) shares it with Ledger as a network scanner. Then it scans from here on any device, phones included.</p>
+			<div class="actions">
+				<a class="btn" href="scan-bridge/ledger-scan-bridge.ps1" download>Windows: ledger-scan-bridge.ps1</a>
+				<a class="btn" href="scan-bridge/ledger-scan-bridge.py" download>Mac and Linux: ledger-scan-bridge.py</a>
+			</div>
+			<ol style="margin-bottom:0">
+				<li><strong>Windows</strong> (uses Windows' own scanner support, nothing to install): the first time, right-click the Start button → <em>Terminal (Admin)</em>, go to the folder you saved it in (e.g. <code>cd Downloads</code>) and run <code>powershell -ExecutionPolicy Bypass -File .\ledger-scan-bridge.ps1</code>. It reserves its port and opens it in the firewall for your home network. Next times a normal window works.</li>
+				<li><strong>Mac and Linux</strong> (uses SANE): install it once (Mac: <code>brew install sane-backends</code>; Debian/Ubuntu: <code>sudo apt install sane-utils</code>), then run <code>python3 ledger-scan-bridge.py</code>.</li>
+				<li>It prints an address such as <code>http://192.168.1.25:8090/eSCL</code>. An admin enters it here (<em>Change scanner</em> → the address → <em>Use this address</em>). On the Ledger server itself, use <code>http://127.0.0.1:8090/eSCL</code>.</li>
+				<li>Leave the bridge running while you scan; start it again after a restart (or put it in the computer's startup items).</li>
+			</ol>
+		</div>
+	</details>
+
+	<div id="camera-box" class="hidden">
+	<h2>Camera</h2>
+	<p class="muted small" style="margin-top:0">Photograph a receipt or bill. Several photos become the pages of one PDF, saved to the inbox, where you make it a receipt or a bill.</p>
+	<div class="scan-actions">
+		<label class="btn primary big">Take a photo<input id="scan-camera" type="file" accept="image/*" capture="environment" class="visually-hidden"></label>
+		<label class="btn big">Choose photos<input id="scan-pick" type="file" accept="image/*" multiple class="visually-hidden"></label>
+	</div>
+	<p id="scan-busy" class="muted small hidden">Preparing the photo…</p>
+	<div id="crop" class="panel hidden" style="margin-top:0.75rem">
+		<div id="crop-msg" class="small"></div>
+		<canvas id="crop-canvas" style="display:block;width:100%;margin-top:0.5rem;border-radius:6px;touch-action:none;background:#000"></canvas>
+		<label class="inline small" style="margin-top:0.5rem"><input type="checkbox" id="crop-clean"> Clean up: black print on white paper</label>
+		<div class="row" style="margin-top:0.6rem">
+			<button class="btn" id="crop-skip">Discard</button>
+			<button class="btn" id="crop-whole">Whole photo</button>
+			<span class="spacer"></span>
+			<button class="btn primary big" id="crop-use">Use this</button>
+		</div>
+	</div>
+	<div id="scan-pages" class="scan-pages"></div>
+	<div id="scan-save" class="panel hidden" style="margin-top:0.75rem">
+		<label class="stacked">File name<input id="scan-name" type="text" maxlength="255"></label>
+		<label class="stacked" style="margin-top:0.5rem">Note (optional)<input id="scan-note" type="text" maxlength="1000" placeholder="e.g. lunch with a client"></label>
+		<div class="row" style="margin-top:0.75rem">
+			<button class="btn" id="scan-clear">Start over</button>
+			<span class="spacer"></span>
+			<button class="btn primary big" id="scan-upload">Save to inbox</button>
+		</div>
+	</div>
+	</div>
+
+	<h2>Upload files</h2>
+	<p class="muted small" style="margin-top:0">From your computer or phone: a scan made with your scanner's own app (a USB scanner, say), a statement you downloaded, any file.</p>
+	<div class="scan-actions">
+		<label class="btn big">Choose files<input id="upload-files" type="file" multiple class="visually-hidden"></label>
+	</div>
+	<p id="upload-msg" class="muted small"></p>
+</section>
 
 <!-- Statements list + review -->
 <section id="tab-review" class="hidden">
@@ -119,7 +285,7 @@
 			<span id="b-sort-status" class="muted small"></span>
 		</div>
 	<form id="upload" class="panel hidden">
-		<strong>Upload a statement</strong> (CSV, OFX, QFX, QBO)
+		<strong>Upload a statement</strong> (CSV, OFX, QFX, QBO). A PDF statement goes through the Inbox tab, where the AI reads it and you check what it read.
 		<div class="grid">
 			<label>File
 				<input type="file" id="file" accept=".csv,.txt,.ofx,.qfx,.qbo,text/csv" required>
@@ -225,7 +391,7 @@
 			</select>
 		</label>
 		<span class="spacer"></span>
-		<label class="btn" style="font-weight:normal" title="A PDF, a photo or a saved email (.eml); Ledger's LLM API reads it"><span id="b-upload-label">Upload a bill</span><input type="file" id="b-file" accept=".pdf,.eml,.jpg,.jpeg,.png,.webp,.gif,application/pdf,message/rfc822,image/jpeg,image/png,image/webp,image/gif" class="hidden"></label>
+		<label class="btn" title="A PDF, a photo or a saved email (.eml); the AI reads it and you check what it read"><span id="b-upload-label">Upload a bill</span><input type="file" id="b-file" accept=".pdf,.eml,.jpg,.jpeg,.png,.webp,.gif,application/pdf,message/rfc822,image/jpeg,image/png,image/webp,image/gif" class="hidden"></label>
 		<button class="btn" id="b-add">Add by hand</button>
 	</div>
 	<p class="muted small" id="b-hint"></p>
@@ -280,6 +446,7 @@
 		<div id="bd-matches"></div>
 		<h2>Source</h2>
 		<p class="small" id="bd-source"></p>
+		<p class="small" id="bd-doc-tags"></p>
 		<button class="btn hidden" id="bd-show-doc">Show PDF</button>
 		<div id="bd-doc"></div>
 		<div class="mailbody hidden" id="bd-body"></div>
@@ -325,12 +492,14 @@
 		<p id="st-ai" class="small"></p>
 		<div id="st-docs" class="hidden">
 			<h2>Documents</h2>
-			<p class="small"><span id="st-docs-text"></span> <button class="btn" id="st-docs-move">Move them to Documents</button></p>
+			<p class="small"><span id="st-docs-text"></span> <button class="btn" id="st-docs-move">Move them now</button></p>
 		</div>
 		<h2>Organization</h2>
 		<p id="st-org" class="small"></p>
 		<h2>Options</h2>
-		<p class="small">Set in Ledger under <strong>Settings → <span class="mod-name">Auto sort</span></strong>: review threshold and batch size on its <a href="/settings/m/categorizer" target="_top">Sorting</a> tab, the accounts payable account on its <a href="/settings/m/categorizer?tab=bills" target="_top">Bills</a> tab.</p>
+		<p class="small">Set in Ledger under <strong>Settings → <span class="mod-name">Auto sort</span></strong>: review threshold and batch size on its <a href="/settings/m/categorizer" target="_top">Sorting</a> tab, the accounts payable account on <a href="/settings/m/categorizer?tab=bills" target="_top">Bills</a>, the largest file and how long sent entries are kept on <a href="/settings/m/categorizer?tab=inbox" target="_top">Inbox</a>, reading email on <a href="/settings/m/categorizer?tab=email" target="_top">Email</a>, the network scanner on <a href="/settings/m/categorizer?tab=scanner" target="_top">Scanner</a>.</p>
+		<h2>Files</h2>
+		<p class="small">Every file this module handles (statements, bills, receipts, saved emails, scans) is kept in Ledger's <a href="/documents" target="_top">Documents</a>, never by the module itself. What was read out of a file is kept with it there, so it is read once; Ledger's tags on a file say whether it is posted, paid or overdue.</p>
 		<p id="st-options" class="muted small"></p>
 		<p id="st-version" class="muted small"></p>
 	<div id="files-box" class="hidden">
@@ -348,6 +517,10 @@
 
 <div id="toast"></div>
 
+<script src="receipt.js"></script>
+<script src="mail-view.js"></script>
+<script src="inbox.js"></script>
+<script src="scan.js"></script>
 <script>
 	// Served by Ledger at /m/categorizer/, so API calls carry your login.
 	const BASE = "/api/v1/m/categorizer";
@@ -397,6 +570,12 @@
 			return r;
 		} catch (e) { fail(e); return null; }
 	}
+	// Ledger's tags on a file (Ledger 0.27.0), whoever set them: posted, paid, overdue, billed; "extracted" = its data was read out.
+	const DOC_TAG = { posted: ["good", "Posted"], paid: ["good", "Paid"], overdue: ["bad", "Overdue"], billed: ["plain", "Billed"], extracted: ["plain", "Data read"] };
+	const docTagPills = (tags) => (tags || []).map((t) => {
+		const [cls, text] = DOC_TAG[t.tag] || ["plain", t.tag];
+		return el("span", { class: `pill ${cls}`, style: "margin-right:4px", title: `Ledger's tag on the file in Documents: ${t.tag}${t.note ? ` (${t.note})` : ""}${t.module_id ? `, set by ${t.module_id}` : t.set_by ? `, set by ${t.set_by}` : ""}` }, text);
+	});
 	const money = (cents) => (Number(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 	const TYPE_ORDER = ["expense", "revenue", "asset", "liability", "equity"];
 
@@ -408,7 +587,7 @@
 		document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
 		// Bills and Receipts are the same list, of one kind each.
 		const section = name === "receipts" ? "bills" : name;
-		for (const t of ["review", "bills", "duplicates", "rules", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== section);
+		for (const t of ["inbox", "review", "bills", "duplicates", "rules", "scan", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== section);
 		activeTab = name;
 		if (section === "bills") {
 			const kind = name === "receipts" ? "receipt" : "bill";
@@ -421,6 +600,8 @@
 		if (name === "rules") loadRules().catch(fail);
 		if (name === "duplicates") loadDuplicates().catch(fail);
 		if (name === "settings") { loadStatus().catch(fail); loadFiles().catch(fail); }
+		if (name === "inbox") Inbox.load().catch(fail);
+		if (name === "scan") Scan.load();
 	}
 	document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => { closeDetail(); showTab(b.dataset.tab); }));
 
@@ -566,15 +747,16 @@
 		e.preventDefault();
 		const file = $("file").files[0];
 		if (!file) return;
-		if (file.size > 900_000) return toast("That file is over 900 KB; split it into smaller statements.", true);
+		if (!$("up-account").value) return toast("Choose the bank or card account.", true);
 		$("up-btn").disabled = true;
 		$("up-msg").textContent = "Uploading…";
 		try {
-			const content = await file.text();
-			const r = await api("/statements", {
+			// Into the inbox in pieces (any size the inbox takes), filed in Ledger's Documents, then staged from there.
+			const f = await Inbox.uploadBytes(Inbox.safeName(file.name), file.type || "text/csv", new Uint8Array(await file.arrayBuffer()));
+			const r = (await api(`/inbox/${f.id}/statement`, {
 				method: "POST",
-				body: JSON.stringify({ filename: file.name, content, account_code: $("up-account").value, flip_signs: $("up-flip").checked, date_order: $("up-date").value }),
-			});
+				body: JSON.stringify({ account_code: $("up-account").value, flip_signs: $("up-flip").checked, date_order: $("up-date").value }),
+			})).statement;
 			localStorageSet("upload-account", $("up-account").value);
 			$("upload").reset();
 			$("upload").classList.add("hidden");
@@ -584,7 +766,9 @@
 			openStatement(r.id);
 		} catch (err) {
 			$("up-msg").textContent = "";
-			fail(err);
+			// The file is in the inbox (and in Documents) all the same: say so, it can be sorted out there.
+			fail(new Error(`${err.message}\nIf the file was received, it waits on the Inbox tab.`));
+			Inbox.loadCount();
 		} finally {
 			$("up-btn").disabled = false;
 		}
@@ -744,7 +928,8 @@
 		const { statement: s, transactions } = current;
 		const stmtAccount = accounts.find((a) => a.code === s.account_code);
 		$("d-title").textContent = s.account_code ? `${s.filename} → ${accountLabel(s.account_code)}` : `${s.filename} (account not chosen)`;
-		$("d-status").replaceChildren(statusPill(s.status), s.reconciled ? el("span", { class: "pill good", title: "An account has been reconciled against this statement in Ledger" }, " Reconciled in Ledger") : "");
+		$("d-status").replaceChildren(statusPill(s.status), s.reconciled ? el("span", { class: "pill good", title: "An account has been reconciled against this statement in Ledger" }, " Reconciled in Ledger") : "", " ", ...docTagPills(s.document_tags),
+			s.document_url ? el("a", { href: s.document_url, target: "_blank", rel: "noopener", class: "small", style: "margin-left:6px", title: "The statement's file, in Ledger's Documents" }, "Open the file") : "");
 		const review = transactions.filter(isReview).length;
 		$("d-info").textContent =
 			`${s.total} transactions${s.first_date ? `, ${s.first_date} to ${s.last_date}` : ""} · ${s.posted} posted · ${s.skipped} skipped · ${review} need review` +
@@ -949,7 +1134,7 @@
 			box.classList.remove("hidden");
 		} catch (e) { fail(e); } finally { btn.disabled = false; }
 	}
-	const SAVED_FROM = { pdf: "the PDF's reading, done with its transactions", ofx: "the OFX file's balance", module: "what the sending module said", llm: "an earlier reading" };
+	const SAVED_FROM = { pdf: "the PDF's reading, done with its transactions", ofx: "the OFX file's balance", module: "what the sending module said", llm: "an earlier reading", extracted: "what is kept with the file in Ledger's Documents", person: "what was entered for this statement before" };
 
 	$("d-autosort").onclick = async () => {
 		const btn = $("d-autosort");
@@ -1148,24 +1333,25 @@
 		if (!file) return;
 		let blob = file;
 		let name = file.name;
-		// Phone photos are several MB; Ledger takes requests up to 1 MB, and a smaller JPEG reads just as well.
+		// Phone photos are several MB; a smaller JPEG reads just as well (and the AI takes pictures up to 5 MB).
 		if (/^image\/(jpeg|png|webp)$/.test(file.type) && file.size > 500_000) {
 			try {
 				blob = await shrinkImage(file);
 				name = name.replace(/\.[a-z0-9]+$/i, "") + ".jpg";
 			} catch { /* keep the original */ }
 		}
-		if (blob.size > 700_000) return toast("That file is over 700 KB, too large to upload here.", true);
-		const bytes = new Uint8Array(await blob.arrayBuffer());
-		let bin = "";
-		for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-		toast("Reading the bill…");
+		toast(billKind === "receipt" ? "Reading the receipt…" : "Reading the bill…");
 		try {
-			const b = await api("/bills/upload", { method: "POST", body: JSON.stringify({ filename: name, content_base64: btoa(bin) }) });
+			// Into the inbox in pieces, filed in Ledger's Documents, then read from there (what was read before is used again).
+			const f = await Inbox.uploadBytes(Inbox.safeName(name), blob.type || file.type || "application/octet-stream", new Uint8Array(await blob.arrayBuffer()));
+			const b = (await api(`/inbox/${f.id}/bill`, { method: "POST", body: JSON.stringify({ kind: billKind }) })).bill;
 			$("b-filter").value = "unpaid";
 			showTab(b.kind === "receipt" ? "receipts" : "bills");
 			openBill(b.id);
-		} catch (e) { fail(e); }
+		} catch (e) {
+			fail(new Error(`${e.message}\nIf the file was received, it waits on the Inbox tab.`));
+			Inbox.loadCount();
+		}
 	};
 
 	$("b-add").onclick = async () => {
@@ -1466,6 +1652,7 @@
 		if (b.source === "email") src.push(`Email from ${b.mail_from}`, b.mail_date ? ` on ${new Date(b.mail_date).toLocaleDateString()}` : "", `: “${b.mail_subject}”`);
 		else src.push("Uploaded or entered by hand");
 		$("bd-source").textContent = src.join("");
+		$("bd-doc-tags").replaceChildren(...(b.has_document && b.document_tags?.length ? [el("span", { class: "muted small" }, "The file in Ledger's Documents: "), ...docTagPills(b.document_tags)] : []));
 		$("bd-show-doc").classList.toggle("hidden", !b.has_document);
 		$("bd-show-doc").textContent = `Show ${b.document_name || "document"}`;
 		$("bd-doc").replaceChildren();
@@ -1475,7 +1662,7 @@
 
 	$("bd-show-doc").onclick = async () => {
 		try {
-			// Stored in Ledger's storage: shown straight from its address; older files through the API.
+			// In Ledger's Documents: shown straight from its address.
 			let url = currentBill.document_url;
 			let d = { name: currentBill.document_name, type: currentBill.document_type };
 			if (!url) {
@@ -1699,10 +1886,10 @@
 		);
 		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${st.settings.ap_account || "none (bills are only tracked)"}.`;
 		$("st-version").textContent = `Module ${st.version} on Ledger ${st.ledger}.`;
-		// PDFs and scans saved before 0.10.0 are still in Auto sort's own storage: you decide when they move.
+		// Files an older version kept in the module's own storage move to Documents when Ledger starts; any left are shown here.
 		const n = st.files_for_documents || 0;
 		$("st-docs").classList.toggle("hidden", n === 0 || st.role === "viewer");
-		$("st-docs-text").textContent = `${n} PDF${n === 1 ? "" : "s"} or scan${n === 1 ? "" : "s"} of bills, receipts and statements ${n === 1 ? "is" : "are"} still in Auto sort's own storage. Ledger now keeps these in Documents (in the sidebar), shared with every module.`;
+		$("st-docs-text").textContent = `${n} file${n === 1 ? "" : "s"} of bills, receipts and statements ${n === 1 ? "is" : "are"} still in the module's old storage. Ledger keeps every file in Documents (in the sidebar), shared with every module; they move there when Ledger starts.`;
 		const org = st.organization;
 		const others = st.organizations.filter((o) => o.id !== org.id);
 		$("st-org").textContent = `These are ${org.name}'s books (organization ${org.id}). Statements, bills and rules here are kept apart from other organizations'.`
@@ -1713,7 +1900,7 @@
 		$("st-docs-move").disabled = true;
 		try {
 			const r = await api("/documents/move", { method: "POST" });
-			toast(`${r.moved} file${r.moved === 1 ? "" : "s"} moved to Documents.${r.missing ? ` ${r.missing} couldn't be found.` : ""}`);
+			toast(`${r.moved} file${r.moved === 1 ? "" : "s"} moved to Documents.${r.missing ? ` ${r.missing} couldn't be found in the old storage.` : ""}`);
 			await loadStatus();
 		} catch (e) { fail(e); } finally { $("st-docs-move").disabled = false; }
 	};
@@ -1723,7 +1910,9 @@
 		let params;
 		try { params = new URLSearchParams(window.parent.location.search); } catch { return false; }
 		const tab = params.get("tab");
-		if (tab && ["review", "bills", "receipts", "duplicates", "rules", "settings"].includes(tab)) { showTab(tab); return true; }
+		if (tab && ["inbox", "review", "bills", "receipts", "duplicates", "rules", "scan", "settings"].includes(tab)) { showTab(tab); return true; }
+		const file = params.get("file");
+		if (file && /^\d+$/.test(file)) { Inbox.show(Number(file), { filter: "all" }); return true; }
 		const bill = params.get("bill");
 		const statement = params.get("statement");
 		if (bill && /^\d+$/.test(bill)) { showTab("bills"); openBill(Number(bill)); return true; }
@@ -1740,8 +1929,11 @@
 		document.querySelectorAll(".mod-name").forEach((n) => (n.textContent = moduleName));
 	}).catch(() => {});
 
+	Inbox.init();
+	Scan.init();
 	if (!openFromLink()) showTab("review");
 	loadDupCount();
+	Inbox.loadCount();
 </script>
 </body>
 </html>

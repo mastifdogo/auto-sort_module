@@ -27,7 +27,7 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Release the manifest's version if it isn't released yet
         id: release
@@ -70,7 +70,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Is there a signing key?
         id: key

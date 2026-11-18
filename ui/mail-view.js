@@ -15,6 +15,7 @@
 (function () {
 	const API = "/api/v1/m/categorizer";
 	const VIEWABLE = /^(application\/pdf|image\/(png|jpeg|gif|webp)|text\/plain)/;
+	const OPENABLE = ["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "text/plain"];
 
 	async function api(path, opts = {}) {
 		const r = await fetch(API + path, { credentials: "same-origin", ...opts, headers: { "Content-Type": "application/json" } });
@@ -71,9 +72,15 @@
 				? await api(`/inbox/${email.file_id}/email/attachment?${new URLSearchParams({ attachment: a.attachment_id })}`)
 				: await api(`/mail/message/attachment?${new URLSearchParams({ id: email.id, attachment: a.attachment_id, folder: email.folder })}`);
 			const bytes = Uint8Array.from(atob(c.data), (ch) => ch.charCodeAt(0));
-			const url = URL.createObjectURL(new Blob([bytes], { type: c.content_type || "application/octet-stream" }));
-			if (tab) tab.location.href = url;
-			else el("a", { href: url, download: c.name }).click();
+			// The server says what the bytes are (never what the sender claimed). Only those types open in
+			// a tab; anything else, an HTML file above all, is downloaded and never shown from Ledger's address.
+			const shown = OPENABLE.includes(c.content_type);
+			const url = URL.createObjectURL(new Blob([bytes], { type: shown ? c.content_type : "application/octet-stream" }));
+			if (tab && shown) tab.location.href = url;
+			else {
+				tab?.close();
+				el("a", { href: url, download: c.name }).click();
+			}
 			setTimeout(() => URL.revokeObjectURL(url), 60_000);
 		} catch (e) {
 			tab?.close();

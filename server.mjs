@@ -345,8 +345,16 @@ export default async function register(ctx) {
 		await files.saveExtracted(documentId, { data }, user);
 	}
 
-	/** A person posted from (or approved) a statement the AI read: its reading is saved with the document. */
-	async function approveAiReading(statementId, user) {
+	/**
+	 * A person approved a statement the AI read, or has dealt with every one of its lines (posted or
+	 * skipped each): its reading is saved with the document. While lines are still waiting, nobody
+	 * has looked at all of it, so it stays the AI's suggestion (opts.whenAllDealtWith).
+	 */
+	async function approveAiReading(statementId, user, opts = {}) {
+		if (opts.whenAllDealtWith) {
+			const { rows: open } = await q(`SELECT 1 FROM ${T("transactions")} WHERE statement_id = $1 AND status IN ('new', 'posting') LIMIT 1`, [String(statementId)]);
+			if (open[0]) return false;
+		}
 		const { rows } = await q(
 			`SELECT s.ai_reading, f.document_id FROM ${T("statements")} s LEFT JOIN ${T("statement_files")} f ON f.statement_id = s.id WHERE s.id = $1 AND s.ai_reading IS NOT NULL`,
 			[String(statementId)],
@@ -1057,7 +1065,7 @@ export default async function register(ctx) {
 		if (results.posted > 0) await bills.settleFile?.({ statementId: statement.id }, "done", `${results.posted} transaction${results.posted === 1 ? "" : "s"} posted by ${req.user.username}`, req.user.username);
 		if (results.posted > 0) {
 			// A person posted from what the AI read (a PDF statement): that reading is now kept with the document.
-			await approveAiReading(statement.id, req.user).catch((err) => ctx.log.warn("the AI's reading was not saved with the document", { statement: String(statement.id), err: String(err?.message || err) }));
+			await approveAiReading(statement.id, req.user, { whenAllDealtWith: true }).catch((err) => ctx.log.warn("the AI's reading was not saved with the document", { statement: String(statement.id), err: String(err?.message || err) }));
 			// Its document is "posted" once every line is dealt with (Ledger's tags on files).
 			await dtags.syncStatement(statement.id, req.user).catch((err) => ctx.log.warn("document tags not synced", { statement: String(statement.id), err: String(err?.message || err) }));
 			for (const sid of otherStatements) if (String(sid) !== String(statement.id)) await dtags.syncStatement(sid, req.user).catch(() => {});

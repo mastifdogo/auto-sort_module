@@ -214,6 +214,7 @@ function fakeLedger(messages, { status = { connected: true, kind: "imap", accoun
 			else if (upsert) Object.assign(old, { outcome: row.outcome, files: old.files + row.files, reason: "" });
 			return { rows: [] };
 		}
+		if (/SELECT 1 FROM mail_seen WHERE uid/.test(sql)) return { rows: seen.some((r) => r.uid === params[0]) ? [{}] : [] };
 		if (/SELECT (outcome, )?(files, )?reason FROM mail_seen/.test(sql)) return { rows: seen.filter((r) => r.folder === params[0] && r.uid === params[1]) };
 		if (/SELECT id FROM inbox_files WHERE sha256/.test(sql)) return { rows: saved.filter((f) => f.sha === params[0]).map((f, i) => ({ id: i + 1 })) };
 		if (/INSERT INTO module_state/.test(sql)) return void (state = { ...state, ...JSON.parse(params[0]) }) ?? { rows: [] };
@@ -349,21 +350,26 @@ test("viewing an email before importing it by hand: attachments open without imp
 	const folder = L.seen[0].folder;
 	const query = (o) => new URLSearchParams(o);
 
-	const v = await L.routes.get("GET /mail/message")({ query: query({ id: "6.1", folder }) });
+	const v = await L.routes.get("GET /mail/message")({ user: L.user, query: query({ id: "6.1", folder }) });
 	assert.equal(v.subject, "Your October bill");
 	assert.deepEqual(v.attachments.map((a) => [a.filename, a.suggested]), [["invoice.pdf", true], ["terms.docx", false]]);
 	assert.equal(v.seen.outcome, "files");
-	const html = await L.routes.get("GET /mail/message")({ query: query({ id: "6.2" }) });
+	const html = await L.routes.get("GET /mail/message")({ user: L.user, query: query({ id: "6.2" }) });
 	assert.equal(html.text, "Amount due:\n$40.00\nThanks & bye", "HTML mail is shown as readable text, scripts left out");
-	await assert.rejects(L.routes.get("GET /mail/message")({ query: query({ id: "6.1", folder: "gmail:other@example.com" }) }), (e) => e.status === 409);
-	await assert.rejects(L.routes.get("GET /mail/message")({ query: query({ id: "nope" }) }), (e) => e.status === 404);
-	await assert.rejects(L.routes.get("GET /mail/message")({ query: query({}) }), (e) => e.status === 422);
+	await assert.rejects(L.routes.get("GET /mail/message")({ user: L.user, query: query({ id: "6.1", folder: "gmail:other@example.com" }) }), (e) => e.status === 409);
+	await assert.rejects(L.routes.get("GET /mail/message")({ user: L.user, query: query({ id: "nope" }) }), (e) => e.status === 404);
+	await assert.rejects(L.routes.get("GET /mail/message")({ user: L.user, query: query({}) }), (e) => e.status === 422);
+	// Not a way to read the whole mailbox: only emails the check looked at, and not for viewers.
+	box.set("6.9", msg("6.9", today, "Bank <codes@bank.example>", "Your sign-in code", [], "123456")[1]);
+	await assert.rejects(L.routes.get("GET /mail/message")({ user: L.user, query: query({ id: "6.9", folder }) }), (e) => e.status === 404);
+	await assert.rejects(L.routes.get("GET /mail/message")({ user: { ...L.user, role: "viewer" }, query: query({ id: "6.1", folder }) }), (e) => e.status === 403);
+	await assert.rejects(L.routes.get("GET /mail/message/attachment")({ user: { ...L.user, role: "viewer" }, query: query({ id: "6.1", attachment: "h2", folder }) }), (e) => e.status === 403);
 
 	const before = L.saved.length;
-	const a = await L.routes.get("GET /mail/message/attachment")({ query: query({ id: "6.1", attachment: "h2", folder }) });
+	const a = await L.routes.get("GET /mail/message/attachment")({ user: L.user, query: query({ id: "6.1", attachment: "h2", folder }) });
 	assert.equal(Buffer.from(a.data, "base64").toString(), "terms");
 	assert.equal(L.saved.length, before, "opening an attachment imports nothing");
-	await assert.rejects(L.routes.get("GET /mail/message/attachment")({ query: query({ id: "6.1", attachment: "zz" }) }), (e) => e.status === 404);
+	await assert.rejects(L.routes.get("GET /mail/message/attachment")({ user: L.user, query: query({ id: "6.1", attachment: "zz" }) }), (e) => e.status === 404);
 
 	const imp = L.routes.get("POST /mail/message/import");
 	await assert.rejects(imp({ body: { id: "6.1", attachments: [], email: false }, user: L.user }), (e) => e.status === 422);
@@ -480,4 +486,36 @@ test("email check: nothing is imported twice, and it holds off while the Import 
 	assert.equal(H.saved.length, 0);
 	assert.ok(!H.calls.some((c) => c.startsWith("search")));
 	await assert.rejects(H.routes.get("POST /mail/check")({ user: H.user }), (e) => e.status === 409);
+});
+
+test("an email that can't be read is passed over: the ones after it still come in", async () => {
+	const today = new Date().toISOString().slice(0, 10);
+	const bad = msg("7.1", today, "Odd <odd@example.com>", "Invoice (broken)", [], "invoice");
+	Object.defineProperty(bad[1], "attachments", { get() { throw new Error("invalid byte sequence for encoding"); } });
+	const box = new Map([bad, msg("7.2", today, "Hydro One <bills@hydroone.com>", "Your invoice", [{ attachmentId: "p", filename: "invoice.pdf", mimeType: "application/pdf", data: pdf(72) }])]);
+	const L = fakeLedger(box);
+	const r = await L.checkMail();
+	assert.equal(r.files, 1, "the readable email was imported");
+	assert.deepEqual(L.seen.map((x) => x.uid).sort(), ["7.1", "7.2"], "the unreadable one is noted, so it isn't tried forever");
+	assert.equal((await L.checkMail()).files, 0);
+});
+
+test("what an attachment may be opened as comes from its bytes, never from the sender", async () => {
+	const { safeType, withoutCode, mapTags } = await import("../lib/html.mjs");
+	const { htmlToReadable, htmlToText } = await import("../lib/mail.mjs");
+	assert.equal(safeType(Buffer.from("<script>alert(1)</script>"), "text/html"), "application/octet-stream");
+	assert.equal(safeType(Buffer.from("<script>alert(1)</script>"), "application/pdf"), "application/octet-stream");
+	assert.equal(safeType(Buffer.from("%PDF-1.7\n"), "text/html"), "application/pdf");
+	assert.equal(safeType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]), ""), "image/png");
+	assert.equal(safeType(Buffer.from("plain words"), "text/plain; charset=utf-8"), "text/plain");
+	assert.equal(safeType(Buffer.from("a,b"), "text/csv"), "text/plain");
+	// Mail built to make a pattern search run for hours is handled in one pass.
+	assert.equal(htmlToReadable("<html><head><title>T</title><body><p>Total &amp; tax</p><!-- x --><script>x()</script><ul><li>one</li></ul>"), "Total & tax\n• one");
+	assert.equal(mapTags(withoutCode("a<b>b</b><STYLE>x</STYLE>c"), () => ""), "abc");
+	for (const evil of ["<style ".repeat(300_000), "<!--".repeat(400_000), "<".repeat(1_500_000), "<td".repeat(500_000)]) {
+		const at = Date.now();
+		htmlToReadable(evil);
+		htmlToText(evil);
+		assert.ok(Date.now() - at < 3000, `slow on ${evil.slice(0, 10)}`);
+	}
 });

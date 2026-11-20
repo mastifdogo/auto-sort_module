@@ -171,3 +171,20 @@ test("an OFX balance owed on a card is a bill draft; on a bank account it isn't"
 	// A card in credit owes nothing.
 	assert.equal(draftFromBillInfo({ ...info, balance_cents: "500" }, { account: { code: "2100", type: "liability" } }), null);
 });
+
+test("line items with their own category: one line each, the rest on the bill's own account", async () => {
+	const { linesFromItems } = await import("../lib/bill-routes.mjs");
+	const bill = { kind: "receipt", amount_cents: 11300n, account_code: "6100" };
+	const item = (description, amount_cents, account_code = null) => ({ description, amount_cents, account_code });
+	assert.deepEqual(linesFromItems(bill, [item("Hammer", 6000n), item("Gas", 3000n)]), { lines: [] }, "no item has its own: the whole receipt is categorized as before");
+	assert.deepEqual(linesFromItems(bill, [item("Hammer", 6000n, "6200"), item("Gas", 3000n, "6300"), item("Screws", 1000n)]).lines, [
+		{ description: "Hammer", amount: 6000n, account_code: "6200" },
+		{ description: "Gas", amount: 3000n, account_code: "6300" },
+		{ description: "Other items, tax and other charges", amount: 2300n, account_code: "6100" },
+	]);
+	assert.deepEqual(linesFromItems(bill, [item("All of it", 11300n, "6200")]).lines, [{ description: "All of it", amount: 11300n, account_code: "6200" }]);
+	assert.match(linesFromItems(bill, [item("Too much", 20000n, "6200")]).error, /more than the receipt's 113\.00/);
+	assert.match(linesFromItems(bill, [item("No amount", null, "6200")]).error, /needs an amount/);
+	assert.match(linesFromItems({ ...bill, account_code: null }, [item("Hammer", 6000n, "6200")]).error, /own category too/);
+	assert.match(linesFromItems({ ...bill, amount_cents: null }, [item("Hammer", 6000n, "6200")]).error, /amount/);
+});

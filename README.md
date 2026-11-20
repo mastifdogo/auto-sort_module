@@ -598,6 +598,15 @@ bill (into payables, and its payment) record the vendor.
 **Billable:** a bill or receipt can be marked **Billable to the customer** with a **Customer**. The
 list shows them as *billable · Acme Corp*.
 
+**A category per line item (0.18.0):** each line item has its own **category** (account) picker,
+next to its amount. Leave it at *Same as the bill* and the item goes with the rest; choose an
+account and that item's amount is booked there. Items without their own category, and whatever the
+items don't cover (tax, a tip), go to the bill's own **Account**, which still categorizes the whole
+bill or receipt in one go when no item is given its own. The result shows as **Booked by item** and
+is what the journal entry gets: one line per categorized item and one for the rest. The categorized
+items can't add up to more than the total, and the categories are fixed once the bill or its
+payment is posted (undo the approval to change them). A split made by hand (below) replaces them.
+
 **Line items:** when a bill or receipt is scanned (PDF, photo or email), the LLM also lists its
 individual line items: item, quantity, unit, price per unit and line total. They show under
 **Line items** on the bill, where you can edit, add or remove them (**Read items with the LLM** for

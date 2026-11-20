@@ -1373,7 +1373,7 @@
 		currentBill = r.bill;
 		renderBill(r.bill, r.payments);
 		renderSplit(r.bill, r.payments, r.lines ?? []);
-		renderItems(r.bill, r.items ?? [], r.rate_items === true);
+		renderItems(r.bill, r.items ?? [], r.rate_items === true, r.payments ?? []);
 		document.querySelectorAll("#bills tbody tr").forEach((tr, i) => tr.classList.toggle("selected", billsList[i]?.id === id));
 		$("bill-detail").classList.remove("hidden");
 		$("bill-detail").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1391,12 +1391,14 @@
 			return;
 		}
 		box.replaceChildren(
-			el("h2", {}, "Split"),
+			el("h2", {}, b.lines_from_items ? "Booked by item" : "Split"),
 			el("table", { class: "stack" }, el("tbody", {}, ...lines.map((l) => el("tr", {},
 				el("td", { class: "wide" }, l.description || el("span", { class: "muted" }, "—")),
 				el("td", { class: "num" }, `${money(l.amount_cents)} ${b.currency}`),
 				el("td", {}, accountLabel(l.account_code)))))),
 			locked ? el("p", { class: "muted small" }, `Posted: the split is in the journal.`) :
+			b.lines_from_items ? el("p", { class: "muted small" }, "Made from the line items' categories below: change them there. Editing the split by hand replaces them.",
+				" ", el("button", { class: "btn", onclick: () => editSplit(b, lines) }, "Edit by hand")) :
 				el("div", { class: "row", style: "margin:0.4rem 0" },
 					el("button", { class: "btn", onclick: () => editSplit(b, lines) }, "Edit split"),
 					el("button", { class: "btn danger", onclick: async () => {
@@ -1471,7 +1473,7 @@
 	 * Ticked (billable) items go on the bill's journal entry as Ledger's rate items, so an invoice
 	 * can fill itself in from them.
 	 */
-	function renderItems(b, items, rateItems) {
+	function renderItems(b, items, rateItems, payments = []) {
 		const box = $("bd-items");
 		const entry = b.journal_entry_id ?? b.paid_entry_id ?? null;
 		const cents = (v) => (v == null ? "" : (Number(v) / 100).toFixed(2));
@@ -1485,10 +1487,16 @@
 					el("td", { class: "wide" }, it.billable ? "✓ " : "", it.description),
 					el("td", {}, it.quantity == null ? "" : `${it.quantity}${it.unit ? ` ${it.unit}` : ""}`),
 					el("td", {}, it.rate_cents == null ? "" : `× ${money(it.rate_cents)}`),
-					el("td", { class: "num" }, it.amount_cents == null ? "" : `${money(it.amount_cents)} ${b.currency}`))))),
+					el("td", { class: "num" }, it.amount_cents == null ? "" : `${money(it.amount_cents)} ${b.currency}`),
+					el("td", {}, it.account_code ? accountLabel(it.account_code) : ""))))),
 				el("p", { class: "muted small" }, where)));
 			return;
 		}
+		const what = b.kind === "receipt" ? "receipt" : "bill";
+		const catOptions = accounts.filter((a) => a.currency === b.currency);
+		const sameAs = b.account_code ? `Same as the ${what}` : `Same as the ${what} (not chosen yet)`;
+		// Categories decide how it is booked: fixed once the bill or its payment is in the journal.
+		const locked = !!b.journal_entry_id || !!b.paid_entry_id || payments.some((t) => t.status === "posted");
 		const rows = [];
 		const tbody = el("tbody");
 		const addRow = (it = {}) => {
@@ -1500,12 +1508,17 @@
 				unit: el("input", { value: it.unit ?? "", placeholder: "unit", maxlength: 20, style: "width:4.5rem" }),
 				rate: el("input", { value: cents(it.rate_cents), inputmode: "decimal", placeholder: "Rate", style: "width:6rem" }),
 				amount: el("input", { value: cents(it.amount_cents), inputmode: "decimal", placeholder: "Amount", style: "width:6rem" }),
+				account: el("select", { title: "This item's own category (account). Left as it is, the item goes with the rest of the " + what + ".", "aria-label": "Category" }),
 			};
+			// Its own category, or the bill's: the whole bill is still categorized in one go above.
+			accountOptions(r.account, catOptions, { selected: it.account_code ?? null, placeholder: sameAs });
+			withNewAccount(r.account, { type: "expense", currency: b.currency });
+			r.account.disabled = locked;
 			r.billable.checked = it.billable === true;
 			const tr = el("tr", {},
 				el("td", {}, el("label", { class: "inline" }, r.billable, " Billable")),
 				el("td", { class: "wide" }, r.description),
-				el("td", {}, r.quantity), el("td", {}, r.unit), el("td", {}, r.rate), el("td", {}, r.amount),
+				el("td", {}, r.quantity), el("td", {}, r.unit), el("td", {}, r.rate), el("td", {}, r.amount), el("td", {}, r.account),
 				el("td", {}, el("button", { class: "btn", type: "button", title: "Remove this item", onclick: () => { rows.splice(rows.indexOf(r), 1); tr.remove(); } }, "✕")));
 			rows.push(r);
 			tbody.append(tr);
@@ -1518,6 +1531,7 @@
 				const out = await api(`/bills/${b.id}/items`, { method: "PUT", body: JSON.stringify({ items: rows.map((r) => ({
 					id: r.id, billable: r.billable.checked, description: r.description.value, quantity: r.quantity.value.trim() || null,
 					unit: r.unit.value.trim(), rate: r.rate.value.trim() || null, amount: r.amount.value.trim() || null,
+					account_code: r.account.value || null,
 				})) }) });
 				const n = out.items.filter((it) => it.billable).length;
 				toast(n && out.rate_items && entry ? `Items saved; ${n} billable on entry #${entry}.` : "Items saved.");
@@ -1541,6 +1555,9 @@
 		box.replaceChildren(
 			el("h2", {}, "Line items"),
 			el("p", { class: "muted small" }, items.length ? where : `No line items yet. ${where}`),
+			el("p", { class: "muted small" }, locked
+				? "Posted: the items' categories are in the journal and can't change here."
+				: `Each item can have its own category. Items left as "Same as the ${what}", and whatever the items don't cover (tax, a tip), go to the ${what}'s own category, chosen above for the whole ${what}.`),
 			el("table", { class: "stack" }, tbody),
 			el("div", { class: "row", style: "margin:0.4rem 0" }, save, b.has_document || b.body_text ? read : "",
 				el("button", { class: "btn", type: "button", onclick: () => addRow() }, "Add an item"), all),

@@ -601,7 +601,7 @@ export default async function register(ctx) {
 		const bill = await bills.getBill(String(billId)).catch(() => null);
 		if (!bill || bill.ap_account || bill.journal_entry_id || code !== bill.account_code) return null;
 		const lines = await bills.linesOf(bill.id);
-		if (lines.length < 2 || lines.reduce((s, l) => s + BigInt(l.amount_cents), 0n) !== abs) return null;
+		if (lines.length < 1 || lines.reduce((s, l) => s + BigInt(l.amount_cents), 0n) !== abs) return null;
 		return lines.map((l) => ({ account_code: l.account_code, debit_cents: BigInt(l.amount_cents), credit_cents: 0n, memo: l.description.slice(0, 500) }));
 	}
 

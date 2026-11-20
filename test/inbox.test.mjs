@@ -264,21 +264,28 @@ test("a file another module read is used as it is: a receipt with its data comes
 	assert.ok(!documents.calls.some((c) => c[0] === "remove"));
 });
 
-test("deleting an inbox file removes its document only when the inbox added it and it was never sent on", async () => {
+test("deleting an inbox file deletes its document too, whoever filed it, unless it was sent on or is used here", async () => {
 	const run = async (file, setup = () => {}) => {
 		const documents = fakeDocuments();
 		const docId = documents.put({ kind: "other", filename: "x.pdf", data: Buffer.from("%PDF-1.4 x"), source: file.source ?? "categorizer" });
-		const { answers } = inboxDb({ ...FILE, name: "x.pdf", document_id: docId, ...file });
+		const { source: _s, ...row } = file;
+		const { answers } = inboxDb({ ...FILE, name: "x.pdf", document_id: docId, ...row });
 		const uses = { n: 0 };
 		setup(uses);
 		const L = await start({ documents, answers: [[/^SELECT \(SELECT count\(\*\) FROM mod_categorizer\.bill_documents WHERE document_id = \$1\)/, () => [{ n: uses.n }]], ...answers] });
-		assert.deepEqual(await L.call("DELETE /inbox/:id", { params: { id: "5" } }), { deleted: true, learned: false });
-		return documents.docs.has(docId);
+		const r = await L.call("DELETE /inbox/:id", { params: { id: "5" } });
+		assert.deepEqual([r.deleted, r.learned], [true, false]);
+		return { kept: documents.docs.has(docId), page: r.delete_document ?? null, docId };
 	};
-	assert.equal(await run({ document_added_here: true }), false, "added here, never sent: the document goes too");
-	assert.equal(await run({ document_added_here: true, sent_at: new Date(), status: "sent" }), true, "sent on: it is one of the organization's documents");
-	assert.equal(await run({ document_added_here: false }), true, "it was there before");
-	assert.equal(await run({ document_added_here: true }, (u) => (u.n = 1)), true, "a bill or statement here still uses it");
+	assert.equal((await run({ document_added_here: true })).kept, false, "added here, never sent: the document goes too");
+	assert.equal((await run({ document_added_here: false })).kept, false, "this module filed it for another record once: unused now, it goes");
+	// One the Import module filed isn't the module's to remove in Ledger: the page is told to, as the person asking.
+	const fromImport = await run({ document_added_here: false, source: "downloads" });
+	assert.deepEqual([fromImport.kept, fromImport.page], [true, Number(fromImport.docId)]);
+	const sent = await run({ document_added_here: true, sent_at: new Date(), status: "sent" });
+	assert.deepEqual([sent.kept, sent.page], [true, null], "sent on: it is one of the organization's documents");
+	const used = await run({ document_added_here: false, source: "downloads" }, (u) => (u.n = 1));
+	assert.deepEqual([used.kept, used.page], [true, null], "a bill or statement here still uses it");
 });
 
 test("handing a file to another module sends the document it is, not a copy", async () => {

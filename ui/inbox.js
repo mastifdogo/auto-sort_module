@@ -155,11 +155,24 @@ const Inbox = (() => {
 	}
 
 	// ------------------------------------------------------------- deleting an email file teaches the email check
+	/**
+	 * Deletes an inbox file for good. Its document in Ledger's Documents goes with it; one the Import
+	 * module filed isn't the module's to remove, so the page removes it as the person asking.
+	 */
+	async function removeFile(f, learn = false) {
+		const r = await api(`/inbox/${f.id}${learn ? "?learn=1" : ""}`, { method: "DELETE" });
+		if (r?.delete_document != null) {
+			const res = await fetch(`/api/v1/documents/${encodeURIComponent(r.delete_document)}`, { method: "DELETE", headers: { "Content-Type": "application/json" } });
+			if (!res.ok && res.status !== 404) toast(`${f.name} is gone from the inbox, but its file is still under Documents (${res.status}); delete it there.`);
+		}
+		return r;
+	}
+
 	let deletingId = null;
 	function deletePanel(f) {
 		const del = async (learn) => {
 			try {
-				const r = await api(`/inbox/${f.id}${learn ? "?learn=1" : ""}`, { method: "DELETE" });
+				const r = await removeFile(f, learn);
 				deletingId = null;
 				toast(r?.learned ? `Deleted. Email import will skip files like ${f.name} from ${f.origin_detail || "this sender"}.` : `Deleted ${f.name}.`);
 				await load();
@@ -179,7 +192,7 @@ const Inbox = (() => {
 
 	function actions(f) {
 		const b = (text, fn, cls = "btn") => el("button", { class: cls, onclick: fn }, text);
-		const drop = () => api(`/inbox/${f.id}`, { method: "DELETE" }).then(load, fail);
+		const drop = () => removeFile(f).then(load, fail);
 		if (f.missing) {
 			// Removed on Ledger's Documents page, or after a restore from a dump file, which brings back only the tables.
 			return el("div", {},

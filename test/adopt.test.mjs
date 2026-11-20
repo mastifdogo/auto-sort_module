@@ -140,6 +140,19 @@ test("the Import module's data is taken over when an admin says so: rows only, o
 		const { rows: phone } = await db.q(`SELECT status, origin, origin_detail, account_code FROM mod_categorizer.inbox_files WHERE adopted_from = 14`);
 		assert.deepEqual(phone, [{ status: "archived", origin: "app", origin_detail: "Pixel 8", account_code: "6100" }]);
 		assert.equal((await M.call("GET /adoption")).adopted.files, 4);
+		// A file deleted from the inbox here stays deleted: it isn't Import's waiting to be taken over again.
+		await db.q(`DELETE FROM mod_categorizer.inbox_extractions WHERE file_id IN (SELECT id FROM mod_categorizer.inbox_files WHERE adopted_from = 11)`);
+		await db.q(`DELETE FROM mod_categorizer.inbox_files WHERE adopted_from = 11`);
+		const after = await M.call("GET /adoption");
+		assert.deepEqual([after.ready, after.extractions, after.pending], [0, 0, false]);
+		assert.equal((await M.call("POST /adoption", { confirm: true })).adopted.files, 0);
+		assert.equal((await db.q(`SELECT count(*)::int AS n FROM mod_categorizer.inbox_files WHERE adopted_from = 11`)).rows[0].n, 0);
+		// And for a hand-over made before taken ids were kept (0.17.0): what was deleted since is not offered again either.
+		await db.q(`DELETE FROM mod_categorizer.inbox_files WHERE adopted_from = 12`);
+		await db.q(`DELETE FROM mod_categorizer.adopted_ids`);
+		await db.q(`UPDATE mod_categorizer.module_state SET value = value - 'taken_seeded' WHERE key = 'import_adoption'`);
+		const old = await M.call("GET /adoption");
+		assert.deepEqual([old.ready, old.pending], [0, false]);
 		// Never deleted from, never changed: Import's tables are as they were.
 		const { rows: left } = await db.q(`SELECT (SELECT count(*) FROM mod_downloads.files)::int AS files, (SELECT count(*) FROM mod_downloads.extractions)::int AS extractions, (SELECT count(*) FROM mod_downloads.mail_seen)::int AS seen, (SELECT count(*) FROM mod_downloads.mail_training)::int AS training, (SELECT sent_link FROM mod_downloads.files WHERE id = 12) AS link`);
 		assert.deepEqual(left[0], { files: 5, extractions: 2, seen: 2, training: 1, link: "/apps/downloads?file=13" });

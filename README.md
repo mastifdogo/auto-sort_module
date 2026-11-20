@@ -179,8 +179,11 @@ Files wait in the inbox until you say what they are. Each row shows the file, wh
 - **Ledger's CSV files**, for a CSV.
 
 Inside this module nothing is "sent": the statement or bill simply points at the same document
-as the inbox row. **Archive** puts a row aside; **Delete** removes the row, and its document too
-only if the inbox added it, it was never sent on, and no bill or statement here uses it.
+as the inbox row. **Archive** puts a row aside; **Delete** deletes the file for good: the row and
+its document under Ledger's Documents, whoever filed it (also files taken over from the Import
+module). The document stays only when the file was sent on or filed (then it is one of the
+organization's documents) or a bill or statement here still uses it. A deleted file is not
+offered again as one of Import's to take over.
 
 Uploads from the page, the extension and the phone app arrive in pieces of 512 KB (Ledger takes
 requests up to 1 MB). The pieces wait in temporary files on the server until the last one is in;
@@ -350,8 +353,9 @@ document's number. You can open, rename, search and tag the files there, and bac
   a receipt as a receipt, with the vendor and date once you approve it.
 - A file Ledger already has is used as it is, never stored twice: uploading the same file again
   gives the same document.
-- Deleting a bill, a statement or an inbox row removes the document only if this module filed it
-  and nothing else here uses it. Documents you or another module added always stay.
+- Deleting a bill or a statement removes the document only if this module filed it and nothing
+  else here uses it. Deleting an inbox file removes its document whoever filed it, unless it was
+  sent on or is used here (0.17.1).
 
 **Tags on files.** Ledger has one tag system for files, shared by every module, and Auto sort keeps
 it in line with its own records:

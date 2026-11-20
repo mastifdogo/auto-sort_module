@@ -51,8 +51,9 @@ module itself. See [Files, tags and reading a file once](#files-tags-and-reading
 - **Already in the journal?** Staged lines, bills and receipts that are already recorded (entered by
   hand, or by another module) are found and linked instead of being posted twice. See
   [Journal matches and Auto sort](#journal-matches-and-auto-sort).
-- **Auto sort button:** on an open statement, bill or receipt, the AI looks for the same
-  transaction among unposted lines and posted journal entries; you approve each match.
+- **Auto sort button:** on an open statement, the AI looks for the same transaction among unposted
+  lines and posted journal entries; you approve each match. On a bill or receipt it asks no AI: it
+  searches the journal for similar transactions, by amounts, dates and accounts you can change.
 - **Bills and receipts:** a PDF, a photo or a saved email; the AI reads it, you approve it, and it's
   matched to the bank transaction that pays it. See [Bills](#bills).
 - **Sends on:** a file can also be handed to another module, filed in Ledger's Documents as what it
@@ -547,21 +548,34 @@ bill's amount in its date window, vendor words in the description raising the sc
 in the bill's view; **Link** counts the bill as paid by that entry and links them (**Unlink** undoes
 it). Everything found is also listed on the **Duplicates** tab, and **Sort now** says how many.
 
-**Auto sort (LLM).** On an open statement, bill or receipt, **Auto sort** looks wider and lets the
+**Auto sort on a bill or receipt: a search, no AI (0.19.0).** **Auto sort** searches the journal,
+and the statement lines not posted yet, for transactions like the bill or receipt and lists them
+under **Similar transactions**, best first (the exact amount, the vendor's name in the description,
+the nearest date). It starts from the bill's exact amount and the dates around it (a receipt: 5
+days before to 15 after; a bill: 10 days before to 60 after its due date). Change what it looks for
+and press **Search** again:
+
+- **Amount from / to:** a range, for a payment with a fee, a tip or a discount;
+- **Dated from / to:** up to 800 days;
+- **In accounts:** only entries with a line on one of the chosen accounts (none chosen: all).
+
+Entries that are reversed, or already linked to another record of this module, are left out; a
+result with another amount than the bill's is marked. **Link** counts the bill as recorded by that
+journal entry; **Match** makes a statement line its payment. Nothing is sent to the AI and nothing
+changes until you choose one.
+
+**Auto sort on a statement (LLM).** On an open statement, **Auto sort** looks wider and lets the
 LLM judge:
 
 - For each unposted statement line, candidates with the same amount within 10 days: journal entries
   on its account, lines on other statements (the same payment uploaded twice, or the other side of
   a transfer: opposite amount on another account), and open bills and receipts it could pay.
-- For a bill or receipt: unposted lines and journal entries with its amount in its date window
-  (a receipt: a few days before to 15 after; a bill: 10 days before to 60 after its due date).
 
 Ledger's LLM API picks the candidate that is the same transaction, or none, by payee names, dates
 and references. Each pick shows under the line or in the bill's view as **Auto sort: same as …
 · 88% · reason [Approve] [Reject]**. Approve carries it out: a line already in the journal is
 linked to that entry and not posted; a duplicate line is merged into the other; two sides of a
-transfer are linked and posted once; a payment is matched to its bill; a bill already in the journal
-is linked to its entry. Rejected matches aren't suggested again. Nothing changes before you
+transfer are linked and posted once; a payment is matched to its bill. Rejected matches aren't suggested again. Nothing changes before you
 approve, and a to-do on Ledger's dashboard counts the matches waiting.
 
 ## Bills

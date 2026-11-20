@@ -437,13 +437,14 @@
 			<button class="btn danger" id="bd-delete">Delete</button>
 			<button class="btn root hidden" id="bd-root-unpost" title="Root mode: forget the journal entry this bill is in (the entry isn't touched). Ledger can put it back.">Root: take out of entry</button>
 			<button class="btn root hidden" id="bd-root-delete" title="Root mode: delete this bill even if approved or paid. Its entries and document stay. Ledger can put it back.">Root: delete</button>
-			<button class="btn primary" id="bd-autosort" title="Ask Ledger's LLM API which unposted line or journal entry is this bill's payment or record. You approve the match.">Auto sort</button>
+			<button class="btn primary" id="bd-autosort" title="Search the journal and the statement lines not posted yet for transactions like this one. No AI: you choose the amounts, dates and accounts to search, and the match.">Auto sort</button>
 		</div>
 		<p class="muted small" id="bd-ap-note"></p>
 		<h2>Payment</h2>
 		<div id="bd-payments"></div>
 		<div id="bd-candidates"></div>
 		<div id="bd-matches"></div>
+		<div id="bd-search"></div>
 		<h2>Source</h2>
 		<p class="small" id="bd-source"></p>
 		<p class="small" id="bd-doc-tags"></p>
@@ -1370,6 +1371,7 @@
 		// A receipt opens on the Receipts tab, a bill on Bills (also after its type was changed).
 		const tab = r.bill.kind === "receipt" ? "receipts" : "bills";
 		if (activeTab !== tab) showTab(tab);
+		if (billSearch?.billId !== r.bill.id) { billSearch = null; $("bd-search").replaceChildren(); }
 		currentBill = r.bill;
 		renderBill(r.bill, r.payments);
 		renderSplit(r.bill, r.payments, r.lines ?? []);
@@ -1586,15 +1588,74 @@
 			for (const x of sg.data) box.append(suggestionNote(x, after));
 		}).catch(() => {});
 	}
+	// Auto sort on a bill or receipt: a search of the journal (and of statement lines not posted
+	// yet) for similar transactions. No AI: it starts from the exact amount and the dates around
+	// it; the amounts, the dates and the accounts can be changed and searched again.
+	let billSearch = null; // { billId, s } while the search panel is open
+	async function runBillSearch(b, body = {}) {
+		const r = await api(`/bills/${b.id}/auto-sort`, { method: "POST", body: JSON.stringify(body) });
+		if (currentBill?.id !== b.id) return;
+		billSearch = { billId: b.id };
+		renderBillSearch(b, r);
+	}
+	function renderBillSearch(b, r) {
+		const box = $("bd-search");
+		const what = b.kind === "receipt" ? "receipt" : "bill";
+		const amt = (v) => (Number(v) / 100).toFixed(2);
+		const f = {
+			min: el("input", { value: amt(r.search.amount_min), inputmode: "decimal", style: "width:7rem", "aria-label": "Lowest amount" }),
+			max: el("input", { value: amt(r.search.amount_max), inputmode: "decimal", style: "width:7rem", "aria-label": "Highest amount" }),
+			from: el("input", { type: "date", value: r.search.from, "aria-label": "From" }),
+			to: el("input", { type: "date", value: r.search.to, "aria-label": "To" }),
+			accounts: el("select", { multiple: true, size: 5, style: "min-width:14rem;height:auto", "aria-label": "Accounts to search in", "data-no-resize": "" }),
+		};
+		accountOptions(f.accounts, accounts.filter((a) => a.currency === b.currency));
+		for (const o of f.accounts.options) o.selected = r.search.accounts.includes(o.value);
+		const go = el("button", { class: "btn primary", type: "button" }, "Search");
+		const again = async (body) => {
+			go.disabled = true;
+			try { await runBillSearch(b, body); } catch (e) { fail(e); } finally { go.disabled = false; }
+		};
+		go.onclick = () => again({ amount_min: f.min.value.trim(), amount_max: f.max.value.trim(), from: f.from.value, to: f.to.value, accounts: [...f.accounts.selectedOptions].map((o) => o.value) });
+		const link = async (x) => {
+			try {
+				if (x.kind === "entry") await billAction("link-entry", { entry_id: x.id });
+				else await billAction("match", { transaction_id: x.id });
+				billSearch = null;
+				box.replaceChildren();
+			} catch (e) { fail(e); }
+		};
+		const results = r.data.length === 0
+			? el("p", { class: "muted" }, "Nothing like it with these amounts, dates and accounts. Widen them and search again.")
+			: el("table", { class: "stack" },
+				el("thead", {}, el("tr", {}, el("th", {}, "Date"), el("th", {}, "Transaction"), el("th", { class: "num" }, "Amount"), el("th", {}, "Account"), el("th", {}, ""))),
+				el("tbody", {}, ...r.data.map((x) => el("tr", {},
+					el("td", { class: "nowrap" }, x.date),
+					el("td", { class: "wide" }, x.kind === "entry" ? `Journal entry #${x.id} · ${x.description}` : `Statement line, not posted yet · ${x.description}`,
+						x.vendor ? el("span", { class: "pill plain", style: "margin-left:6px" }, "same name") : "",
+						x.exact ? "" : el("span", { class: "pill warn", style: "margin-left:6px" }, "different amount")),
+					el("td", { class: "num" }, `${money(x.amount_cents)} ${b.currency}`),
+					el("td", {}, x.kind === "entry" ? x.accounts.map(accountLabel).join(", ") : accountLabel(x.account_code)),
+					el("td", {}, role === "viewer" ? "" : el("button", { class: "btn", type: "button", title: x.kind === "entry" ? `Count this ${what} as recorded by that entry` : `This line pays the ${what}`, onclick: () => link(x) }, x.kind === "entry" ? "Link" : "Match"))))));
+		box.replaceChildren(el("div", { class: "panel" },
+			el("h2", { style: "margin-top:0" }, "Similar transactions"),
+			el("p", { class: "muted small" }, `Searched the journal and the statement lines not posted yet. Change the amounts, the dates or the accounts and search again; choose the one that is this ${what}.`),
+			el("div", { class: "row" },
+				el("label", {}, "Amount from", f.min), el("label", {}, "to", f.max),
+				el("label", {}, "Dated from", f.from), el("label", {}, "to", f.to)),
+			el("div", { class: "row", style: "align-items:flex-start;margin-top:0.4rem" },
+				el("label", {}, "In accounts (none chosen: all)", f.accounts),
+				el("div", { class: "row" }, go,
+					el("button", { class: "btn", type: "button", onclick: () => again({}) }, "Reset"),
+					el("button", { class: "btn", type: "button", onclick: () => { billSearch = null; box.replaceChildren(); } }, "Close"))),
+			r.capped ? el("p", { class: "muted small" }, `Only the newest ${r.searched_entries} entries of these dates were searched: narrow the dates.`) : "",
+			results));
+		box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+	}
 	$("bd-autosort").onclick = async () => {
 		const btn = $("bd-autosort");
 		btn.disabled = true;
-		toast("Auto sort: asking the LLM API…");
-		try {
-			const r = await api(`/bills/${currentBill.id}/auto-sort`, { method: "POST" });
-			toast(r.candidates === 0 ? "No unposted line or journal entry with this amount and a fitting date." : r.suggestions ? "Found a match; check it, then Approve or Reject." : `None of the ${r.candidates} candidates looks like the same transaction.`);
-			await openBill(currentBill.id);
-		} catch (e) { fail(e); } finally { btn.disabled = false; }
+		try { await runBillSearch(currentBill); } catch (e) { fail(e); } finally { btn.disabled = false; }
 	};
 
 	$("bd-close").onclick = () => { currentBill = null; $("bill-detail").classList.add("hidden"); loadBills().catch(fail); };

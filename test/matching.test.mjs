@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { formatCents } from "../lib/categorize.mjs";
-import { billCandidates, findBillEntryMatches, matchRequest, rowCandidates } from "../lib/matching.mjs";
+import { billCandidates, billSearchDefaults, findBillEntryMatches, matchRequest, rowCandidates, searchBillTransactions } from "../lib/matching.mjs";
 
 const entry = (id, date, description, lines, extra = {}) => ({ id, entry_date: date, description, reference: "", reverses_id: null, reversed_by_id: null, links: [], lines, ...extra });
 const line = (account_code, debit, credit) => ({ account_code, debit_cents: debit, credit_cents: credit });
@@ -62,4 +62,27 @@ test("the LLM request lists items and candidates; answers are limited to the can
 	assert.deepEqual(req.schema.properties.results.items.properties.match.enum, ["e20", "t3", ""]);
 	assert.match(req.prompt, /Item 1: .*"amount":"-50.00"/);
 	assert.match(req.prompt, /candidate e20: /);
+});
+
+test("a bill's Auto sort searches the journal: amounts, dates and accounts can be widened", () => {
+	const bill = { id: 1, kind: "bill", vendor: "Hydro One", amount_cents: 12000n, bill_date: "2026-03-10", due_date: "2026-03-31" };
+	const entry = (id, date, description, lines, extra = {}) => ({ id, entry_date: date, description, reference: "", lines: lines.map(([account_code, debit_cents, credit_cents]) => ({ account_code, debit_cents, credit_cents, memo: "" })), links: [], ...extra });
+	const entries = [
+		entry(1, "2026-03-28", "HYDRO ONE payment", [["5300", 12000, 0], ["1000", 0, 12000]]),
+		entry(2, "2026-03-12", "Cheque 14", [["5900", 12000, 0], ["1000", 0, 12000]]),
+		entry(3, "2026-03-29", "Hydro One (with late fee)", [["5300", 12500, 0], ["1000", 0, 12500]]),
+		entry(4, "2026-08-01", "Hydro One, months later", [["5300", 12000, 0], ["1000", 0, 12000]]),
+		entry(5, "2026-03-20", "Reversed", [["5300", 12000, 0], ["1000", 0, 12000]], { reversed_by_id: 9 }),
+		entry(6, "2026-03-20", "Another bill's", [["5300", 12000, 0], ["1000", 0, 12000]], { links: [{ module_id: "categorizer" }] }),
+	];
+	const rows = [{ id: 7, statement_id: 2, account_code: "1000", date: "2026-03-30", description: "HYDRO ONE", amount_cents: -12000n }, { id: 8, statement_id: 2, account_code: "1000", date: "2026-03-30", description: "Deposit", amount_cents: 12000n }];
+	const s = billSearchDefaults(bill, "2026-04-01");
+	assert.deepEqual([s.amount_min, s.amount_max, s.from, s.to, s.accounts], [12000n, 12000n, "2026-02-28", "2026-05-30", []]);
+	const ids = (opts) => searchBillTransactions(bill, { entries, rows }, { ...s, ...opts }, "categorizer").map((x) => `${x.kind[0]}${x.id}`);
+	assert.deepEqual(ids({}), ["e1", "t7", "e2"], "the exact amount in the dates: the vendor's name first");
+	assert.deepEqual(ids({ amount_max: 13000n }), ["e1", "t7", "e2", "e3"], "a wider amount finds the one with the late fee");
+	assert.deepEqual(ids({ to: "2026-08-31" }).includes("e4"), true, "later dates find the late payment");
+	assert.deepEqual(ids({ accounts: ["5900"] }), ["e2"], "only in the accounts asked for");
+	const late = searchBillTransactions(bill, { entries, rows }, { ...s, amount_max: 13000n }, "categorizer").find((x) => x.id === 3);
+	assert.deepEqual([late.exact, late.vendor, late.amount_cents, late.account_code], [false, true, 12500n, "5300"]);
 });

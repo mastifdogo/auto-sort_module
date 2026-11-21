@@ -338,6 +338,11 @@ Extract data and hand-offs to other modules.
   `matchPayables()` offers rows the entries other modules tagged billed /
   overdue / vendor and not paid (`transactions.pays_entry_id`, source `tag`,
   no AI); only posting the row (a person) sets `paid` on that entry.
+- Paying a bill from a larger row (0.24.0): `matchBillTx()` refuses a row smaller than the bill
+  and takes `split.lines` ([{amount, account_code, memo}], adding up to the rest): kept in
+  `transaction_splits`, with `transactions.split_cents` the rest's total (null: not split, any
+  rows left are ignored). Posting books the bill's part and each split line. The UI is
+  `splitDialog()` (a `<dialog>`; errors show inside it, the toast is behind it).
 - Taxes on line items (0.22.0, `lib/taxes.mjs`, table `taxes`, `bill_items.tax_id`): the module's own
   list (`/taxes` routes; Ledger has none). `linesFromItems()` books one line per tax (rounded once on
   its items together) to the tax's `account_code`, or to the item's category when it has none. Rate

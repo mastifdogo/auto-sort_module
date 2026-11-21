@@ -1062,6 +1062,14 @@ export default async function register(ctx) {
 				// A row that pays a bill in part: the bill's share pays it, the rest goes to the account chosen for it.
 				const rest = t.bill_id !== null && amt < 0n && t.split_cents != null && t.split_account_code && BigInt(t.split_cents) < abs ? BigInt(t.split_cents) : 0n;
 				const billAbs = abs - rest;
+				// The rest's lines (several accounts); a row split before 0.24.0 has one, on the row itself.
+				let restLines = [];
+				if (rest > 0n) {
+					const { rows: parts } = await q(`SELECT amount_cents, account_code, memo FROM ${T("transaction_splits")} WHERE transaction_id = $1 ORDER BY line_no`, [id]);
+					restLines = parts.length > 0 && parts.reduce((s, p) => s + BigInt(p.amount_cents), 0n) === rest
+						? parts.map((p) => ({ account_code: p.account_code, debit_cents: BigInt(p.amount_cents), credit_cents: 0n, memo: (p.memo || "Rest of the payment").slice(0, 500) }))
+						: [{ account_code: t.split_account_code, debit_cents: rest, credit_cents: 0n, memo: (t.split_memo || "Rest of the payment").slice(0, 500) }];
+				}
 				// A split receipt (or a bill not posted to payables) books each of its lines.
 				const split = t.bill_id !== null && amt < 0n ? await splitLinesFor(t.bill_id, t.code, billAbs) : null;
 				// Paying a bill: the entry is with its vendor (Ledger's list of customers and vendors).
@@ -1077,7 +1085,7 @@ export default async function register(ctx) {
 						lines: [
 							{ account_code: t.account_code, debit_cents: amt > 0n ? abs : 0n, credit_cents: amt < 0n ? abs : 0n, memo: t.memo.slice(0, 500) },
 							...(split ?? [{ account_code: t.code, debit_cents: amt < 0n ? billAbs : 0n, credit_cents: amt > 0n ? abs : 0n, memo: "" }]),
-							...(rest > 0n ? [{ account_code: t.split_account_code, debit_cents: rest, credit_cents: 0n, memo: (t.split_memo || "Rest of the payment").slice(0, 500) }] : []),
+							...restLines,
 						],
 						links: [link],
 						...(vendorEntity ? { entity_id: Number(vendorEntity) } : {}),

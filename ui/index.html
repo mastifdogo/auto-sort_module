@@ -1690,44 +1690,97 @@
 		}).catch(() => {});
 	}
 	/**
-	 * Matches a statement line to the bill as its payment. A line for more than the bill is split
-	 * (the bill's amount pays it, the rest goes to an account you choose); a smaller one is a
-	 * partial payment and is asked about. Answers whether it matched (false: the split form is open).
+	 * Matches a statement line to the bill as its payment. Only a line for the bill's amount or more:
+	 * a larger one opens a popup to split it (the first line is the bill, filled in; the rest goes to
+	 * the accounts you choose). Answers whether it matched.
 	 */
 	async function payBill(b, t) {
 		const out = -BigInt(t.amount_cents);
 		const owed = b.amount_cents == null ? null : BigInt(b.amount_cents);
-		if (owed === null || out === owed) { await billAction("match", { transaction_id: t.id }); return true; }
 		const what = b.kind === "receipt" ? "receipt" : "bill";
+		if (owed === null || out === owed) return !!(await billAction("match", { transaction_id: t.id }));
 		if (out < owed) {
-			if (!confirm(`This transaction (${money(out)}) is less than the ${what} (${money(owed)}). Match it as a partial payment anyway?`)) return false;
-			await billAction("match", { transaction_id: t.id });
-			return true;
+			toast(`This transaction (${money(out)}) is smaller than the ${what} (${money(owed)}). Only a transaction of the same amount or more can pay it.`);
+			return false;
 		}
-		const rest = out - owed;
-		const sel = el("select", { "aria-label": "Account for the rest" });
-		accountOptions(sel, accounts.filter((a) => a.currency === b.currency), { placeholder: "Choose account…" });
-		withNewAccount(sel, () => ({ type: "expense", currency: b.currency }));
-		const memo = el("input", { placeholder: "What the rest was for (optional)", maxlength: "500", style: "flex:1 1 12rem" });
-		const box = $("bd-splitpay");
-		const close = () => box.replaceChildren();
-		const go = el("button", { class: "btn primary", type: "button" }, "Split and match");
-		go.onclick = async () => {
-			if (!sel.value) return toast("Choose the account for the rest of the transaction.");
-			go.disabled = true;
-			const r = await billAction("match", { transaction_id: t.id, split: { account_code: sel.value, memo: memo.value } });
-			go.disabled = false;
-			if (r) { close(); toast(`Split: ${money(owed)} pays the ${what}, ${money(rest)} goes to ${accountLabel(sel.value)} when it's posted.`); }
-		};
-		box.replaceChildren(el("div", { class: "panel", style: "margin-top:0.5rem" },
-			el("h2", { style: "margin-top:0" }, "Split the transaction?"),
-			el("p", { class: "small" }, `${t.date} · ${t.description}: ${money(out)} ${b.currency}, but the ${what} is ${money(owed)}. Split it: ${money(owed)} pays the ${what}, and the other ${money(rest)} goes to:`),
-			el("div", { class: "row" }, sel, memo),
-			el("div", { class: "row", style: "margin-top:0.5rem" }, go,
-				el("button", { class: "btn", type: "button", title: `Book the whole ${money(out)} as the ${what}'s payment`, onclick: async () => { if (await billAction("match", { transaction_id: t.id })) close(); } }, "Match the whole amount"),
-				el("button", { class: "btn", type: "button", onclick: close }, "Cancel"))));
-		box.scrollIntoView({ behavior: "smooth", block: "nearest" });
-		return false;
+		return splitDialog(b, t, out, owed, what);
+	}
+	/** The popup that splits a transaction larger than the bill it pays. Resolves to whether it matched. */
+	function splitDialog(b, t, out, owed, what) {
+		return new Promise((resolve) => {
+			const dlg = el("dialog", { class: "similar-dialog", "aria-label": "Split the transaction" });
+			const done = (ok) => { dlg.close(); dlg.remove(); resolve(ok); };
+			dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
+			const toCents = (v) => { const n = Math.round(Number(String(v).trim().replace(/,/g, "")) * 100); return Number.isFinite(n) && String(v).trim() !== "" ? BigInt(n) : null; };
+			const rest = out - owed;
+			const rows = [];
+			const tbody = el("tbody");
+			const left = el("span", { class: "small", "aria-live": "polite" });
+			// Errors show in the popup: the page's own messages are behind it.
+			const err = el("p", { class: "small neg", role: "alert" });
+			const match = async (body) => {
+				err.textContent = "";
+				try {
+					await api(`/bills/${b.id}/match`, { method: "POST", body: JSON.stringify(body) });
+				} catch (e) { err.textContent = e.message; return false; }
+				done(true);
+				await loadBills();
+				if (currentBill?.id === b.id) await openBill(b.id);
+				return true;
+			};
+			const go = el("button", { class: "btn primary", type: "button" }, "Split and match");
+			const remaining = () => rest - rows.reduce((s, r) => s + (toCents(r.amount.value) ?? 0n), 0n);
+			const update = () => {
+				const d = remaining();
+				const ready = d === 0n && rows.length > 0 && rows.every((r) => (toCents(r.amount.value) ?? 0n) > 0n && r.account.value);
+				left.textContent = d === 0n ? `Adds up to the transaction's ${money(out)}.` : d > 0n ? `${money(d)} of the transaction still to split.` : `${money(-d)} more than the transaction.`;
+				left.className = d === 0n ? "small muted" : "small neg";
+				go.disabled = !ready;
+			};
+			// The bill's own line: filled in, not to change here.
+			tbody.append(el("tr", {},
+				el("td", { class: "wide" }, el("strong", {}, `${b.vendor || `This ${what}`}`), el("span", { class: "muted" }, ` · pays this ${what}`)),
+				el("td", {}, el("input", { value: (Number(owed) / 100).toFixed(2), disabled: true, style: "width:7rem", "aria-label": `The ${what}'s amount` })),
+				el("td", {}, el("span", { class: "muted small" }, b.account_code ? accountLabel(b.account_code) : `the ${what}'s account`)),
+				el("td", {})));
+			const addRow = () => {
+				const d = remaining();
+				const r = {
+					memo: el("input", { placeholder: "What this part was for (optional)", maxlength: "500", style: "width:100%;box-sizing:border-box" }),
+					amount: el("input", { value: d > 0n ? (Number(d) / 100).toFixed(2) : "", inputmode: "decimal", placeholder: "Amount", style: "width:7rem", "aria-label": "Amount" }),
+					account: el("select", { "aria-label": "Account" }),
+				};
+				accountOptions(r.account, accounts.filter((a) => a.currency === b.currency), { placeholder: "Choose account…" });
+				withNewAccount(r.account, () => ({ type: "expense", currency: b.currency }), update);
+				r.amount.oninput = update;
+				r.account.onchange = update;
+				const tr = el("tr", {}, el("td", { class: "wide" }, r.memo), el("td", {}, r.amount), el("td", {}, r.account),
+					el("td", {}, el("button", { class: "btn", type: "button", title: "Remove this line", onclick: () => { if (rows.length === 1) return; rows.splice(rows.indexOf(r), 1); tr.remove(); update(); } }, "✕")));
+				rows.push(r);
+				tbody.append(tr);
+				update();
+			};
+			addRow();
+			go.onclick = async () => {
+				go.disabled = true;
+				const to = [...new Set(rows.map((r) => accountLabel(r.account.value)))].join(", ");
+				const ok = await match({ transaction_id: t.id, split: { lines: rows.map((r) => ({ amount: r.amount.value.trim(), account_code: r.account.value, memo: r.memo.value })) } });
+				if (ok) toast(`Split: ${money(owed)} pays the ${what}, ${money(rest)} goes to ${to} when it's posted.`);
+				else update();
+			};
+			dlg.append(
+				el("h2", { style: "margin-top:0" }, "Split the transaction"),
+				el("p", { class: "small" }, `${t.date} · ${t.description}: ${money(out)} ${b.currency}. The ${what} is ${money(owed)}, so ${money(rest)} of this transaction was for something else. Say where it goes; the lines must add up to the transaction.`),
+				el("table", { class: "stack" }, tbody),
+				el("div", { class: "row", style: "margin:0.5rem 0" }, el("button", { class: "btn", type: "button", onclick: addRow }, "Add a line"), left),
+				err,
+				el("div", { class: "row", style: "margin-top:0.75rem" }, go,
+					el("button", { class: "btn", type: "button", title: `Book the whole ${money(out)} as the ${what}'s payment`, onclick: () => match({ transaction_id: t.id }) }, "Match the whole amount"),
+					el("button", { class: "btn", type: "button", onclick: () => done(false) }, "Cancel")),
+			);
+			document.body.append(dlg);
+			dlg.showModal();
+		});
 	}
 
 	// Auto sort on a bill or receipt: a search of the journal (and of statement lines not posted
@@ -1849,7 +1902,7 @@
 					el("td", {}, t.description),
 					el("td", { class: "num neg" }, `${money(t.amount_cents)} ${b.currency}`),
 					el("td", { class: "wide" }, accountLabel(t.account_code), " → ", accountLabel(t.code || ""),
-						t.split_cents ? el("div", { class: "small muted" }, `Split: ${money(-BigInt(t.amount_cents) - BigInt(t.split_cents))} pays this, ${money(t.split_cents)} → ${accountLabel(t.split_account_code)}${t.split_memo ? ` (${t.split_memo})` : ""}`) : null),
+						t.split_cents ? el("div", { class: "small muted" }, `Split: ${money(-BigInt(t.amount_cents) - BigInt(t.split_cents))} pays this, ` + (t.split_lines?.length ? t.split_lines : [{ amount_cents: t.split_cents, account_code: t.split_account_code, memo: t.split_memo }]).map((l) => `${money(l.amount_cents)} → ${accountLabel(l.account_code)}${l.memo ? ` (${l.memo})` : ""}`).join(", ")) : null),
 					el("td", {}, t.status === "posted" ? el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`), amendedPill(t)) : el("span", { class: "pill plain" }, "Waiting to be posted")),
 					el("td", {}, t.status !== "posted" ? el("button", { class: "btn", onclick: () => billAction("unmatch") }, "Not this one") : el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "Open statement")),
 				),

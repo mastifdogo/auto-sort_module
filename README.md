@@ -945,6 +945,12 @@ inside the module and is downloaded from the Inbox tab.
 
 ## Changes
 
+- **0.24.0:** **A popup to split a transaction larger than the bill or receipt it pays.** Linking
+  a bill or receipt to a larger transaction opens "Split the transaction": the first line is the
+  bill or receipt, filled in with its amount, and you say where the rest goes, on one line or
+  several (amount, account, what it was for); the lines must add up to the transaction. A
+  transaction smaller than the bill or receipt can no longer be matched to it: only one of the
+  same amount or more.
 - **0.23.0:** **The AI fills in the tax on line items, and a tax for the whole bill or receipt.**
   When the AI reads a document's line items (at scan, or "Read items with the LLM") it also picks,
   from your taxes, the one the document charges on each item. That is a suggestion: the tax picker

@@ -141,10 +141,12 @@ test("a payment isn't matched to a bill that is paid or ignored", async () => {
 	let matched = 0;
 	let amount_cents = 5000n;
 	let splits = null;
+	let linked = 0n;
 	const { call } = await start({
 		ledger: { listAccounts: async () => ["5100", "5200"].map((code) => ({ code, name: code, type: "expense", currency: "CAD", is_active: true })) },
 		answers: [
 			[/FROM mod_categorizer\.bills b LEFT JOIN mod_categorizer\.bill_documents d ON d\.bill_id = b\.id WHERE b\.id = \$1/, () => [{ id: 3n, kind: "bill", status, vendor: "Hydro One", amount_cents, currency: "CAD", account_code: "5100", ap_account: null, paid_entry_id: null }]],
+			[/AS linked,/, () => [{ linked: linked.toString(), posted: "0" }]],
 			[/SELECT amount_cents, status FROM mod_categorizer\.transactions WHERE id = \$1/, () => [{ amount_cents: -5000n, status: "new" }]],
 			[/SET bill_id = \$2, chosen_code = \$3/, () => { matched++; return { rows: [], rowCount: 1 }; }],
 			[/INSERT INTO mod_categorizer\.transaction_splits/, (sql, params) => { splits = params; return { rows: [], rowCount: 2 }; }],
@@ -155,17 +157,21 @@ test("a payment isn't matched to a bill that is paid or ignored", async () => {
 	status = "open";
 	await call("POST /bills/:id/match", { params: { id: "3" }, body: { transaction_id: 7 } });
 	assert.equal(matched, 1);
-	// Only a transaction of the bill's amount or more can pay it.
+	// A transaction for less than the bill is a partial payment.
 	amount_cents = 6000n;
-	await assert.rejects(call("POST /bills/:id/match", { params: { id: "3" }, body: { transaction_id: 7 } }), { status: 422, message: /smaller than the bill/ });
-	assert.equal(matched, 1);
+	await call("POST /bills/:id/match", { params: { id: "3" }, body: { transaction_id: 7 } });
+	assert.equal(matched, 2);
+	// Once the transactions linked to it cover it, no more can be linked.
+	linked = 6000n;
+	await assert.rejects(call("POST /bills/:id/match", { params: { id: "3" }, body: { transaction_id: 7 } }), { status: 409, message: /already cover/ });
+	linked = 1000n;
+	amount_cents = 4000n; // 30.00 still to pay; the 50.00 transaction leaves 20.00
 	// A larger one is split: the lines for the rest must add up to it.
-	amount_cents = 3000n;
 	const split = (lines) => call("POST /bills/:id/match", { params: { id: "3" }, body: { transaction_id: 7, split: { lines } } });
 	await assert.rejects(split([{ amount: "5.00", account_code: "5100" }]), { status: 422, message: /add up to 5\.00, but 20\.00/ });
 	await assert.rejects(split([{ amount: "20.00", account_code: "nope" }]), { status: 422 });
 	await split([{ amount: "15.00", account_code: "5100", memo: "snacks" }, { amount: "5.00", account_code: "5200" }]);
-	assert.equal(matched, 2);
+	assert.equal(matched, 3);
 	assert.deepEqual(splits.slice(2), [["1500", "500"], ["5100", "5200"], ["snacks", ""]]);
 });
 

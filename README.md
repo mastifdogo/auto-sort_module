@@ -945,6 +945,13 @@ inside the module and is downloaded from the Inbox tab.
 
 ## Changes
 
+- **0.25.0:** **Several transactions can pay one bill or receipt, and a smaller one pays part of
+  it.** Linking a transaction no longer replaces the one already linked: each is a payment, and
+  the bill or receipt shows what they pay together and what is still to pay. A transaction for
+  less than that is a partial payment (0.24.0 refused it); one for more opens the split popup,
+  filled in with what is still to pay. "Not this one" unlinks only that transaction. The bill or
+  receipt is paid once its posted payments add up to its amount; one booked line by line
+  (categories, taxes) has each payment book its share of every line.
 - **0.24.0:** **A popup to split a transaction larger than the bill or receipt it pays.** Linking
   a bill or receipt to a larger transaction opens "Split the transaction": the first line is the
   bill or receipt, filled in with its amount, and you say where the rest goes, on one line or

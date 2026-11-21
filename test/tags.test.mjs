@@ -395,7 +395,8 @@ test("posting a bill's payment tags the bill's payable entry paid, with a note n
 	const row = { ...ROW, description: "HYDRO ONE", amount_cents: -8550n, suggested_code: "2000" };
 	const tags = fakeTags();
 	await tags.setAs("categorizer", 50, "overdue");
-	const answers = [...rowTable(row), ...billTable(bill)];
+	// The row is linked to the bill and its posted payments cover it.
+	const answers = [[/SELECT b\.id, b\.amount_cents FROM/, () => [{ id: 3n, amount_cents: 8550n }]], [/AS linked,/, () => [{ linked: "8550", posted: "8550" }]], ...rowTable(row), ...billTable(bill)];
 	// The claimed row is the bill's payment.
 	const claim = answers.find(([p]) => p.source.includes("SET status = 'posting'"));
 	const original = claim[1];

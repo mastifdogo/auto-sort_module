@@ -45,6 +45,7 @@ import { registerInbox } from "./lib/inbox.mjs";
 import { registerScanner } from "./lib/scanner-routes.mjs";
 import { registerAdoption } from "./lib/adopt.mjs";
 import { registerTaxes } from "./lib/taxes.mjs";
+import { shareOfLines } from "./lib/bills.mjs";
 import { candidateAccounts, examplesFromEntries, pickable, proposeCode, suggest } from "./lib/categorize.mjs";
 import { ParseError, parseAmount, parseDate, parseStatement, payeeKey } from "./lib/parse.mjs";
 
@@ -654,14 +655,21 @@ export default async function register(ctx) {
 
 	/**
 	 * The debit lines for paying a split bill or receipt from this row: its lines, when the row books
-	 * to the bill's own account (not payables) and they add up to the payment. Else null.
+	 * to the bill's own account (not payables). A row that pays only part of it books that share of
+	 * each line, so that the bill's payments together book every line in full. Else null.
 	 */
-	async function splitLinesFor(billId, code, abs) {
+	async function splitLinesFor(billId, code, abs, txId) {
 		const bill = await bills.getBill(String(billId)).catch(() => null);
-		if (!bill || bill.ap_account || bill.journal_entry_id || code !== bill.account_code) return null;
+		if (!bill || bill.ap_account || bill.journal_entry_id || code !== bill.account_code || bill.amount_cents == null) return null;
 		const lines = await bills.linesOf(bill.id);
-		if (lines.length < 1 || lines.reduce((s, l) => s + BigInt(l.amount_cents), 0n) !== abs) return null;
-		return lines.map((l) => ({ account_code: l.account_code, debit_cents: BigInt(l.amount_cents), credit_cents: 0n, memo: l.description.slice(0, 500) }));
+		const total = BigInt(bill.amount_cents);
+		if (lines.length < 1 || total <= 0n || lines.reduce((s, l) => s + BigInt(l.amount_cents), 0n) !== total) return null;
+		const before = (await bills.paidOf(bill.id, txId)).posted;
+		const parts = shareOfLines(lines.map((l) => BigInt(l.amount_cents)), total, before, before + abs);
+		if (!parts) return null;
+		return lines
+			.map((l, i) => ({ account_code: l.account_code, debit_cents: parts[i], credit_cents: 0n, memo: l.description.slice(0, 500) }))
+			.filter((l) => l.debit_cents > 0n);
 	}
 
 	// POST /statements/:id/bill-draft {reread?}: what the statement says is owed, to edit and create as
@@ -1071,7 +1079,7 @@ export default async function register(ctx) {
 						: [{ account_code: t.split_account_code, debit_cents: rest, credit_cents: 0n, memo: (t.split_memo || "Rest of the payment").slice(0, 500) }];
 				}
 				// A split receipt (or a bill not posted to payables) books each of its lines.
-				const split = t.bill_id !== null && amt < 0n ? await splitLinesFor(t.bill_id, t.code, billAbs) : null;
+				const split = t.bill_id !== null && amt < 0n ? await splitLinesFor(t.bill_id, t.code, billAbs, id) : null;
 				// Paying a bill: the entry is with its vendor (Ledger's list of customers and vendors).
 				const vendorEntity = t.bill_id !== null ? await bills.vendorOf(t.bill_id).catch(() => null) : null;
 				// The row pays an entry another module tagged as owed (Ledger 0.23.0), if it still books to that

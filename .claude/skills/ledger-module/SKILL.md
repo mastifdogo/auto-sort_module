@@ -338,8 +338,11 @@ Extract data and hand-offs to other modules.
   `matchPayables()` offers rows the entries other modules tagged billed /
   overdue / vendor and not paid (`transactions.pays_entry_id`, source `tag`,
   no AI); only posting the row (a person) sets `paid` on that entry.
-- Paying a bill from a larger row (0.24.0): `matchBillTx()` refuses a row smaller than the bill
-  and takes `split.lines` ([{amount, account_code, memo}], adding up to the rest): kept in
+- Several rows can pay one bill (0.25.0): `matchBillTx()` adds a row beside the ones linked
+  (`paidOf()` = what they cover; a row for less is a partial payment, none once covered),
+  `onPosted()` marks the bill paid only when its posted payments reach its amount, and
+  `splitLinesFor()` books each payment's share of the bill's lines (`shareOfLines()`).
+- Paying a bill from a larger row (0.24.0): `matchBillTx()` takes `split.lines` ([{amount, account_code, memo}], adding up to the rest): kept in
   `transaction_splits`, with `transactions.split_cents` the rest's total (null: not split, any
   rows left are ignored). Posting books the bill's part and each split line. The UI is
   `splitDialog()` (a `<dialog>`; errors show inside it, the toast is behind it).

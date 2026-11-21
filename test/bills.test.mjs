@@ -277,6 +277,18 @@ test("a tax for the whole bill or receipt: on every item unless the item says ot
 	assert.match(linesFromItems({ ...bill, amount_cents: null }, []).error, /enter the receipt's amount/);
 });
 
+test("shareOfLines: payments in parts book every line of the bill exactly once", async () => {
+	const { shareOfLines } = await import("../lib/bills.mjs");
+	const lines = [6000n, 500n, 4800n];
+	assert.deepEqual(shareOfLines(lines, 11300n, 0n, 11300n), lines, "one payment for all of it");
+	const first = shareOfLines(lines, 11300n, 0n, 4000n);
+	const second = shareOfLines(lines, 11300n, 4000n, 11000n);
+	const third = shareOfLines(lines, 11300n, 11000n, 11300n);
+	assert.equal(first.reduce((s, x) => s + x, 0n), 4000n);
+	assert.deepEqual(lines.map((_, i) => first[i] + second[i] + third[i]), lines);
+	assert.equal(shareOfLines(lines, 11300n, 0n, 12000n), null, "more than the bill: not shared out");
+});
+
 test("findSimilarBills: the same one, then similar ones, best first", () => {
 	const bill = { vendor: "Costco Wholesale", invoice_number: "", bill_date: "2026-11-10", due_date: null, amount_cents: 10000n };
 	const existing = [

@@ -1689,19 +1689,23 @@
 			for (const x of sg.data) box.append(suggestionNote(x, after));
 		}).catch(() => {});
 	}
+	// What is still to pay on the open bill after the transactions linked to it (null: no amount yet).
+	let billRemaining = null;
 	/**
-	 * Matches a statement line to the bill as its payment. Only a line for the bill's amount or more:
-	 * a larger one opens a popup to split it (the first line is the bill, filled in; the rest goes to
-	 * the accounts you choose). Answers whether it matched.
+	 * Links a statement line to the bill as a payment, beside the ones already linked. A line for
+	 * less than what is still to pay is a partial payment; a larger one opens a popup to split it
+	 * (the first line is the bill, filled in; the rest goes to the accounts you choose). Answers
+	 * whether it was linked.
 	 */
 	async function payBill(b, t) {
 		const out = -BigInt(t.amount_cents);
-		const owed = b.amount_cents == null ? null : BigInt(b.amount_cents);
+		const owed = b.amount_cents == null ? null : billRemaining ?? BigInt(b.amount_cents);
 		const what = b.kind === "receipt" ? "receipt" : "bill";
-		if (owed === null || out === owed) return !!(await billAction("match", { transaction_id: t.id }));
-		if (out < owed) {
-			toast(`This transaction (${money(out)}) is smaller than the ${what} (${money(owed)}). Only a transaction of the same amount or more can pay it.`);
-			return false;
+		if (owed !== null && owed <= 0n) { toast(`The transactions linked to this ${what} already cover it. Unlink one first ("Not this one").`); return false; }
+		if (owed === null || out <= owed) {
+			const ok = !!(await billAction("match", { transaction_id: t.id }));
+			if (ok && owed !== null && out < owed) toast(`Linked as a partial payment: ${money(owed - out)} of the ${what} is still to pay. Link another transaction for the rest.`);
+			return ok;
 		}
 		return splitDialog(b, t, out, owed, what);
 	}
@@ -1770,7 +1774,7 @@
 			};
 			dlg.append(
 				el("h2", { style: "margin-top:0" }, "Split the transaction"),
-				el("p", { class: "small" }, `${t.date} · ${t.description}: ${money(out)} ${b.currency}. The ${what} is ${money(owed)}, so ${money(rest)} of this transaction was for something else. Say where it goes; the lines must add up to the transaction.`),
+				el("p", { class: "small" }, `${t.date} · ${t.description}: ${money(out)} ${b.currency}. ${owed === BigInt(b.amount_cents) ? `The ${what} is ${money(owed)}` : `${money(owed)} of the ${what} is still to pay`}, so ${money(rest)} of this transaction was for something else. Say where it goes; the lines must add up to the transaction.`),
 				el("table", { class: "stack" }, tbody),
 				el("div", { class: "row", style: "margin:0.5rem 0" }, el("button", { class: "btn", type: "button", onclick: addRow }, "Add a line"), left),
 				err,
@@ -1895,7 +1899,15 @@
 
 		const pay = $("bd-payments");
 		if (payments.length === 0) pay.replaceChildren(el("p", { class: "muted small" }, b.status === "paid" ? (b.paid_entry_id ? `Recorded in journal entry #${b.paid_entry_id}.` : b.paid_by_tag ? `Paid elsewhere: its journal entry${b.journal_entry_id ? ` #${b.journal_entry_id}` : ""} was tagged "paid" in Ledger by ${b.paid_tag_by || "a person"}. ${moduleName} posted nothing for it. Taking the tag off there, or Reopen here, makes it unpaid again.` : "Marked paid by hand.") : "No matching bank transaction yet. It's matched when a statement with the payment is uploaded, or try Auto sort."));
-		else pay.replaceChildren(
+		// What its transactions pay of it together (each one's amount, less what is split off elsewhere).
+		const part = (t) => -BigInt(t.amount_cents) - BigInt(t.split_cents ?? 0);
+		const paidSoFar = payments.reduce((sum, t) => sum + part(t), 0n);
+		billRemaining = b.amount_cents == null ? null : BigInt(b.amount_cents) - paidSoFar;
+		const what = b.kind === "receipt" ? "receipt" : "bill";
+		if (payments.length > 0) pay.replaceChildren(
+			b.amount_cents == null ? "" : el("p", { class: "small" },
+				billRemaining > 0n ? `${payments.length === 1 ? "This transaction pays" : `These ${payments.length} transactions pay`} ${money(paidSoFar)} of the ${what}'s ${money(b.amount_cents)}: ${money(billRemaining)} still to pay. Link another transaction below for the rest.`
+				: payments.length > 1 ? `These ${payments.length} transactions together pay the ${what}'s ${money(b.amount_cents)}.` : ""),
 			el("table", { class: "stack" }, el("tbody", {}, ...payments.map((t) =>
 				el("tr", {},
 					el("td", { class: "nowrap" }, t.date),
@@ -1904,28 +1916,31 @@
 					el("td", { class: "wide" }, accountLabel(t.account_code), " → ", accountLabel(t.code || ""),
 						t.split_cents ? el("div", { class: "small muted" }, `Split: ${money(-BigInt(t.amount_cents) - BigInt(t.split_cents))} pays this, ` + (t.split_lines?.length ? t.split_lines : [{ amount_cents: t.split_cents, account_code: t.split_account_code, memo: t.split_memo }]).map((l) => `${money(l.amount_cents)} → ${accountLabel(l.account_code)}${l.memo ? ` (${l.memo})` : ""}`).join(", ")) : null),
 					el("td", {}, t.status === "posted" ? el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`), amendedPill(t)) : el("span", { class: "pill plain" }, "Waiting to be posted")),
-					el("td", {}, t.status !== "posted" ? el("button", { class: "btn", onclick: () => billAction("unmatch") }, "Not this one") : el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "Open statement")),
+					el("td", {}, t.status !== "posted" ? el("button", { class: "btn", onclick: () => billAction("unmatch", { transaction_id: t.id }) }, "Not this one") : el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "Open statement")),
 				),
 			))),
 		);
 		renderBillMatches(b, payments);
 		$("bd-candidates").replaceChildren();
 		$("bd-splitpay").replaceChildren();
-		if (open && payments.length === 0 && b.amount_cents != null) {
+		if (open && !b.paid_entry_id && b.amount_cents != null && billRemaining > 0n) {
+			const owed = billRemaining;
 			api(`/bills/${b.id}/candidates`).then(({ data }) => {
 				if (data.length === 0 || currentBill?.id !== b.id) return;
 				const row = (t) => el("tr", {},
 					el("td", { class: "nowrap" }, t.date),
-					el("td", {}, t.description, t.split ? el("span", { class: "pill warn", style: "margin-left:6px" }, `${money(-BigInt(t.amount_cents) - BigInt(b.amount_cents))} more`) : ""),
+					el("td", {}, t.description, t.split ? el("span", { class: "pill warn", style: "margin-left:6px" }, `${money(-BigInt(t.amount_cents) - owed)} more`) : t.partial ? el("span", { class: "pill plain", style: "margin-left:6px" }, `${money(owed + BigInt(t.amount_cents))} less`) : ""),
 					el("td", { class: "num neg" }, `${money(t.amount_cents)} ${b.currency}`),
 					el("td", {}, accountLabel(t.account_code)),
-					el("td", {}, el("button", { class: "btn", onclick: () => payBill(b, t) }, t.split ? "Split and match…" : "This is the payment")),
+					el("td", {}, el("button", { class: "btn", onclick: () => payBill(b, t) }, t.split ? "Split and match…" : t.partial ? "Pays part of it" : payments.length ? "Pays the rest" : "This is the payment")),
 				);
-				const exact = data.filter((t) => !t.split);
+				const exact = data.filter((t) => !t.split && !t.partial);
+				const smaller = data.filter((t) => t.partial);
 				const larger = data.filter((t) => t.split);
 				$("bd-candidates").replaceChildren(
-					...(exact.length ? [el("p", { class: "small" }, "Unposted transactions with this amount:"), el("table", { class: "stack" }, el("tbody", {}, ...exact.map(row)))] : []),
-					...(larger.length ? [el("p", { class: "small" }, `Larger unposted payments dated near it (part of one may pay this ${b.kind === "receipt" ? "receipt" : "bill"}; split it):`), el("table", { class: "stack" }, el("tbody", {}, ...larger.map(row)))] : []),
+					...(exact.length ? [el("p", { class: "small" }, payments.length ? `Unposted transactions for the ${money(owed)} still to pay:` : "Unposted transactions with this amount:"), el("table", { class: "stack" }, el("tbody", {}, ...exact.map(row)))] : []),
+					...(larger.length ? [el("p", { class: "small" }, `Larger unposted payments dated near it (part of one may pay this ${what}; split it):`), el("table", { class: "stack" }, el("tbody", {}, ...larger.map(row)))] : []),
+					...(smaller.length ? [el("p", { class: "small" }, `Smaller unposted payments dated near it (one may pay part of this ${what}; link several until it is paid):`), el("table", { class: "stack" }, el("tbody", {}, ...smaller.map(row)))] : []),
 				);
 			}).catch(() => {});
 		}

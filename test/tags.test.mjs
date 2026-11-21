@@ -113,7 +113,7 @@ const ACCOUNTS = [
 const ACCOUNT_MAP = new Map(ACCOUNTS.map((a) => [a.code, a]));
 
 /** Registers the module on a fake ctx with tags (or without: tags null, an older Ledger). */
-async function start({ answers = [], tags = fakeTags(), entries = new Map(), settings = {} } = {}) {
+async function start({ answers = [], tags = fakeTags(), entries = new Map(), settings = {}, accounts = ACCOUNTS } = {}) {
 	const routes = new Map();
 	const posted = [];
 	const related = [];
@@ -141,7 +141,7 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 		settings: { get: async () => settings, set: async () => {}, onChange() {} },
 		llm: { status: async () => ({ configured: false }), json: async () => { throw new HttpError(409, "not set up"); } },
 		ledger: {
-			listAccounts: async () => ACCOUNTS,
+			listAccounts: async () => accounts,
 			createJournalEntry: async (entry) => {
 				const e = { ...entry, id: 100 + posted.length, entity: entry.entity_id ? { id: entry.entity_id, name: "" } : null, reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }] };
 				posted.push(e);
@@ -184,6 +184,28 @@ test("approving a bill into payables tags its entry with the vendor, and overdue
 	const b = await start({ answers: billTable(later), settings: { ap_account: "2000" } });
 	await b.call("POST /bills/:id/approve", { params: { id: "3" } });
 	assert.deepEqual(b.tags.names(b.posted[0].id), ["vendor:7"]);
+});
+
+test("bills and receipts go to accounts payable: the account set, else the one Ledger tagged; with neither they are only tracked", async () => {
+	const credit = (e) => e.lines.find((l) => BigInt(l.credit_cents) > 0n).account_code;
+	// A receipt is posted to payables like a bill.
+	const receipt = { ...BILL, kind: "receipt", due_date: null };
+	const a = await start({ answers: billTable(receipt), settings: { ap_account: "2000" } });
+	await a.call("POST /bills/:id/approve", { params: { id: "3" } });
+	assert.equal(a.posted.length, 1);
+	assert.equal(credit(a.posted[0]), "2000");
+	assert.match(a.posted[0].description, /receipt/);
+	// No account set: the one tagged "Accounts payable" in the bill's currency.
+	const tagged = [...ACCOUNTS, { code: "2010", name: "Trade creditors", type: "liability", currency: "CAD", is_active: true, kind: "payable" }, { code: "2020", name: "US payables", type: "liability", currency: "USD", is_active: true, kind: "payable" }];
+	const b = await start({ answers: billTable({ ...BILL, due_date: "2999-01-01" }), accounts: tagged });
+	await b.call("POST /bills/:id/approve", { params: { id: "3" } });
+	assert.equal(credit(b.posted[0]), "2010");
+	// Neither: nothing is posted, the bill is tracked.
+	const lone = { ...BILL };
+	const c = await start({ answers: billTable(lone) });
+	await c.call("POST /bills/:id/approve", { params: { id: "3" } });
+	assert.equal(c.posted.length, 0);
+	assert.equal(lone.status, "open");
 });
 
 test("Mark paid tags the bill's entry paid (and no longer overdue); Reopen takes it off", async () => {

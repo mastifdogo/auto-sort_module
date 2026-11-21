@@ -625,7 +625,9 @@ export default async function register(ctx) {
 
 	ctx.route("GET", "/status", async (req) => {
 		const [llm, cfg] = await Promise.all([ctx.llm.status(), readSettings()]);
-		const { ap_account } = await ctx.settings.get();
+		let { ap_account } = await ctx.settings.get();
+		// None chosen: the accounts Ledger has tagged "Accounts payable" are used (Ledger 0.30.0).
+		if (!String(ap_account ?? "").trim()) ap_account = (await ctx.ledger.listAccounts()).filter((a) => a.kind === "payable").map((a) => a.code).join(", ");
 		// Organizations (separate books): which one this request works in; the full list only for admins.
 		const organization = await ctx.orgs.current();
 		const organizations = req.user.role === "admin" ? await ctx.orgs.list() : [];

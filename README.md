@@ -105,9 +105,11 @@ The module creates no accounts. It works with your chart of accounts:
   belongs to, e.g. `1000 Chequing` or `2100 Visa`.
 - **Categories:** your expense, revenue and other accounts. The model only suggests active
   accounts in the statement account's currency (CAD or USD).
-- **Accounts payable** (optional, liability, e.g. `2000 Accounts payable`): choose it under
-  Settings → Auto sort to post approved bills there. It's in one currency: bills in the other
-  currency are tracked but can't be approved into it.
+- **Accounts payable** (liability, e.g. `2000 Accounts payable`): approved bills and receipts are
+  posted there. Tag the account "Accounts payable" on Ledger's Accounts page (Ledger 0.30.0 and
+  later; one per currency), or choose one under Settings → Auto sort → Bills. A chosen account is
+  in one currency: bills in the other currency can't be approved into it. With neither, bills
+  and receipts are only tracked.
 
 ### On Ledger's dashboard
 
@@ -691,12 +693,14 @@ offered when nothing else has that amount) and gets the entry's receivable or pa
 **Review on the Bills and Receipts tabs:** fix anything that's wrong, then **Approve**.
 
 **Accounting:**
-- *With an accounts payable account* (Settings → Auto sort; an active liability account): approving a bill posts
-  Dr *bill's account* / Cr *payables* on the bill date. The bank payment later books
-  Dr *payables* / Cr *bank*.
-- *Without one:* bills are only tracked, and the payment books straight to the bill's account.
-- *Receipts* (already paid, e.g. an online order) are never posted on their own. They tell the
-  matching bank transaction which account to use.
+- *With an accounts payable account* (the one chosen under Settings → Auto sort → Bills, else the
+  account tagged "Accounts payable" in Ledger in the bill's currency; an active liability
+  account): approving a bill or a receipt posts Dr *its account* / Cr *payables* on its date. The
+  bank payment later books Dr *payables* / Cr *bank*.
+- *Without one:* bills and receipts are only tracked, and the payment books straight to the
+  bill's account.
+- *Receipts* (already paid, e.g. an online order) go through payables the same way since 0.26.0:
+  the matching bank transaction clears them.
 
 **Matching:** when a statement is categorised (or a new bill arrives), each unposted outgoing
 transaction with **exactly** a bill's amount, dated from a week before the bill date to 45 days
@@ -944,6 +948,12 @@ app's updater reads it. `.github/workflows/app.yml` builds the app unsigned on e
 inside the module and is downloaded from the Inbox tab.
 
 ## Changes
+
+- **0.26.0:** **Bills and receipts are posted to accounts payable.** Receipts are posted there on
+  approval like bills (before, a receipt only told its bank transaction which account to use),
+  and with no account chosen under Settings → Auto sort → Bills the account tagged "Accounts
+  payable" in Ledger (0.30.0 and later) is used. The AI no longer suggests payables or
+  receivables as the account a bill is for.
 
 - **0.25.0:** **Several transactions can pay one bill or receipt, and a smaller one pays part of
   it.** Linking a transaction no longer replaces the one already linked: each is a payment, and

@@ -1423,7 +1423,7 @@
 					el("button", { class: "btn danger", onclick: async () => {
 						try { await api(`/bills/${b.id}/lines`, { method: "DELETE" }); await openBill(b.id); } catch (e) { fail(e); }
 					} }, "Remove split")),
-			el("p", { class: "muted small" }, b.journal_entry_id || (b.kind === "bill" && b.ap_account) ? "" : `When its payment is posted, each line is booked to its account.`),
+			el("p", { class: "muted small" }, b.journal_entry_id || b.ap_account ? "" : `When its payment is posted, each line is booked to its account.`),
 		);
 	}
 	function editSplit(b, lines) {
@@ -1895,7 +1895,7 @@
 		$("bd-delete").classList.toggle("hidden", locked || b.status === "paid");
 		$("bd-root-delete").classList.toggle("hidden", !rootMode);
 		$("bd-root-unpost").classList.toggle("hidden", !rootMode || !(b.journal_entry_id || b.paid_entry_id));
-		$("bd-ap-note").textContent = b.status === "new" && b.kind === "bill" ? `Approving posts this bill to accounts payable if one is set under Settings → ${moduleName}.` : "";
+		$("bd-ap-note").textContent = b.status === "new" ? `Approving posts this ${b.kind} to accounts payable: the account set under Settings → ${moduleName}, else the one tagged Accounts payable in Ledger.` : "";
 
 		const pay = $("bd-payments");
 		if (payments.length === 0) pay.replaceChildren(el("p", { class: "muted small" }, b.status === "paid" ? (b.paid_entry_id ? `Recorded in journal entry #${b.paid_entry_id}.` : b.paid_by_tag ? `Paid elsewhere: its journal entry${b.journal_entry_id ? ` #${b.journal_entry_id}` : ""} was tagged "paid" in Ledger by ${b.paid_tag_by || "a person"}. ${moduleName} posted nothing for it. Taking the tag off there, or Reopen here, makes it unpaid again.` : "Marked paid by hand.") : "No matching bank transaction yet. It's matched when a statement with the payment is uploaded, or try Auto sort."));
@@ -2227,7 +2227,7 @@
 							: `PDFs and photos go to the connection for images${ai.images.model ? ` (${ai.images.model})` : ""}${ai.readsPdf ? "" : "; it reads photos of bills and receipts but not PDFs, so PDF amounts have to be typed in"}.`
 					}`)),
 		);
-		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${st.settings.ap_account || "none (bills are only tracked)"}.`;
+		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${st.settings.ap_account || "none (bills and receipts are only tracked)"}.`;
 		$("st-version").textContent = `Module ${st.version} on Ledger ${st.ledger}.`;
 		// Files an older version kept in the module's own storage move to Documents when Ledger starts; any left are shown here.
 		const n = st.files_for_documents || 0;

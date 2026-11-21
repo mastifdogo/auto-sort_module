@@ -581,6 +581,11 @@ changes until you choose one.
   the file is marked as that bill, receipt or statement), **Add it** / **Stage it** anyway, or
   Cancel. What the AI read is kept meanwhile, so adding it doesn't ask the AI again. The browser
   extension and the phone app send as before, without asking.
+- **Vendor tag on payments (0.20.2):** matching a bill or receipt to a statement line, or linking
+  it to a journal entry, links the vendor chosen on it to Ledger's list of customers and vendors
+  (adding it if it's new). The payment's entry is then tagged with that vendor when it's posted, the
+  same way customers are tagged, also when the entry was posted with the vendor already. Payments
+  posted before get their vendor tag once, when Ledger starts the module.
 - **Numbers on the tabs:** an amber number (styled like the "Choose account" pills, since 0.20.1) on Statements (lines needing review, statements
   waiting for their account), Bills and Receipts (ones to review), Duplicates and Inbox; a red
   number on Bills for unpaid bills past their due date.

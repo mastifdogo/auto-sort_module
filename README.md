@@ -945,6 +945,14 @@ inside the module and is downloaded from the Inbox tab.
 
 ## Changes
 
+- **0.22.0:** **A tax on each line item.** Every line item of a bill or receipt has a tax picker
+  (and "Tax for all…" sets every line at once). Taxes are a short list you set up under
+  "Taxes…" in Line items: a name, a rate in percent, and the account the tax is booked to when
+  you claim it back (GST, HST, VAT); a tax without an account (PST) is booked with the item's
+  category. Each tax is worked out on its items' amounts together and booked as its own line;
+  what the items and their taxes don't cover still goes to the bill's own category. Once a tax is
+  on a line its rate and account are fixed: turn it off and add a new one when a rate changes.
+  One tax per line; the rate is added to the item's amount (prices before tax).
 - **0.21.0:** **Linked entries** (Ledger 0.28.0). Posting a statement line that pays an entry
   another module tagged as owed (an invoice, hours) links the payment's entry to that entry, and
   reversing a posted duplicate links it to the entry kept, so opening either in Ledger shows the

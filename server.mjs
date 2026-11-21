@@ -44,6 +44,7 @@ import { MODULE_KEY, billInfoData, flippedData, parsedFromExtraction, statementD
 import { registerInbox } from "./lib/inbox.mjs";
 import { registerScanner } from "./lib/scanner-routes.mjs";
 import { registerAdoption } from "./lib/adopt.mjs";
+import { registerTaxes } from "./lib/taxes.mjs";
 import { candidateAccounts, examplesFromEntries, pickable, proposeCode, suggest } from "./lib/categorize.mjs";
 import { ParseError, parseAmount, parseDate, parseStatement, payeeKey } from "./lib/parse.mjs";
 
@@ -527,7 +528,8 @@ export default async function register(ctx) {
 			if (rowCount > 0) enqueue(sid);
 		}
 	};
-	const billHelpers = { q, T, bad, ai, requeue, stageStatement, readStatement, settleFile: null, files, tags, dtags };
+	const taxes = registerTaxes(ctx, { q, T, bad });
+	const billHelpers = { q, T, bad, ai, requeue, stageStatement, readStatement, settleFile: null, files, tags, dtags, taxes };
 	const bills = registerBills(ctx, billHelpers);
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });

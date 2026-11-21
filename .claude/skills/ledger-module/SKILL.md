@@ -338,6 +338,10 @@ Extract data and hand-offs to other modules.
   `matchPayables()` offers rows the entries other modules tagged billed /
   overdue / vendor and not paid (`transactions.pays_entry_id`, source `tag`,
   no AI); only posting the row (a person) sets `paid` on that entry.
+- Taxes on line items (0.22.0, `lib/taxes.mjs`, table `taxes`, `bill_items.tax_id`): the module's own
+  list (`/taxes` routes; Ledger has none). `linesFromItems()` books one line per tax (rounded once on
+  its items together) to the tax's `account_code`, or to the item's category when it has none. Rate
+  and account can't change once a line uses the tax (turn it off, add a new one).
 - Line items (`bill_items`, 0.16.0): `extractBill()` also returns `items`
   (`normalizeItem()` in lib/bills.mjs: description ≤ 100, quantity ≤ 4 decimals, unit word,
   `rate_cents`, `amount_cents`), stored at scan, never billable by themselves. A person ticks

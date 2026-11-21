@@ -619,6 +619,13 @@
 		accounts = (await api("/accounts")).data;
 		return accounts;
 	}
+	// Taxes to choose on the line items of bills and receipts (the module's own short list).
+	let taxes = [];
+	async function loadTaxes() {
+		try { taxes = (await api("/taxes")).data; } catch { /* the page works without them */ }
+		return taxes;
+	}
+	const taxLabel = (t) => (/\d\s*%/.test(t.name) ? t.name : `${t.name} ${t.rate}%`);
 	function accountLabel(code) {
 		const a = accounts.find((x) => x.code === code);
 		return a ? `${a.code} · ${a.name}` : code;
@@ -1375,7 +1382,7 @@
 	};
 
 	async function openBill(id) {
-		const [r] = await Promise.all([api(`/bills/${id}`).catch(fail), loadRoot()]);
+		const [r] = await Promise.all([api(`/bills/${id}`).catch(fail), loadRoot(), loadTaxes()]);
 		if (!r) return;
 		// A receipt opens on the Receipts tab, a bill on Bills (also after its type was changed).
 		const tab = r.bill.kind === "receipt" ? "receipts" : "bills";
@@ -1499,7 +1506,8 @@
 					el("td", {}, it.quantity == null ? "" : `${it.quantity}${it.unit ? ` ${it.unit}` : ""}`),
 					el("td", {}, it.rate_cents == null ? "" : `× ${money(it.rate_cents)}`),
 					el("td", { class: "num" }, it.amount_cents == null ? "" : `${money(it.amount_cents)} ${b.currency}`),
-					el("td", {}, it.account_code ? accountLabel(it.account_code) : ""))))),
+					el("td", {}, it.account_code ? accountLabel(it.account_code) : ""),
+					el("td", {}, it.tax ? `+ ${taxLabel(it.tax)}` : ""))))),
 				el("p", { class: "muted small" }, where)));
 			return;
 		}
@@ -1510,6 +1518,28 @@
 		const locked = !!b.journal_entry_id || !!b.paid_entry_id || payments.some((t) => t.status === "posted");
 		const rows = [];
 		const tbody = el("tbody");
+		const taxSum = el("p", { class: "muted small", "aria-live": "polite" });
+		const taxBox = el("div");
+		// A line's tax: none, one of the taxes in use, or the one it already has (even if turned off).
+		const fillTax = (r) => {
+			r.tax.replaceChildren(el("option", { value: "" }, "No tax"),
+				...taxes.filter((t) => t.active || t.id === r.taxId).map((t) => el("option", { value: t.id }, t.active ? taxLabel(t) : `${taxLabel(t)} (off)`)));
+			r.tax.value = taxes.some((t) => t.id === r.taxId) ? r.taxId : "";
+		};
+		// What the chosen taxes come to, as it will be booked (each tax on its items' amounts together).
+		const updateTax = () => {
+			const by = new Map();
+			for (const r of rows) {
+				const t = taxes.find((x) => x.id === r.taxId);
+				const amt = Math.round(Number(r.amount.value.trim().replace(/,/g, "")) * 100);
+				if (!t || !Number.isFinite(amt) || amt <= 0) continue;
+				by.set(t.id, { t, base: (by.get(t.id)?.base ?? 0) + amt });
+			}
+			taxSum.textContent = [...by.values()].map(({ t, base }) => {
+				const tax = Math.round(base * Number(t.rate) / 100);
+				return `${taxLabel(t)} on ${money(base)} = ${money(tax)} → ${t.account_code ? accountLabel(t.account_code) : "the item's category"}`;
+			}).join(" · ");
+		};
 		const addRow = (it = {}) => {
 			const r = {
 				id: it.id ?? null,
@@ -1520,7 +1550,13 @@
 				rate: el("input", { value: cents(it.rate_cents), inputmode: "decimal", placeholder: "Rate", style: "width:6rem" }),
 				amount: el("input", { value: cents(it.amount_cents), inputmode: "decimal", placeholder: "Amount", style: "width:6rem" }),
 				account: el("select", { title: "This item's own category (account). Left as it is, the item goes with the rest of the " + what + ".", "aria-label": "Category" }),
+				tax: el("select", { title: "The tax added to this item's amount", "aria-label": "Tax", style: "min-width:6.5rem" }),
 			};
+			r.taxId = it.tax_id ?? null;
+			fillTax(r);
+			r.tax.onchange = () => { r.taxId = r.tax.value || null; updateTax(); };
+			r.amount.oninput = updateTax;
+			r.tax.disabled = locked;
 			// Its own category, or the bill's: the whole bill is still categorized in one go above.
 			accountOptions(r.account, catOptions, { selected: it.account_code ?? null, placeholder: sameAs });
 			withNewAccount(r.account, { type: "expense", currency: b.currency });
@@ -1529,12 +1565,25 @@
 			const tr = el("tr", {},
 				el("td", {}, el("label", { class: "inline" }, r.billable, " Billable")),
 				el("td", { class: "wide" }, r.description),
-				el("td", {}, r.quantity), el("td", {}, r.unit), el("td", {}, r.rate), el("td", {}, r.amount), el("td", {}, r.account),
-				el("td", {}, el("button", { class: "btn", type: "button", title: "Remove this item", onclick: () => { rows.splice(rows.indexOf(r), 1); tr.remove(); } }, "✕")));
+				el("td", {}, r.quantity), el("td", {}, r.unit), el("td", {}, r.rate), el("td", {}, r.amount), el("td", {}, r.account), el("td", {}, r.tax),
+				el("td", {}, el("button", { class: "btn", type: "button", title: "Remove this item", onclick: () => { rows.splice(rows.indexOf(r), 1); tr.remove(); updateTax(); } }, "✕")));
 			rows.push(r);
 			tbody.append(tr);
 		};
 		for (const it of items) addRow(it);
+		updateTax();
+		// Same tax on every line: the usual case, one click.
+		const taxAll = el("select", { "aria-label": "Tax for all items", title: "Set the same tax on every item" });
+		const fillTaxAll = () => taxAll.replaceChildren(el("option", { value: "-" }, "Tax for all…"), el("option", { value: "" }, "No tax"), ...taxes.filter((t) => t.active).map((t) => el("option", { value: t.id }, taxLabel(t))));
+		fillTaxAll();
+		taxAll.disabled = locked;
+		taxAll.onchange = () => {
+			if (taxAll.value !== "-") for (const r of rows) { r.taxId = taxAll.value || null; fillTax(r); }
+			taxAll.value = "-";
+			updateTax();
+		};
+		const manage = el("button", { class: "btn", type: "button" }, "Taxes…");
+		manage.onclick = () => (taxBox.childElementCount ? taxBox.replaceChildren() : renderTaxes(taxBox, b, () => { for (const r of rows) fillTax(r); fillTaxAll(); updateTax(); }));
 		const save = el("button", { class: "btn primary", type: "button" }, "Save items");
 		save.onclick = async () => {
 			save.disabled = true;
@@ -1542,7 +1591,7 @@
 				const out = await api(`/bills/${b.id}/items`, { method: "PUT", body: JSON.stringify({ items: rows.map((r) => ({
 					id: r.id, billable: r.billable.checked, description: r.description.value, quantity: r.quantity.value.trim() || null,
 					unit: r.unit.value.trim(), rate: r.rate.value.trim() || null, amount: r.amount.value.trim() || null,
-					account_code: r.account.value || null,
+					account_code: r.account.value || null, tax_id: r.taxId,
 				})) }) });
 				const n = out.items.filter((it) => it.billable).length;
 				toast(n && out.rate_items && entry ? `Items saved; ${n} billable on entry #${entry}.` : "Items saved.");
@@ -1559,6 +1608,7 @@
 				rows.length = 0;
 				tbody.replaceChildren();
 				for (const it of d.items) addRow(it);
+				updateTax();
 				toast(`${d.items.length} item${d.items.length === 1 ? "" : "s"} found. Tick the billable ones, then Save items.`);
 			} catch (e) { fail(e); } finally { read.disabled = false; }
 		};
@@ -1568,11 +1618,40 @@
 			el("p", { class: "muted small" }, items.length ? where : `No line items yet. ${where}`),
 			el("p", { class: "muted small" }, locked
 				? "Posted: the items' categories are in the journal and can't change here."
-				: `Each item can have its own category. Items left as "Same as the ${what}", and whatever the items don't cover (tax, a tip), go to the ${what}'s own category, chosen above for the whole ${what}.`),
+				: `Each item can have its own category and its own tax. A tax is added to the item's amount and booked to the tax's account (or with the item, when the tax has none). Items left as "Same as the ${what}", and whatever the items and their taxes don't cover (a tip, tax not chosen here), go to the ${what}'s own category, chosen above for the whole ${what}.`),
 			el("table", { class: "stack" }, tbody),
+			taxSum,
 			el("div", { class: "row", style: "margin:0.4rem 0" }, save, b.has_document || b.body_text ? read : "",
-				el("button", { class: "btn", type: "button", onclick: () => addRow() }, "Add an item"), all),
+				el("button", { class: "btn", type: "button", onclick: () => addRow() }, "Add an item"), all, taxAll, manage),
+			taxBox,
 		);
+	}
+
+	/** The list of taxes to choose from: add one, rename, turn off or remove. changed() after each change. */
+	function renderTaxes(box, b, changed) {
+		const again = async () => { await loadTaxes(); changed(); renderTaxes(box, b, changed); };
+		const act = (fn) => async () => { try { await fn(); await again(); } catch (e) { fail(e); } };
+		const list = el("tbody", {}, ...taxes.map((t) => el("tr", {},
+			el("td", { class: "wide" }, el("strong", {}, t.name), t.active ? "" : " (off)"),
+			el("td", {}, `${t.rate}%`),
+			el("td", {}, t.account_code ? `booked to ${accountLabel(t.account_code)}` : "stays with the item's category"),
+			el("td", {}, t.used ? `on ${t.used} item${t.used === 1 ? "" : "s"}` : "not used"),
+			el("td", {},
+				el("button", { class: "btn", type: "button", onclick: act(async () => { const n = prompt("Name of the tax", t.name); if (n && n.trim() !== t.name) await api(`/taxes/${t.id}`, { method: "PUT", body: JSON.stringify({ name: n }) }); }) }, "Rename"), " ",
+				el("button", { class: "btn", type: "button", title: t.active ? "Stop offering it on new lines; lines that have it keep it" : "Offer it again", onclick: act(() => api(`/taxes/${t.id}`, { method: "PUT", body: JSON.stringify({ active: !t.active }) })) }, t.active ? "Turn off" : "Turn on"), " ",
+				t.used ? "" : el("button", { class: "btn", type: "button", onclick: act(() => api(`/taxes/${t.id}`, { method: "DELETE" })) }, "Remove")))));
+		const name = el("input", { placeholder: "Name, e.g. GST", maxlength: 40, style: "flex:1 1 8rem", "aria-label": "Tax name" });
+		const rate = el("input", { placeholder: "Rate %", inputmode: "decimal", style: "width:5.5rem", "aria-label": "Rate in percent" });
+		const account = el("select", { "aria-label": "Account the tax is booked to", title: "Where the tax is booked when you claim it back. Left empty, the tax stays with the item's category." });
+		accountOptions(account, accounts, { placeholder: "Not claimed back (stays with the item)" });
+		withNewAccount(account, { type: "asset", currency: b.currency });
+		const add = el("button", { class: "btn primary", type: "button" }, "Add tax");
+		add.onclick = act(() => api("/taxes", { method: "POST", body: JSON.stringify({ name: name.value, rate: rate.value.trim(), account_code: account.value || null }) }));
+		box.replaceChildren(el("div", { class: "panel", style: "margin-top:0.5rem" },
+			el("h2", { style: "margin-top:0" }, "Taxes"),
+			el("p", { class: "muted small" }, "The taxes you can choose on a line item. A tax you claim back (GST, HST, VAT) gets the account it is booked to; one you don't (PST) is left without and is booked with the item. Once a tax is on a line its rate and account are fixed: turn it off and add a new one when a rate changes."),
+			taxes.length ? el("table", { class: "stack" }, list) : "",
+			role === "viewer" ? "" : el("div", { class: "row", style: "margin-top:0.5rem" }, name, rate, account, add)));
 	}
 
 	/** Already in the journal (no AI), Auto sort's matches to approve, or the entry it's linked to. */

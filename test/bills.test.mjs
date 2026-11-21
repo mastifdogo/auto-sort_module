@@ -189,6 +189,42 @@ test("line items with their own category: one line each, the rest on the bill's 
 	assert.match(linesFromItems({ ...bill, amount_cents: null }, [item("Hammer", 6000n, "6200")]).error, /amount/);
 });
 
+test("line items with a tax: one line per tax on its items together, the rest on the bill's own account", async () => {
+	const { linesFromItems } = await import("../lib/bill-routes.mjs");
+	const { parseRate, rateText, taxCents } = await import("../lib/taxes.mjs");
+	assert.equal(parseRate("5"), 50000n);
+	assert.equal(parseRate("9.975 %"), 99750n);
+	for (const bad of ["0", "101", "-5", "5.12345", "abc", "", null]) assert.equal(parseRate(bad), null, String(bad));
+	assert.equal(rateText("5.0000"), "5");
+	assert.equal(rateText("9.9750"), "9.975");
+	assert.equal(taxCents(1050n, "5"), 53n, "52.5 rounds half up");
+	const gst = { id: "1", name: "GST 5%", rate: "5", account_code: "1300" };
+	const pst = { id: "2", name: "PST 7%", rate: "7", account_code: null };
+	const bill = { kind: "receipt", amount_cents: 11300n, account_code: "6100" };
+	const item = (description, amount_cents, account_code = null, tax = null) => ({ description, amount_cents, account_code, tax });
+	// A tax with an account, on items left to the receipt: the tax line and the rest.
+	assert.deepEqual(linesFromItems(bill, [item("Hammer", 6000n, null, gst), item("Gas", 4000n, null, gst), item("Bag", 300n)]).lines, [
+		{ description: "GST 5% on 100.00 (2 items)", amount: 500n, account_code: "1300" },
+		{ description: "Other items and other charges", amount: 10800n, account_code: "6100" },
+	]);
+	// Rounded once per tax, not per line: 3 × 0.33 at 5% is 0.05, not 3 × 0.02.
+	assert.equal(linesFromItems(bill, [item("a", 33n, null, gst), item("b", 33n, null, gst), item("c", 33n, null, gst)]).lines[0].amount, 5n);
+	// A tax without an account goes with the item's own category, and stays in the rest otherwise.
+	assert.deepEqual(linesFromItems(bill, [item("Hammer", 6000n, "6200", pst), item("Gas", 4000n, null, pst)]).lines, [
+		{ description: "Hammer", amount: 6000n, account_code: "6200" },
+		{ description: "PST 7% on 60.00 (1 item)", amount: 420n, account_code: "6200" },
+		{ description: "Other items and other charges", amount: 4880n, account_code: "6100" },
+	]);
+	assert.deepEqual(linesFromItems(bill, [item("Gas", 4000n, null, pst)]), { lines: [] }, "nothing to book apart");
+	// Everything covered: no rest line.
+	assert.deepEqual(linesFromItems({ ...bill, amount_cents: 10500n }, [item("All", 10000n, "6200", gst)]).lines, [
+		{ description: "All", amount: 10000n, account_code: "6200" },
+		{ description: "GST 5% on 100.00 (1 item)", amount: 500n, account_code: "1300" },
+	]);
+	assert.match(linesFromItems({ ...bill, amount_cents: 10400n }, [item("All", 10000n, "6200", gst)]).error, /and their tax add up to 105\.00, more than/);
+	assert.match(linesFromItems(bill, [item("No amount", null, null, gst)]).error, /needs an amount above zero to have a tax/);
+});
+
 test("findSimilarBills: the same one, then similar ones, best first", () => {
 	const bill = { vendor: "Costco Wholesale", invoice_number: "", bill_date: "2026-11-10", due_date: null, amount_cents: 10000n };
 	const existing = [

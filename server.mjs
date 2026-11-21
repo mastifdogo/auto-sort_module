@@ -575,6 +575,8 @@ export default async function register(ctx) {
 			.forEach(async (org) => {
 				const n = await tags.backfill();
 				if (n) ctx.log.info("bill entries tagged", { organization: org.id, bills: n });
+				const p = await tags.backfillPaymentVendors();
+				if (p) ctx.log.info("bill payments tagged with their vendor", { organization: org.id, entries: p });
 			})
 			.catch((err) => ctx.log.warn("tagging bill entries failed", { err: String(err?.message || err) }));
 	}
@@ -1061,7 +1063,7 @@ export default async function register(ctx) {
 				// A split receipt (or a bill not posted to payables) books each of its lines.
 				const split = t.bill_id !== null && amt < 0n ? await splitLinesFor(t.bill_id, t.code, billAbs) : null;
 				// Paying a bill: the entry is with its vendor (Ledger's list of customers and vendors).
-				const vendorEntity = t.bill_id !== null ? (await bills.getBill(String(t.bill_id)).catch(() => null))?.vendor_entity_id : null;
+				const vendorEntity = t.bill_id !== null ? await bills.vendorOf(t.bill_id).catch(() => null) : null;
 				// The row pays an entry another module tagged as owed (Ledger 0.23.0), if it still books to that
 				// entry's receivable or payable and the entry isn't paid or reversed since.
 				const pays = t.bill_id === null && t.pays_entry_id != null ? await tags.payableFor(t) : null;

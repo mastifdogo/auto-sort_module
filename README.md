@@ -564,6 +564,19 @@ result with another amount than the bill's is marked. **Link** counts the bill a
 journal entry; **Match** makes a statement line its payment. Nothing is sent to the AI and nothing
 changes until you choose one.
 
+**Splitting a payment, skipping duplicates, numbers on the tabs (0.20.0).**
+
+- **Split a payment:** when a statement line you match to a bill or receipt is larger than it (one
+  card payment for a receipt and something else), you're offered a split: the bill's amount pays
+  it, and the rest goes to an account you choose (with a note). Posting the line books both parts
+  in one entry. The bill's view also lists larger unposted payments dated near it, with
+  **Split and match…**. A smaller line can still be matched as a partial payment, after a question.
+- **Skip on the Duplicates tab:** **Skip** hides an entry for now without marking it "not
+  duplicates". **Skipped** lists what was skipped, by whom and when; **Unskip** brings it back.
+- **Numbers on the tabs:** an orange number on Statements (lines needing review, statements
+  waiting for their account), Bills and Receipts (ones to review), Duplicates and Inbox; a red
+  number on Bills for unpaid bills past their due date.
+
 **Auto sort on a statement (LLM).** On an open statement, **Auto sort** looks wider and lets the
 LLM judge:
 

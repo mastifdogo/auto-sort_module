@@ -7,13 +7,13 @@
 <style>
 	:root {
 		--bg: #fff; --panel: #f6f8fa; --text: #1d232b; --muted: #5d6875; --border: #dde1e6; --accent: #1f6feb;
-		--good: #1a7f37; --warn: #9a6700; --bad: #cf222e; --good-bg: #dafbe1; --warn-bg: #fff8c5; --bad-bg: #ffebe9;
+		--good: #1a7f37; --warn: #9a6700; --bad: #cf222e; --good-bg: #dafbe1; --warn-bg: #fff8c5; --bad-bg: #ffebe9; --orange: #d4600a;
 		color-scheme: light;
 	}
 	@media (prefers-color-scheme: dark) {
 		:root {
 			--bg: #171b21; --panel: #1e242c; --text: #e3e7ec; --muted: #97a1ad; --border: #2c333c; --accent: #4c8dff;
-			--good: #3fb950; --warn: #d29922; --bad: #f85149; --good-bg: #12261a; --warn-bg: #2b2311; --bad-bg: #301617;
+			--good: #3fb950; --warn: #d29922; --bad: #f85149; --good-bg: #12261a; --warn-bg: #2b2311; --bad-bg: #301617; --orange: #db6d28;
 			color-scheme: dark;
 		}
 	}
@@ -54,7 +54,8 @@
 	.pill.good { background: var(--good-bg); color: var(--good); }
 	.pill.warn { background: var(--warn-bg); color: var(--warn); }
 	.pill.bad { background: var(--bad-bg); color: var(--bad); }
-	.badge { display: inline-block; min-width: 1.2em; padding: 0 0.35rem; margin-left: 0.25rem; border-radius: 999px; font-size: 11px; font-weight: 700; background: var(--warn-bg); color: var(--warn); }
+	.badge { display: inline-block; min-width: 1.2em; padding: 0 0.35rem; margin-left: 0.25rem; border-radius: 999px; font-size: 11px; font-weight: 700; text-align: center; background: var(--orange); color: #fff; }
+	.badge.red { background: var(--bad); }
 	.newacct { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin-top: 4px; padding: 6px; border: 1px dashed var(--border); border-radius: 6px; }
 	.newacct input { width: 6.5rem; }
 	.newacct input.name { width: 11rem; }
@@ -152,11 +153,11 @@
 </head>
 <body>
 <nav class="tabs">
-	<button data-tab="inbox">Inbox<span id="inbox-count" class="badge hidden"></span></button>
-	<button data-tab="review" class="active">Statements</button>
-	<button data-tab="bills">Bills</button>
-	<button data-tab="receipts">Receipts</button>
-	<button data-tab="duplicates">Duplicates<span id="dup-count" class="badge hidden"></span></button>
+	<button data-tab="inbox">Inbox<span id="inbox-count" class="badge hidden" title="New files to review"></span></button>
+	<button data-tab="review" class="active">Statements<span id="review-count" class="badge hidden" title="Transactions needing review"></span></button>
+	<button data-tab="bills">Bills<span id="bills-count" class="badge hidden" title="Bills needing review"></span><span id="overdue-count" class="badge red hidden" title="Overdue bills"></span></button>
+	<button data-tab="receipts">Receipts<span id="receipts-count" class="badge hidden" title="Receipts needing review"></span></button>
+	<button data-tab="duplicates">Duplicates<span id="dup-count" class="badge hidden" title="Possible duplicates to review"></span></button>
 	<button data-tab="rules">Learned rules</button>
 	<button data-tab="scan">Scan</button>
 	<button data-tab="settings">Status</button>
@@ -443,6 +444,7 @@
 		<h2>Payment</h2>
 		<div id="bd-payments"></div>
 		<div id="bd-candidates"></div>
+		<div id="bd-splitpay"></div>
 		<div id="bd-matches"></div>
 		<div id="bd-search"></div>
 		<h2>Source</h2>
@@ -470,8 +472,10 @@
 			</select>
 		</label>
 		<button class="btn primary" id="dup-recheck">Recheck</button>
+		<button class="btn" id="dup-skipped-btn" title="Entries you skipped; bring any of them back">Skipped</button>
 		<span id="dup-status" class="muted small"></span>
 	</div>
+	<div id="dup-skipped" class="hidden"></div>
 	<div id="dup-list"></div>
 </section>
 
@@ -790,6 +794,7 @@
 	async function loadStatements() {
 		if (accounts.length === 0) await loadAccounts();
 		const { data } = await api("/statements");
+		loadCounts();
 		$("list-empty").classList.toggle("hidden", data.length > 0);
 		$("statements").classList.toggle("hidden", data.length === 0);
 		$("statements").tBodies[0].replaceChildren(
@@ -1276,6 +1281,7 @@
 		if (accounts.length === 0) await loadAccounts();
 		const list = await api(`/bills?status=${encodeURIComponent($("b-filter").value)}&kind=${billKind}`);
 		billsList = list.data;
+		loadCounts();
 		const body = $("bills").tBodies[0];
 		if (billsList.length === 0) {
 			body.replaceChildren(el("tr", {}, el("td", { colspan: 7, class: "muted" }, billKind === "receipt" ? "No receipts here." : "No bills here.")));
@@ -1588,6 +1594,47 @@
 			for (const x of sg.data) box.append(suggestionNote(x, after));
 		}).catch(() => {});
 	}
+	/**
+	 * Matches a statement line to the bill as its payment. A line for more than the bill is split
+	 * (the bill's amount pays it, the rest goes to an account you choose); a smaller one is a
+	 * partial payment and is asked about. Answers whether it matched (false: the split form is open).
+	 */
+	async function payBill(b, t) {
+		const out = -BigInt(t.amount_cents);
+		const owed = b.amount_cents == null ? null : BigInt(b.amount_cents);
+		if (owed === null || out === owed) { await billAction("match", { transaction_id: t.id }); return true; }
+		const what = b.kind === "receipt" ? "receipt" : "bill";
+		if (out < owed) {
+			if (!confirm(`This transaction (${money(out)}) is less than the ${what} (${money(owed)}). Match it as a partial payment anyway?`)) return false;
+			await billAction("match", { transaction_id: t.id });
+			return true;
+		}
+		const rest = out - owed;
+		const sel = el("select", { "aria-label": "Account for the rest" });
+		accountOptions(sel, accounts.filter((a) => a.currency === b.currency), { placeholder: "Choose account…" });
+		withNewAccount(sel, () => ({ type: "expense", currency: b.currency }));
+		const memo = el("input", { placeholder: "What the rest was for (optional)", maxlength: "500", style: "flex:1 1 12rem" });
+		const box = $("bd-splitpay");
+		const close = () => box.replaceChildren();
+		const go = el("button", { class: "btn primary", type: "button" }, "Split and match");
+		go.onclick = async () => {
+			if (!sel.value) return toast("Choose the account for the rest of the transaction.");
+			go.disabled = true;
+			const r = await billAction("match", { transaction_id: t.id, split: { account_code: sel.value, memo: memo.value } });
+			go.disabled = false;
+			if (r) { close(); toast(`Split: ${money(owed)} pays the ${what}, ${money(rest)} goes to ${accountLabel(sel.value)} when it's posted.`); }
+		};
+		box.replaceChildren(el("div", { class: "panel", style: "margin-top:0.5rem" },
+			el("h2", { style: "margin-top:0" }, "Split the transaction?"),
+			el("p", { class: "small" }, `${t.date} · ${t.description}: ${money(out)} ${b.currency}, but the ${what} is ${money(owed)}. Split it: ${money(owed)} pays the ${what}, and the other ${money(rest)} goes to:`),
+			el("div", { class: "row" }, sel, memo),
+			el("div", { class: "row", style: "margin-top:0.5rem" }, go,
+				el("button", { class: "btn", type: "button", title: `Book the whole ${money(out)} as the ${what}'s payment`, onclick: async () => { if (await billAction("match", { transaction_id: t.id })) close(); } }, "Match the whole amount"),
+				el("button", { class: "btn", type: "button", onclick: close }, "Cancel"))));
+		box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+		return false;
+	}
+
 	// Auto sort on a bill or receipt: a search of the journal (and of statement lines not posted
 	// yet) for similar transactions. No AI: it starts from the exact amount and the dates around
 	// it; the amounts, the dates and the accounts can be changed and searched again.
@@ -1620,7 +1667,7 @@
 		const link = async (x) => {
 			try {
 				if (x.kind === "entry") await billAction("link-entry", { entry_id: x.id });
-				else await billAction("match", { transaction_id: x.id });
+				else if (!(await payBill(b, x))) return;
 				billSearch = null;
 				box.replaceChildren();
 			} catch (e) { fail(e); }
@@ -1700,7 +1747,8 @@
 					el("td", { class: "nowrap" }, t.date),
 					el("td", {}, t.description),
 					el("td", { class: "num neg" }, `${money(t.amount_cents)} ${b.currency}`),
-					el("td", { class: "wide" }, accountLabel(t.account_code), " → ", accountLabel(t.code || "")),
+					el("td", { class: "wide" }, accountLabel(t.account_code), " → ", accountLabel(t.code || ""),
+						t.split_cents ? el("div", { class: "small muted" }, `Split: ${money(-BigInt(t.amount_cents) - BigInt(t.split_cents))} pays this, ${money(t.split_cents)} → ${accountLabel(t.split_account_code)}${t.split_memo ? ` (${t.split_memo})` : ""}`) : null),
 					el("td", {}, t.status === "posted" ? el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`), amendedPill(t)) : el("span", { class: "pill plain" }, "Waiting to be posted")),
 					el("td", {}, t.status !== "posted" ? el("button", { class: "btn", onclick: () => billAction("unmatch") }, "Not this one") : el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "Open statement")),
 				),
@@ -1708,20 +1756,22 @@
 		);
 		renderBillMatches(b, payments);
 		$("bd-candidates").replaceChildren();
+		$("bd-splitpay").replaceChildren();
 		if (open && payments.length === 0 && b.amount_cents != null) {
 			api(`/bills/${b.id}/candidates`).then(({ data }) => {
 				if (data.length === 0 || currentBill?.id !== b.id) return;
+				const row = (t) => el("tr", {},
+					el("td", { class: "nowrap" }, t.date),
+					el("td", {}, t.description, t.split ? el("span", { class: "pill warn", style: "margin-left:6px" }, `${money(-BigInt(t.amount_cents) - BigInt(b.amount_cents))} more`) : ""),
+					el("td", { class: "num neg" }, `${money(t.amount_cents)} ${b.currency}`),
+					el("td", {}, accountLabel(t.account_code)),
+					el("td", {}, el("button", { class: "btn", onclick: () => payBill(b, t) }, t.split ? "Split and match…" : "This is the payment")),
+				);
+				const exact = data.filter((t) => !t.split);
+				const larger = data.filter((t) => t.split);
 				$("bd-candidates").replaceChildren(
-					el("p", { class: "small" }, "Unposted transactions with this amount:"),
-					el("table", { class: "stack" }, el("tbody", {}, ...data.map((t) =>
-						el("tr", {},
-							el("td", { class: "nowrap" }, t.date),
-							el("td", {}, t.description),
-							el("td", { class: "num neg" }, `${money(t.amount_cents)} ${b.currency}`),
-							el("td", {}, accountLabel(t.account_code)),
-							el("td", {}, el("button", { class: "btn", onclick: () => billAction("match", { transaction_id: t.id }) }, "This is the payment")),
-						),
-					))),
+					...(exact.length ? [el("p", { class: "small" }, "Unposted transactions with this amount:"), el("table", { class: "stack" }, el("tbody", {}, ...exact.map(row)))] : []),
+					...(larger.length ? [el("p", { class: "small" }, `Larger unposted payments dated near it (part of one may pay this ${b.kind === "receipt" ? "receipt" : "bill"}; split it):`), el("table", { class: "stack" }, el("tbody", {}, ...larger.map(row)))] : []),
 				);
 			}).catch(() => {});
 		}
@@ -1884,7 +1934,23 @@
 	}
 	function loadDupCount() {
 		Promise.all([api("/duplicates"), api("/journal-matches")]).then(([d, j]) => setDupCount(d.count + j.data.length)).catch(() => {});
+		loadCounts();
 	}
+	// The numbers on the tabs: orange for what needs review, red for overdue bills.
+	function setBadge(id, n) {
+		$(id).textContent = String(n || 0);
+		$(id).classList.toggle("hidden", !n);
+	}
+	function loadCounts() {
+		api("/counts").then((c) => {
+			setBadge("review-count", c.review);
+			setBadge("bills-count", c.bills);
+			setBadge("receipts-count", c.receipts);
+			setBadge("overdue-count", c.overdue);
+			$("overdue-count").title = `${c.overdue} overdue bill${c.overdue === 1 ? "" : "s"}`;
+		}).catch(() => {});
+	}
+	setInterval(() => { if (!document.hidden) loadCounts(); }, 60_000);
 	function dupSide(title, t, extra = null) {
 		return el("div", { class: "side" },
 			el("div", { class: "small muted" }, title),
@@ -1904,6 +1970,30 @@
 			await loadDuplicates();
 		} catch (e) { fail(e); }
 	}
+	// Skipped entries: hidden from the list (not marked "not duplicates") until brought back.
+	let showSkipped = false;
+	$("dup-skipped-btn").onclick = () => { showSkipped = !showSkipped; loadSkipped().catch(fail); };
+	async function loadSkipped() {
+		const { data } = await api("/duplicates/skipped");
+		$("dup-skipped-btn").textContent = showSkipped ? "Hide skipped" : `Skipped${data.length ? ` (${data.length})` : ""}`;
+		const box = $("dup-skipped");
+		box.classList.toggle("hidden", !showSkipped);
+		if (!showSkipped) return box.replaceChildren();
+		const line = (t) => t ? `${t.date} · ${money(t.amount_cents)} · ${t.description}${t.status && t.status !== "new" ? ` (${t.status})` : ""}` : "(gone)";
+		const what = (k) =>
+			k.kind === "pair" ? [el("div", {}, "Uploaded twice? ", line(k.tx)), el("div", {}, "and ", line(k.other))]
+			: k.kind === "entry" ? [el("div", {}, "Already in the journal? ", line(k.tx)), el("div", { class: "muted" }, `and journal entry #${k.entry_id}`)]
+			: [el("div", {}, `${k.bill?.kind === "receipt" ? "Receipt" : "Bill"} already in the journal? `, k.bill ? `${k.bill.vendor || "(unknown)"}${k.bill.invoice_number ? ` ${k.bill.invoice_number}` : ""} · ${k.bill.amount_cents == null ? "—" : money(k.bill.amount_cents)}${k.bill.date ? ` · ${k.bill.date}` : ""}` : "(gone)"), el("div", { class: "muted" }, `and journal entry #${k.entry_id}`)];
+		box.replaceChildren(el("div", { class: "panel", style: "margin-bottom:0.75rem" },
+			el("h2", { style: "margin-top:0" }, "Skipped"),
+			data.length === 0 ? el("p", { class: "muted" }, "Nothing skipped.") :
+			el("table", { class: "stack" }, el("tbody", {}, ...data.map((k) => el("tr", {},
+				el("td", { class: "wide" }, ...what(k)),
+				el("td", { class: "small muted" }, `Skipped by ${k.created_by || "someone"}, ${new Date(k.created_at).toLocaleString()}`),
+				el("td", {}, role === "viewer" ? "" : el("button", { class: "btn", onclick: async () => {
+					try { await api(`/duplicates/skipped/${k.id}/restore`, { method: "POST" }); toast("Back on the list."); await loadDuplicates(); } catch (e) { fail(e); }
+				} }, "Unskip"))))))));
+	}
 	async function loadDuplicates() {
 		if (accounts.length === 0) await loadAccounts();
 		const period = $("dup-period").value;
@@ -1916,11 +2006,13 @@
 				el("div", { class: "dup" }, dupSide(p.keep.status === "posted" ? `Keep (posted${p.keep.journal_entry_id ? `, entry #${p.keep.journal_entry_id}` : ""})` : "Keep", p.keep, rowInfo(p.keep)), dupSide(p.both_posted ? `Reverse (posted, entry #${p.merge.journal_entry_id})` : "Merge away", p.merge, rowInfo(p.merge))),
 				p.both_posted ? el("div", { class: "row", style: "margin-top:0.5rem" },
 					el("button", { class: "btn danger", onclick: () => confirm(`Reverse journal entry #${p.merge.journal_entry_id}? A reversing entry is posted today; entry #${p.keep.journal_entry_id} stays.`) && dupAction("/duplicates/reverse", { merge_id: p.merge.id, keep_id: p.keep.id }, `Entry #${p.merge.journal_entry_id} reversed.`) }, "Reverse the copy"),
-					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, other_id: p.keep.id }, "Marked as not duplicates.") }, "Not duplicates")) :
+					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, other_id: p.keep.id }, "Marked as not duplicates.") }, "Not duplicates"),
+					el("button", { class: "btn", title: "Hide it for now; it stays under Skipped, where you can bring it back", onclick: () => dupAction("/duplicates/skip", { kind: "pair", tx_id: p.merge.id, other_id: p.keep.id }, "Skipped. It's under Skipped if you want it back.") }, "Skip")) :
 				el("div", { class: "row", style: "margin-top:0.5rem" },
 					el("button", { class: "btn primary", onclick: () => dupAction("/duplicates/merge", { merge_id: p.merge.id, keep_id: p.keep.id }, "Merged.") }, "Merge"),
 					p.keep.status === "new" ? el("button", { class: "btn", onclick: () => dupAction("/duplicates/merge", { merge_id: p.keep.id, keep_id: p.merge.id }, "Merged; the other copy is kept.") }, "Merge, keep the other copy") : null,
-					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, other_id: p.keep.id }, "Marked as not duplicates.") }, "Not duplicates")))),
+					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, other_id: p.keep.id }, "Marked as not duplicates.") }, "Not duplicates"),
+					el("button", { class: "btn", title: "Hide it for now; it stays under Skipped, where you can bring it back", onclick: () => dupAction("/duplicates/skip", { kind: "pair", tx_id: p.merge.id, other_id: p.keep.id }, "Skipped. It's under Skipped if you want it back.") }, "Skip")))),
 			...d.entries.map((p) => el("div", { class: "panel" },
 				el("div", { class: "small", style: "margin-bottom:0.4rem" }, el("span", { class: `pill ${p.score >= 0.85 ? "warn" : "plain"}` }, `${Math.round(p.score * 100)}% alike`), " Already in the journal?"),
 				el("div", { class: "dup" },
@@ -1928,7 +2020,8 @@
 					dupSide("Staged, not posted", p.merge, rowInfo(p.merge))),
 				el("div", { class: "row", style: "margin-top:0.5rem" },
 					el("button", { class: "btn primary", onclick: () => dupAction("/duplicates/merge", { merge_id: p.merge.id, entry_id: p.entry.id }, "Merged into the journal entry; the staged row won't be posted.") }, "Merge into the entry"),
-					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, entry_id: p.entry.id }, "Marked as not duplicates.") }, "Not duplicates")))),
+					el("button", { class: "btn", onclick: () => dupAction("/duplicates/dismiss", { tx_id: p.merge.id, entry_id: p.entry.id }, "Marked as not duplicates.") }, "Not duplicates"),
+					el("button", { class: "btn", title: "Hide it for now; it stays under Skipped, where you can bring it back", onclick: () => dupAction("/duplicates/skip", { kind: "entry", tx_id: p.merge.id, entry_id: p.entry.id }, "Skipped. It's under Skipped if you want it back.") }, "Skip")))),
 		];
 		for (const m of jm.data) {
 			const what = m.bill.kind === "receipt" ? "Receipt" : "Bill";
@@ -1941,8 +2034,10 @@
 				el("div", { class: "row", style: "margin-top:0.5rem" },
 					el("button", { class: "btn primary", onclick: async () => {
 						try { await api(`/bills/${m.bill.id}/link-entry`, { method: "POST", body: JSON.stringify({ entry_id: m.entry.id }) }); toast(`${what} linked to entry #${m.entry.id}.`); await loadDuplicates(); } catch (e) { fail(e); }
-					} }, "Link"))));
+					} }, "Link"),
+					el("button", { class: "btn", title: "Hide it for now; it stays under Skipped, where you can bring it back", onclick: () => dupAction("/duplicates/skip", { kind: "bill", bill_id: m.bill.id, entry_id: m.entry.id }, "Skipped. It's under Skipped if you want it back.") }, "Skip"))));
 		}
+		loadSkipped().catch(() => {});
 		$("dup-list").replaceChildren(...(items.length ? items : [el("p", { class: "muted" }, "No duplicates found among the transactions waiting to be posted, and no bills or receipts found in the journal.")]));
 	}
 

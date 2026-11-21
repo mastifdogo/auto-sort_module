@@ -563,6 +563,24 @@ export default async function register(ctx) {
 	// -----------------------------------------------------------------------
 
 	// GET /status: whether Ledger's LLM API is available to this module, for the page.
+	// GET /counts: the numbers on the tabs. review: unposted statement lines that need a look (no
+	// account, or a suggestion below the review threshold) and statements waiting for their account;
+	// bills / receipts: ones still to review (status new); overdue: unpaid bills past their due date.
+	ctx.route("GET", "/counts", async () => {
+		const { review_threshold } = await readSettings();
+		const { rows } = await q(
+			`SELECT (SELECT count(*) FROM ${T("transactions")} t JOIN ${T("statements")} st ON st.id = t.statement_id AND st.status <> 'needs_account'
+			          WHERE t.status = 'new' AND (COALESCE(t.chosen_code, t.suggested_code) IS NULL
+			                 OR (t.chosen_code IS NULL AND COALESCE(t.confidence, 0) < $1)))::int
+			      + (SELECT count(*) FROM ${T("statements")} s WHERE s.status IN ('needs_account', 'error'))::int AS review,
+			        (SELECT count(*) FROM ${T("bills")} WHERE kind = 'bill' AND status = 'new')::int AS bills,
+			        (SELECT count(*) FROM ${T("bills")} WHERE kind = 'receipt' AND status = 'new')::int AS receipts,
+			        (SELECT count(*) FROM ${T("bills")} WHERE kind = 'bill' AND status IN ('new', 'open') AND due_date < current_date)::int AS overdue`,
+			[review_threshold],
+		);
+		return rows[0];
+	});
+
 	ctx.route("GET", "/status", async (req) => {
 		const [llm, cfg] = await Promise.all([ctx.llm.status(), readSettings()]);
 		const { ap_account } = await ctx.settings.get();
@@ -829,7 +847,7 @@ export default async function register(ctx) {
 		);
 		await q(
 			`UPDATE ${T("transactions")} SET account_code = $2, amount_cents = CASE WHEN $3 THEN -amount_cents ELSE amount_cents END,
-			        suggested_code = NULL, confidence = NULL, reason = '', source = '', bill_id = NULL, pays_entry_id = NULL, transfer_tx_id = NULL, transfer_entry_id = NULL, error = NULL
+			        suggested_code = NULL, confidence = NULL, reason = '', source = '', bill_id = NULL, split_cents = NULL, split_account_code = NULL, pays_entry_id = NULL, transfer_tx_id = NULL, transfer_entry_id = NULL, error = NULL
 			  WHERE statement_id = $1 AND status <> 'posted'`,
 			[statement.id, account.code, flip],
 		);
@@ -967,7 +985,8 @@ export default async function register(ctx) {
 			const claim = await q(
 				`UPDATE ${T("transactions")} SET status = 'posting' WHERE id = $1 AND status = 'new'
 				 RETURNING tx_date::text AS date, description, memo, amount_cents, fitid, account_code, COALESCE(chosen_code, suggested_code) AS code, bill_id, statement_id,
-				           transfer_tx_id, transfer_entry_id, pays_entry_id`,
+				           transfer_tx_id, transfer_entry_id, pays_entry_id,
+				           split_cents, split_account_code, split_memo`,
 				[id],
 			);
 			if (claim.rowCount === 0) continue;
@@ -999,8 +1018,11 @@ export default async function register(ctx) {
 					results.already_recorded++;
 					continue;
 				}
+				// A row that pays a bill in part: the bill's share pays it, the rest goes to the account chosen for it.
+				const rest = t.bill_id !== null && amt < 0n && t.split_cents != null && t.split_account_code && BigInt(t.split_cents) < abs ? BigInt(t.split_cents) : 0n;
+				const billAbs = abs - rest;
 				// A split receipt (or a bill not posted to payables) books each of its lines.
-				const split = t.bill_id !== null && amt < 0n ? await splitLinesFor(t.bill_id, t.code, abs) : null;
+				const split = t.bill_id !== null && amt < 0n ? await splitLinesFor(t.bill_id, t.code, billAbs) : null;
 				// Paying a bill: the entry is with its vendor (Ledger's list of customers and vendors).
 				const vendorEntity = t.bill_id !== null ? (await bills.getBill(String(t.bill_id)).catch(() => null))?.vendor_entity_id : null;
 				// The row pays an entry another module tagged as owed (Ledger 0.23.0), if it still books to that
@@ -1013,7 +1035,8 @@ export default async function register(ctx) {
 						reference: (t.fitid || `categorizer ${statement.id}/${id}`).slice(0, 100),
 						lines: [
 							{ account_code: t.account_code, debit_cents: amt > 0n ? abs : 0n, credit_cents: amt < 0n ? abs : 0n, memo: t.memo.slice(0, 500) },
-							...(split ?? [{ account_code: t.code, debit_cents: amt < 0n ? abs : 0n, credit_cents: amt > 0n ? abs : 0n, memo: "" }]),
+							...(split ?? [{ account_code: t.code, debit_cents: amt < 0n ? billAbs : 0n, credit_cents: amt > 0n ? abs : 0n, memo: "" }]),
+							...(rest > 0n ? [{ account_code: t.split_account_code, debit_cents: rest, credit_cents: 0n, memo: (t.split_memo || "Rest of the payment").slice(0, 500) }] : []),
 						],
 						links: [link],
 						...(vendorEntity ? { entity_id: Number(vendorEntity) } : {}),

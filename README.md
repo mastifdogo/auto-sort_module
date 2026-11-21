@@ -573,6 +573,14 @@ changes until you choose one.
   **Split and match…**. A smaller line can still be matched as a partial payment, after a question.
 - **Skip on the Duplicates tab:** **Skip** hides an entry for now without marking it "not
   duplicates". **Skipped** lists what was skipped, by whom and when; **Unskip** brings it back.
+- **Similar entries before sending from the Inbox:** making an inbox file a bill or receipt, or a
+  statement, first looks for what's already here. Bills and receipts: the same one, or one with the
+  same amount within 14 days, or the same vendor with an amount within 5% (or the same invoice
+  number). Statements: lines uploaded before, or with the same date and amount on that account.
+  They are shown side by side with the file, and you choose: **It's this one** (nothing is added;
+  the file is marked as that bill, receipt or statement), **Add it** / **Stage it** anyway, or
+  Cancel. What the AI read is kept meanwhile, so adding it doesn't ask the AI again. The browser
+  extension and the phone app send as before, without asking.
 - **Numbers on the tabs:** an orange number on Statements (lines needing review, statements
   waiting for their account), Bills and Receipts (ones to review), Duplicates and Inbox; a red
   number on Bills for unpaid bills past their due date.

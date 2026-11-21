@@ -344,10 +344,86 @@ const Inbox = (() => {
 		setTimeout(() => URL.revokeObjectURL(url), 10_000);
 	}
 
+	/**
+	 * Something like this file is already here: show it and let the person decide. Resolves to
+	 * { action: "add" } (add it anyway), { action: "same", id } (it's that one: add nothing),
+	 * { action: "open", id } or null (cancelled).
+	 */
+	function askSimilar(sim) {
+		return new Promise((resolve) => {
+			const dlg = el("dialog", { class: "similar-dialog" });
+			const done = (v) => { dlg.close(); dlg.remove(); resolve(v); };
+			dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(null); });
+			const amount = (c, cur) => (c == null ? "—" : `${money(c)}${cur ? ` ${cur}` : ""}`);
+			const parts = [];
+			if (sim.kind === "bill") {
+				const x = sim.reading;
+				const what = x.kind === "receipt" ? "receipt" : "bill";
+				const anySame = sim.matches.some((m) => m.same);
+				parts.push(
+					el("h2", { style: "margin-top:0" }, anySame ? `This ${what} looks like one that's already here` : `A similar ${what} is already here`),
+					el("p", { class: "small" }, "This file: ", el("strong", {}, x.vendor || "(no vendor read)"), x.invoice_number ? ` · ${x.invoice_number}` : "", ` · ${x.bill_date || x.due_date || "no date"} · ${amount(x.amount_cents, x.currency)}`),
+					el("p", { class: "small muted" }, "Already here:"),
+					el("div", { class: "table-wrap" }, el("table", { class: "stack" }, el("tbody", {}, ...sim.matches.map((m) => {
+						const b = m.bill;
+						const label = b.kind === "receipt" ? "Receipt" : "Bill";
+						return el("tr", {},
+							el("td", {}, el("span", { class: `pill ${m.same ? "bad" : "warn"}` }, m.same ? "Same?" : "Similar")),
+							el("td", { class: "wide" }, `${label} #${b.id}: `, el("strong", {}, b.vendor || "(unknown)"), b.invoice_number ? ` · ${b.invoice_number}` : "", el("div", { class: "small muted" }, `${b.bill_date || b.due_date || "no date"} · ${b.status === "new" ? "needs review" : b.status}`)),
+							el("td", { class: "num nowrap" }, amount(b.amount_cents, b.currency)),
+							el("td", { class: "nowrap" },
+								el("button", { class: "btn", type: "button", onclick: () => done({ action: "open", id: b.id }) }, "Open"), " ",
+								el("button", { class: "btn", type: "button", title: `Add nothing: this file is that ${label.toLowerCase()}`, onclick: () => done({ action: "same", id: b.id }) }, "It's this one")),
+						);
+					})))),
+					el("div", { class: "row", style: "margin-top:0.75rem" },
+						el("button", { class: "btn primary", type: "button", onclick: () => done({ action: "add" }) }, `Add it as a new ${what}`),
+						el("button", { class: "btn", type: "button", onclick: () => done(null) }, "Cancel")),
+					el("p", { class: "small muted" }, "What was read is kept: adding it doesn't ask the AI again."),
+				);
+			} else {
+				const allSame = sim.same === sim.total && sim.statements.length === 1;
+				parts.push(
+					el("h2", { style: "margin-top:0" }, `${sim.count} of ${sim.total} transaction${sim.total === 1 ? "" : "s"} ${sim.count === 1 ? "is" : "are"} already here`),
+					el("p", { class: "small" }, sim.same ? `${sim.same} ${sim.same === 1 ? "was" : "were"} uploaded before and will be skipped. ` : "", sim.similar ? `${sim.similar} ${sim.similar === 1 ? "has" : "have"} the same date and amount as a line already here (it would be added; check Duplicates afterwards).` : ""),
+					el("p", { class: "small muted" }, "On: ", ...sim.statements.flatMap((st, i) => [i ? ", " : "", el("a", { href: "#", onclick: (e) => { e.preventDefault(); done({ action: "open", id: Number(st.id) }); } }, st.filename), ` (${st.n})`])),
+					el("div", { class: "table-wrap" }, el("table", { class: "stack" },
+						el("thead", {}, el("tr", {}, el("th", {}, "In this file"), el("th", {}, "Already here"), el("th", {}, ""))),
+						el("tbody", {}, ...sim.examples.map((x) => el("tr", {},
+							el("td", { class: "wide" }, `${x.incoming.date} · ${amount(x.incoming.amount_cents)}`, el("div", { class: "small" }, x.incoming.description)),
+							el("td", { class: "wide" }, `${x.existing.date} · ${amount(x.existing.amount_cents)} · ${x.existing.status === "new" ? "not posted" : x.existing.status}`, el("div", { class: "small" }, x.existing.description), el("div", { class: "small muted" }, x.existing.filename)),
+							el("td", {}, el("span", { class: `pill ${x.same ? "bad" : "warn"}` }, x.same ? "Same" : "Similar"))))))),
+					sim.count > sim.examples.length ? el("p", { class: "small muted" }, `and ${sim.count - sim.examples.length} more.`) : "",
+					el("div", { class: "row", style: "margin-top:0.75rem" },
+						allSame ? el("button", { class: "btn primary", type: "button", title: "Add nothing: this file is that statement", onclick: () => done({ action: "same", id: Number(sim.statements[0].id) }) }, "It's the same statement") : "",
+						sim.same < sim.total ? el("button", { class: allSame ? "btn" : "btn primary", type: "button", onclick: () => done({ action: "add" }) }, sim.same ? "Stage it (lines uploaded before are skipped)" : "Stage it anyway") : "",
+						el("button", { class: "btn", type: "button", onclick: () => done(null) }, "Cancel")),
+				);
+			}
+			dlg.append(...parts);
+			document.body.append(dlg);
+			dlg.showModal();
+		});
+	}
+
 	async function forward(f, dest, { account, flip, dateOrder }) {
 		if (dest === "statement") {
 			if (!account) throw new Error("Choose the bank or card account the statement is for.");
-			const r = await api(`/inbox/${f.id}/statement`, { method: "POST", body: JSON.stringify({ account_code: account, flip_signs: flip, date_order: dateOrder }) });
+			const body = { account_code: account, flip_signs: flip, date_order: dateOrder };
+			let r = await api(`/inbox/${f.id}/statement`, { method: "POST", body: JSON.stringify({ ...body, check_similar: true }) });
+			if (r.similar) {
+				const choice = await askSimilar(r.similar);
+				if (!choice) return;
+				if (choice.action === "open") { showTab("review"); return openStatement(choice.id); }
+				if (choice.action === "same") {
+					await api(`/inbox/${f.id}/same-as`, { method: "POST", body: JSON.stringify({ statement_id: choice.id }) });
+					openId = null;
+					toast("Nothing added: marked as the statement that's already here.");
+					loadCount();
+					return load();
+				}
+				r = await api(`/inbox/${f.id}/statement`, { method: "POST", body: JSON.stringify(body) });
+			}
 			openId = null;
 			const s = r.statement;
 			toast(`${s.transactions} transactions staged${s.duplicates ? `, ${s.duplicates} already uploaded before were skipped` : ""}${s.from_extraction ? " (from what was read before)" : ""}.` + (s.warnings.length ? `\n${s.warnings.slice(0, 3).join("\n")}` : ""));
@@ -356,7 +432,20 @@ const Inbox = (() => {
 			return openStatement(s.id);
 		}
 		if (dest === "bill" || dest === "receipt") {
-			const r = await api(`/inbox/${f.id}/bill`, { method: "POST", body: JSON.stringify({ kind: dest }) });
+			let r = await api(`/inbox/${f.id}/bill`, { method: "POST", body: JSON.stringify({ kind: dest, check_similar: true }) });
+			if (r.similar) {
+				const choice = await askSimilar(r.similar);
+				if (!choice) return;
+				if (choice.action === "open") return openBill(choice.id);
+				if (choice.action === "same") {
+					await api(`/inbox/${f.id}/same-as`, { method: "POST", body: JSON.stringify({ bill_id: choice.id }) });
+					openId = null;
+					toast(`Nothing added: marked as the ${dest} that's already here.`);
+					loadCount();
+					return load();
+				}
+				r = await api(`/inbox/${f.id}/bill`, { method: "POST", body: JSON.stringify({ kind: dest, confirm: true }) });
+			}
 			openId = null;
 			toast(r.bill.read === "extracted" ? "Made from what was read before; the AI wasn't asked again. Check it, then approve." : "Read. Check it, then approve.");
 			loadCount();

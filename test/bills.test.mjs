@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assignMatches, billInfoOf, draftFromBillInfo, extractBill, findDuplicate, imageType, matchScore, normalizeItem, readItems } from "../lib/bills.mjs";
+import { assignMatches, billInfoOf, draftFromBillInfo, extractBill, findDuplicate, findSimilarBills, imageType, matchScore, normalizeItem, readItems } from "../lib/bills.mjs";
 import { parseOfx } from "../lib/parse.mjs";
 import { parseEmail } from "../lib/mime.mjs";
 import { sampleEmail } from "./helpers.mjs";
@@ -187,4 +187,18 @@ test("line items with their own category: one line each, the rest on the bill's 
 	assert.match(linesFromItems(bill, [item("No amount", null, "6200")]).error, /needs an amount/);
 	assert.match(linesFromItems({ ...bill, account_code: null }, [item("Hammer", 6000n, "6200")]).error, /own category too/);
 	assert.match(linesFromItems({ ...bill, amount_cents: null }, [item("Hammer", 6000n, "6200")]).error, /amount/);
+});
+
+test("findSimilarBills: the same one, then similar ones, best first", () => {
+	const bill = { vendor: "Costco Wholesale", invoice_number: "", bill_date: "2026-11-10", due_date: null, amount_cents: 10000n };
+	const existing = [
+		{ id: 1, vendor: "Costco", invoice_number: "", bill_date: "2026-11-10", due_date: null, amount_cents: "10000" },
+		{ id: 2, vendor: "Hydro", invoice_number: "", bill_date: "2026-11-12", due_date: null, amount_cents: "10000" },
+		{ id: 3, vendor: "Costco", invoice_number: "", bill_date: "2026-11-20", due_date: null, amount_cents: "10300" },
+		{ id: 4, vendor: "Costco", invoice_number: "", bill_date: "2026-11-20", due_date: null, amount_cents: "20000" },
+		{ id: 5, vendor: "Bell", invoice_number: "", bill_date: "2026-01-01", due_date: null, amount_cents: "10000" },
+	];
+	const r = findSimilarBills(bill, existing);
+	assert.deepEqual(r.map((x) => [x.bill.id, x.same]), [[1, true], [2, false], [3, false]]);
+	assert.deepEqual(findSimilarBills({ ...bill, vendor: "Nobody", amount_cents: 5n }, existing), []);
 });

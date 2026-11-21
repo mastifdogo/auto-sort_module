@@ -372,6 +372,43 @@ export default async function register(ctx) {
 	 * account are skipped. Returns { id, transactions, duplicates }; with no new transactions the
 	 * statement isn't kept (id null).
 	 */
+	/**
+	 * Transactions of a file that are already here on that account, for a person to confirm before
+	 * staging it (the inbox): the same line uploaded before (its fingerprint), or another line with
+	 * the same date and amount. { count, same, similar, total, statements: [{id, filename, n}],
+	 * examples: [{ incoming, existing, same }] (at most 10) }.
+	 */
+	async function similarStatementRows(parsed, account, flip = false) {
+		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -BigInt(t.amount_cents) : BigInt(t.amount_cents) }));
+		const empty = { count: 0, same: 0, similar: 0, total: txs.length, statements: [], examples: [] };
+		if (txs.length === 0) return empty;
+		const fps = fingerprintsOf(txs);
+		const { rows } = await q(
+			`SELECT t.id, t.statement_id, s.filename, t.tx_date::text AS date, t.description, t.amount_cents, t.status, t.fingerprint
+			   FROM ${T("transactions")} t JOIN ${T("statements")} s ON s.id = t.statement_id
+			  WHERE t.account_code = $1
+			    AND (t.fingerprint = ANY($2::text[])
+			         OR (t.tx_date, t.amount_cents) IN (SELECT d, a FROM unnest($3::date[], $4::bigint[]) AS u(d, a)))`,
+			[account.code, fps, txs.map((t) => t.date), txs.map((t) => t.amount_cents.toString())],
+		);
+		if (rows.length === 0) return empty;
+		const byFp = new Map(rows.map((r) => [r.fingerprint, r]));
+		const byDateAmount = Map.groupBy(rows, (r) => `${r.date}|${r.amount_cents}`);
+		const used = new Set();
+		const found = [];
+		txs.forEach((t, i) => {
+			let existing = byFp.get(fps[i]);
+			const same = !!existing;
+			if (!existing) existing = (byDateAmount.get(`${t.date}|${t.amount_cents}`) ?? []).find((r) => !used.has(String(r.id)));
+			if (!existing) return;
+			used.add(String(existing.id));
+			found.push({ same, incoming: { date: t.date, description: t.description, amount_cents: t.amount_cents.toString() }, existing: { id: existing.id, statement_id: existing.statement_id, filename: existing.filename, date: existing.date, description: existing.description, amount_cents: String(existing.amount_cents), status: existing.status } });
+		});
+		const statements = [...Map.groupBy(found, (x) => String(x.existing.statement_id))].map(([id, list]) => ({ id, filename: list[0].existing.filename, n: list.length })).sort((a, b) => b.n - a.n);
+		const same = found.filter((x) => x.same).length;
+		return { count: found.length, same, similar: found.length - same, total: txs.length, statements, examples: found.slice(0, 10) };
+	}
+
 	async function stageStatement(parsed, { filename, account, flip = false, uploadedBy, user, mail = null, source = mail ? "email" : "upload", guess = null, document = null, billInfo = null, aiReading = null, hint = "" }) {
 		const txs = parsed.transactions.map((t) => ({ ...t, amount_cents: flip ? -t.amount_cents : t.amount_cents }));
 		const code = account?.code ?? "";
@@ -1195,7 +1232,7 @@ export default async function register(ctx) {
 	// -----------------------------------------------------------------------
 
 	const adoption = registerAdoption(ctx, { q, T, bad, files });
-	const inbox = registerInbox(ctx, { q, T, bad, ai, files, dtags, bills, stageStatement, readStatement, statementAccount, mailHold: adoption.mailHold });
+	const inbox = registerInbox(ctx, { q, T, bad, ai, files, dtags, bills, stageStatement, similarStatementRows, readStatement, statementAccount, mailHold: adoption.mailHold });
 	registerScanner(ctx, { q, T, bad, saveFile: inbox.saveFile, options: inbox.options, syncNotice: inbox.syncNotice });
 	adoption.onAdopted(() => inbox.syncNotice());
 

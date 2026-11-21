@@ -18,3 +18,7 @@ CREATE UNIQUE INDEX duplicate_skips_key ON duplicate_skips (kind, COALESCE(tx_id
 ALTER TABLE transactions ADD COLUMN split_cents bigint CHECK (split_cents > 0);
 ALTER TABLE transactions ADD COLUMN split_account_code text;
 ALTER TABLE transactions ADD COLUMN split_memo text NOT NULL DEFAULT '';
+
+-- The inbox asks before making a file a bill or receipt when similar ones are already here: what
+-- was read waits here while a person compares (so the AI isn't asked twice), then is cleared.
+ALTER TABLE inbox_files ADD COLUMN pending_bill jsonb;

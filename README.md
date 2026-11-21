@@ -945,6 +945,13 @@ inside the module and is downloaded from the Inbox tab.
 
 ## Changes
 
+- **0.23.0:** **The AI fills in the tax on line items, and a tax for the whole bill or receipt.**
+  When the AI reads a document's line items (at scan, or "Read items with the LLM") it also picks,
+  from your taxes, the one the document charges on each item. That is a suggestion: the tax picker
+  is filled in and a note says so, and nothing is booked with it until you press Save items. Next
+  to a bill's or receipt's Account there is now a **Tax** for the whole of it: every line item has
+  that tax unless you choose another (or "No tax") on the item, and what the items don't cover
+  (all of it, without items) is taken as including the tax.
 - **0.22.0:** **A tax on each line item.** Every line item of a bill or receipt has a tax picker
   (and "Tax for all…" sets every line at once). Taxes are a short list you set up under
   "Taxes…" in Line items: a name, a rate in percent, and the account the tax is booked to when

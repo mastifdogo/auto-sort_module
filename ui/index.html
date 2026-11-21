@@ -423,6 +423,7 @@
 			<label>Amount <input id="bd-amount" inputmode="decimal" placeholder="0.00"></label>
 			<label>Currency <select id="bd-currency"><option>CAD</option><option>USD</option></select></label>
 			<label>Account <select id="bd-account"></select></label>
+			<label>Tax <select id="bd-tax" title="The tax on the whole bill or receipt. Every line item has it unless you choose another on the item; what the items don't cover is taken as including it."></select></label>
 			<label>Customer <input id="bd-customer" list="customers" maxlength="200" placeholder="(none)"></label>
 			<label class="inline" style="align-self:end"><input type="checkbox" id="bd-billable"> Billable to the customer</label>
 		</form>
@@ -1519,18 +1520,23 @@
 		const rows = [];
 		const tbody = el("tbody");
 		const taxSum = el("p", { class: "muted small", "aria-live": "polite" });
+		const taxHint = el("p", { class: "small" });
+		let suggested = 0;
+		const showHint = () => { taxHint.textContent = suggested ? `The AI filled in the tax on ${suggested} item${suggested === 1 ? "" : "s"} from the document. Check ${suggested === 1 ? "it" : "them"}, then press Save items: nothing is booked with a tax until you do.` : ""; };
 		const taxBox = el("div");
 		// A line's tax: none, one of the taxes in use, or the one it already has (even if turned off).
 		const fillTax = (r) => {
-			r.tax.replaceChildren(el("option", { value: "" }, "No tax"),
+			const whole = taxes.find((t) => t.id === b.tax_id);
+			r.tax.replaceChildren(el("option", { value: "" }, whole ? `Same as the ${what} (${taxLabel(whole)})` : "No tax"),
+				...(whole ? [el("option", { value: "none" }, "No tax")] : []),
 				...taxes.filter((t) => t.active || t.id === r.taxId).map((t) => el("option", { value: t.id }, t.active ? taxLabel(t) : `${taxLabel(t)} (off)`)));
-			r.tax.value = taxes.some((t) => t.id === r.taxId) ? r.taxId : "";
+			r.tax.value = taxes.some((t) => t.id === r.taxId) ? r.taxId : r.taxId === "none" && whole ? "none" : "";
 		};
 		// What the chosen taxes come to, as it will be booked (each tax on its items' amounts together).
 		const updateTax = () => {
 			const by = new Map();
 			for (const r of rows) {
-				const t = taxes.find((x) => x.id === r.taxId);
+				const t = r.taxId === "none" ? null : taxes.find((x) => x.id === (r.taxId ?? b.tax_id));
 				const amt = Math.round(Number(r.amount.value.trim().replace(/,/g, "")) * 100);
 				if (!t || !Number.isFinite(amt) || amt <= 0) continue;
 				by.set(t.id, { t, base: (by.get(t.id)?.base ?? 0) + amt });
@@ -1552,7 +1558,10 @@
 				account: el("select", { title: "This item's own category (account). Left as it is, the item goes with the rest of the " + what + ".", "aria-label": "Category" }),
 				tax: el("select", { title: "The tax added to this item's amount", "aria-label": "Tax", style: "min-width:6.5rem" }),
 			};
-			r.taxId = it.tax_id ?? null;
+			// The tax it has, or (not saved yet) the one the AI proposes for it.
+			const proposed = !locked && !it.tax_id && !it.no_tax && it.suggested_tax_id !== b.tax_id && taxes.some((t) => t.active && t.id === it.suggested_tax_id);
+			r.taxId = it.tax_id ?? (proposed ? it.suggested_tax_id : it.no_tax ? "none" : null);
+			if (proposed) { suggested += 1; r.tax.title = "Suggested by the AI from the document: check it. It is saved with Save items."; }
 			fillTax(r);
 			r.tax.onchange = () => { r.taxId = r.tax.value || null; updateTax(); };
 			r.amount.oninput = updateTax;
@@ -1572,9 +1581,10 @@
 		};
 		for (const it of items) addRow(it);
 		updateTax();
+		showHint();
 		// Same tax on every line: the usual case, one click.
 		const taxAll = el("select", { "aria-label": "Tax for all items", title: "Set the same tax on every item" });
-		const fillTaxAll = () => taxAll.replaceChildren(el("option", { value: "-" }, "Tax for all…"), el("option", { value: "" }, "No tax"), ...taxes.filter((t) => t.active).map((t) => el("option", { value: t.id }, taxLabel(t))));
+		const fillTaxAll = () => taxAll.replaceChildren(el("option", { value: "-" }, "Tax for all…"), el("option", { value: b.tax_id ? "none" : "" }, "No tax"), ...taxes.filter((t) => t.active).map((t) => el("option", { value: t.id }, taxLabel(t))));
 		fillTaxAll();
 		taxAll.disabled = locked;
 		taxAll.onchange = () => {
@@ -1607,8 +1617,10 @@
 				if (d.items.length === 0) { toast("No line items found; enter them by hand."); return; }
 				rows.length = 0;
 				tbody.replaceChildren();
+				suggested = 0;
 				for (const it of d.items) addRow(it);
 				updateTax();
+				showHint();
 				toast(`${d.items.length} item${d.items.length === 1 ? "" : "s"} found. Tick the billable ones, then Save items.`);
 			} catch (e) { fail(e); } finally { read.disabled = false; }
 		};
@@ -1618,7 +1630,8 @@
 			el("p", { class: "muted small" }, items.length ? where : `No line items yet. ${where}`),
 			el("p", { class: "muted small" }, locked
 				? "Posted: the items' categories are in the journal and can't change here."
-				: `Each item can have its own category and its own tax. A tax is added to the item's amount and booked to the tax's account (or with the item, when the tax has none). Items left as "Same as the ${what}", and whatever the items and their taxes don't cover (a tip, tax not chosen here), go to the ${what}'s own category, chosen above for the whole ${what}.`),
+				: `Each item can have its own category and its own tax; left as they are, items have the category and the tax chosen above for the whole ${what}. A tax is added to the item's amount and booked to the tax's account (or with the item, when the tax has none). Items left as "Same as the ${what}", and whatever the items and their taxes don't cover (a tip, tax not chosen here), go to the ${what}'s own category.`),
+			taxHint,
 			el("table", { class: "stack" }, tbody),
 			taxSum,
 			el("div", { class: "row", style: "margin:0.4rem 0" }, save, b.has_document || b.body_text ? read : "",
@@ -1806,8 +1819,14 @@
 		loadCustomers();
 		accountOptions($("bd-account"), accounts.filter((a) => a.currency === b.currency), { selected: b.account_code, placeholder: "Choose account…" });
 		withNewAccount($("bd-account"), () => ({ type: "expense", currency: $("bd-currency").value }));
+		// The tax on the whole bill: one in use, or the one it has (even if turned off).
+		$("bd-tax").replaceChildren(el("option", { value: "" }, "No tax"),
+			...taxes.filter((t) => t.active || t.id === b.tax_id).map((t) => el("option", { value: t.id }, t.active ? taxLabel(t) : `${taxLabel(t)} (off)`)));
+		$("bd-tax").value = taxes.some((t) => t.id === b.tax_id) ? b.tax_id : "";
 		const locked = !!b.journal_entry_id;
 		for (const id of ["bd-kind", "bd-date", "bd-amount", "bd-currency", "bd-account"]) $(id).disabled = locked || b.status === "paid";
+		$("bd-tax").disabled = locked || b.status === "paid" || !!b.paid_entry_id || (taxes.length === 0);
+		$("bd-tax").title = taxes.length === 0 ? "No taxes yet: add them under Taxes… in Line items below." : "The tax on the whole bill or receipt. Every line item has it unless you choose another on the item; what the items don't cover is taken as including it.";
 		const summary = b.summary && !/[.!?]$/.test(b.summary) ? `${b.summary}.` : b.summary;
 		$("bd-summary").textContent = [summary, b.confidence != null ? `Read with ${Math.round(b.confidence * 100)}% confidence.` : ""].filter(Boolean).join(" ");
 		const open = ["new", "open"].includes(b.status);
@@ -1897,6 +1916,7 @@
 			amount: $("bd-amount").value.trim() || null,
 			currency: $("bd-currency").value,
 			account_code: $("bd-account").value || null,
+			tax_id: $("bd-tax").value || null,
 			billable: $("bd-billable").checked,
 			customer_name: $("bd-customer").value.trim(),
 		};

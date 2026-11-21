@@ -342,6 +342,11 @@ Extract data and hand-offs to other modules.
   list (`/taxes` routes; Ledger has none). `linesFromItems()` books one line per tax (rounded once on
   its items together) to the tax's `account_code`, or to the item's category when it has none. Rate
   and account can't change once a line uses the tax (turn it off, add a new one).
+  `bills.tax_id` (0.23.0) is the tax for the whole bill: an item's tax unless it has its own or
+  `no_tax`; what the items don't cover includes it (`includedTaxCents`); `rebook()` rewrites the
+  lines when the bill's amount, account or tax changes. The AI proposes a tax per item
+  (`extractBill`/`readItems` with `taxes`) into `bill_items.suggested_tax_id`: preselected in the
+  UI only, cleared when a person saves the items; never copy it into `tax_id` by itself.
 - Line items (`bill_items`, 0.16.0): `extractBill()` also returns `items`
   (`normalizeItem()` in lib/bills.mjs: description ≤ 100, quantity ≤ 4 decimals, unit word,
   `rate_cents`, `amount_cents`), stored at scan, never billable by themselves. A person ticks

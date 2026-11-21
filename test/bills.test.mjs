@@ -189,6 +189,27 @@ test("line items with their own category: one line each, the rest on the bill's 
 	assert.match(linesFromItems({ ...bill, amount_cents: null }, [item("Hammer", 6000n, "6200")]).error, /amount/);
 });
 
+test("the AI proposes a tax per line item, only from the user's taxes", async () => {
+	const taxes = [{ id: "7", name: "GST", rate: "5" }, { id: "8", name: "PST", rate: "7" }];
+	const items = [
+		{ description: "Hammer", quantity: "1", unit: "", unit_price: "60.00", amount: "60.00", tax: "GST" },
+		{ description: "Milk", quantity: "1", unit: "", unit_price: "4.00", amount: "4.00", tax: "" },
+		{ description: "Bag", quantity: "1", unit: "", unit_price: "3.00", amount: "3.00", tax: "VAT" },
+	];
+	let seen = null;
+	const llm = async (req) => { seen = req; return { data: { items } }; };
+	const bill = { kind: "receipt", vendor: "Hardware Co", amount_cents: 7000n, currency: "CAD" };
+	const read = await readItems({ llm, bill, document: { text: "Hammer 60.00 G\nMilk 4.00\nGST 5% 3.00" }, taxes });
+	assert.deepEqual(read.map((it) => it.suggested_tax_id), ["7", null, null], "a name not in the list is no suggestion");
+	assert.deepEqual(seen.schema.properties.items.items.properties.tax.enum, ["GST", "PST", ""]);
+	assert.match(seen.prompt, /GST \| 5%/);
+	// No taxes set up: nothing is asked, nothing is proposed.
+	const plain = await readItems({ llm, bill, document: { text: "x" } });
+	assert.equal(seen.schema.properties.items.items.properties.tax, undefined);
+	assert.ok(!("suggested_tax_id" in plain[0]));
+	assert.doesNotMatch(seen.prompt, /Taxes \(name/);
+});
+
 test("line items with a tax: one line per tax on its items together, the rest on the bill's own account", async () => {
 	const { linesFromItems } = await import("../lib/bill-routes.mjs");
 	const { parseRate, rateText, taxCents } = await import("../lib/taxes.mjs");
@@ -223,6 +244,37 @@ test("line items with a tax: one line per tax on its items together, the rest on
 	]);
 	assert.match(linesFromItems({ ...bill, amount_cents: 10400n }, [item("All", 10000n, "6200", gst)]).error, /and their tax add up to 105\.00, more than/);
 	assert.match(linesFromItems(bill, [item("No amount", null, null, gst)]).error, /needs an amount above zero to have a tax/);
+});
+
+test("a tax for the whole bill or receipt: on every item unless the item says otherwise, and included in what no item covers", async () => {
+	const { linesFromItems } = await import("../lib/bill-routes.mjs");
+	const { includedTaxCents } = await import("../lib/taxes.mjs");
+	assert.equal(includedTaxCents(10500n, "5"), 500n);
+	assert.equal(includedTaxCents(11300n, "13"), 1300n);
+	const gst = { id: "1", name: "GST", rate: "5", account_code: "1300" };
+	const pst = { id: "2", name: "PST 7%", rate: "7", account_code: null };
+	const bill = { kind: "receipt", amount_cents: 10500n, account_code: "6100", tax: gst };
+	const item = (description, amount_cents, extra = {}) => ({ description, amount_cents, account_code: null, tax: null, no_tax: false, ...extra });
+	// No items: the total includes the tax.
+	assert.deepEqual(linesFromItems(bill, []).lines, [
+		{ description: "GST 5% included in 105.00", amount: 500n, account_code: "1300" },
+		{ description: "The receipt without tax", amount: 10000n, account_code: "6100" },
+	]);
+	// Items have it without choosing it; one says "no tax", one has another.
+	assert.deepEqual(linesFromItems({ ...bill, amount_cents: 11221n }, [item("Hammer", 6000n, { account_code: "6200" }), item("Milk", 400n, { no_tax: true }), item("Bag", 300n, { tax: pst }), item("Screws", 4000n)]).lines, [
+		{ description: "Hammer", amount: 6000n, account_code: "6200" },
+		{ description: "GST 5% on 100.00 (2 items)", amount: 500n, account_code: "1300" },
+		{ description: "Other items and other charges", amount: 4721n, account_code: "6100" },
+	]);
+	// What the items don't cover (a delivery charge of 10.50) includes the tax too.
+	assert.deepEqual(linesFromItems({ ...bill, amount_cents: 11550n }, [item("Hammer", 10000n)]).lines, [
+		{ description: "GST 5% on 100.00 (1 item)", amount: 500n, account_code: "1300" },
+		{ description: "GST 5% included in 10.50", amount: 50n, account_code: "1300" },
+		{ description: "Other items and other charges", amount: 11000n, account_code: "6100" },
+	]);
+	// A whole-bill tax that isn't claimed back books nothing apart.
+	assert.deepEqual(linesFromItems({ ...bill, tax: pst }, [item("Hammer", 6000n)]), { lines: [] });
+	assert.match(linesFromItems({ ...bill, amount_cents: null }, []).error, /enter the receipt's amount/);
 });
 
 test("findSimilarBills: the same one, then similar ones, best first", () => {

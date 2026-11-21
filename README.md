@@ -940,6 +940,12 @@ inside the module and is downloaded from the Inbox tab.
 
 ## Changes
 
+- **0.21.0:** **Linked entries** (Ledger 0.28.0). Posting a statement line that pays an entry
+  another module tagged as owed (an invoice, hours) links the payment's entry to that entry, and
+  reversing a posted duplicate links it to the entry kept, so opening either in Ledger shows the
+  other. A bill and its payment, and a transfer's two rows, already show together. Does nothing
+  on an older Ledger.
+
 - **0.17.0:** **The Import module is merged in.** The **Inbox** and **Scan** tabs, the Send to
   Ledger browser extension (0.6.0), the email check with what it learns, the network scanner, the
   phone camera and the Android app (0.22.0), **Extract data**, sending files on to other modules,

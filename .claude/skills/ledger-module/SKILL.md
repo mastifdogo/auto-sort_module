@@ -86,6 +86,12 @@ feature the module uses (the context file says which version added what;
 - Journal entry links (Ledger 0.11.2): every entry the module posts carries
   `links` (`tx:<id>` → `?statement=`, `bill:<id>` → `?bill=`); entries
   linked later use `linkEntry()` (transfers, duplicates).
+- Linked entries (Ledger 0.28.0, feature-detected: `ctx.ledger.relateEntries`):
+  entries with a record in common (`bill:<id>` on a bill and its payment,
+  `tx:<id>`) show together in Ledger already. Entries without one are linked
+  with `tags.relate(entryId, otherId, note, user)` (lib/tags.mjs, never
+  fails the caller): a posted row and the entry it pays (`paidBy()`), a
+  reversed duplicate and the entry kept (duplicate-routes.mjs).
 - Backups (Ledger 0.13.0) save every table of the schema as a CSV for people:
   keep table and column names plain, no secrets in tables.
 - **Files: the module keeps none** (Ledger 0.27.0, `lib/files.mjs`). Every

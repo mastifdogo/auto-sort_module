@@ -116,6 +116,7 @@ const ACCOUNT_MAP = new Map(ACCOUNTS.map((a) => [a.code, a]));
 async function start({ answers = [], tags = fakeTags(), entries = new Map(), settings = {} } = {}) {
 	const routes = new Map();
 	const posted = [];
+	const related = [];
 	const none = { rows: [], rowCount: 0 };
 	const ctx = {
 		id: "categorizer",
@@ -153,6 +154,7 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 			},
 			reverseJournalEntry: async (id) => ({ id: Number(id) + 1000 }),
 			linkJournalEntry: async () => ({}),
+			relateEntries: async (a, b, opts) => { related.push([Number(a), Number(b), opts.note]); return []; },
 		},
 		dashboard: Object.fromEntries(["notify", "todo", "complete", "remove"].map((call) => [call, async () => {}])),
 		orgs: { forEach: async (fn) => fn({ id: 1 }), current: async () => ({ id: 1, name: "Main", kind: "business" }), list: async () => [] },
@@ -165,7 +167,7 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 	await new Promise((r) => setImmediate(r));
 	const call = (route, { params = {}, body, query = "" } = {}) =>
 		routes.get(route)({ params, body, query: new URLSearchParams(query), user: { username: "pat", role: "bookkeeper" } });
-	return { call, posted, tags, entries };
+	return { call, posted, tags, entries, related };
 }
 
 const BILL = { id: 3n, kind: "bill", status: "new", vendor: "Hydro One", invoice_number: "H-1", bill_date: "2026-03-01", due_date: "2026-03-20", amount_cents: 8550n, currency: "CAD", account_code: "5100", ap_account: null, journal_entry_id: null, paid_entry_id: null, vendor_entity_id: 7, paid_by_tag: false, paid_tag_by: null, tags_synced_at: null };
@@ -362,7 +364,7 @@ test("a deposit is offered the billed entry it pays; only a person posting it ta
 	await tags.setAs("sales", 10, "billed");
 	await tags.setAs("sales", 10, "customer", { entity_id: 4 });
 	const entries = new Map([[10, invoice(10, 50000n, [])]]);
-	const { call, posted } = await start({ answers: rowTable(row), tags, entries });
+	const { call, posted, related } = await start({ answers: rowTable(row), tags, entries });
 	assert.equal((await call("POST /sort-now")).tag_matches, 1);
 	assert.equal(String(row.pays_entry_id), "10");
 	assert.equal(row.suggested_code, "1200");
@@ -373,16 +375,18 @@ test("a deposit is offered the billed entry it pays; only a person posting it ta
 	assert.equal(tags.list(10).find((t) => t.tag === "paid").set_by, "pat");
 	assert.deepEqual(tags.names(posted[0].id), ["customer:4"], "the payment's entry says who it is from");
 	assert.equal(row.learned, undefined, "paying an invoice isn't a payee rule");
+	assert.deepEqual(related, [[posted[0].id, 10, "payment of entry #10"]], "the payment's entry is linked to the entry it pays");
 });
 
 test("a row booked to another account than the tagged entry's doesn't mark it paid", async () => {
 	const row = { ...ROW, pays_entry_id: 10, suggested_code: "1200", chosen_code: "4000" };
 	const tags = fakeTags();
 	await tags.setAs("sales", 10, "billed");
-	const { call, posted } = await start({ answers: rowTable(row), tags, entries: new Map([[10, invoice(10, 50000n, [])]]) });
+	const { call, posted, related } = await start({ answers: rowTable(row), tags, entries: new Map([[10, invoice(10, 50000n, [])]]) });
 	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
 	assert.equal(posted.length, 1);
 	assert.deepEqual(tags.names(10), ["billed"]);
+	assert.deepEqual(related, []);
 	assert.equal(row.pays_entry_id, null);
 });
 

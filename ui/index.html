@@ -7,13 +7,13 @@
 <style>
 	:root {
 		--bg: #fff; --panel: #f6f8fa; --text: #1d232b; --muted: #5d6875; --border: #dde1e6; --accent: #1f6feb;
-		--good: #1a7f37; --warn: #9a6700; --bad: #cf222e; --good-bg: #dafbe1; --warn-bg: #fff8c5; --bad-bg: #ffebe9; --orange: #d4600a;
+		--good: #1a7f37; --warn: #9a6700; --bad: #cf222e; --good-bg: #dafbe1; --warn-bg: #fff8c5; --bad-bg: #ffebe9;
 		color-scheme: light;
 	}
 	@media (prefers-color-scheme: dark) {
 		:root {
 			--bg: #171b21; --panel: #1e242c; --text: #e3e7ec; --muted: #97a1ad; --border: #2c333c; --accent: #4c8dff;
-			--good: #3fb950; --warn: #d29922; --bad: #f85149; --good-bg: #12261a; --warn-bg: #2b2311; --bad-bg: #301617; --orange: #db6d28;
+			--good: #3fb950; --warn: #d29922; --bad: #f85149; --good-bg: #12261a; --warn-bg: #2b2311; --bad-bg: #301617;
 			color-scheme: dark;
 		}
 	}
@@ -54,8 +54,9 @@
 	.pill.good { background: var(--good-bg); color: var(--good); }
 	.pill.warn { background: var(--warn-bg); color: var(--warn); }
 	.pill.bad { background: var(--bad-bg); color: var(--bad); }
-	.badge { display: inline-block; min-width: 1.2em; padding: 0 0.35rem; margin-left: 0.25rem; border-radius: 999px; font-size: 11px; font-weight: 700; text-align: center; background: var(--orange); color: #fff; }
-	.badge.red { background: var(--bad); }
+	/* The numbers on the tabs: the same look as a warning pill ("Choose account"); red for overdue. */
+	.badge { display: inline-block; min-width: 1.2em; padding: 0 0.45rem; margin-left: 0.3rem; border-radius: 999px; font-size: 12px; font-weight: 600; text-align: center; background: var(--warn-bg); color: var(--warn); }
+	.badge.red { background: var(--bad-bg); color: var(--bad); }
 	dialog.similar-dialog { max-width: min(760px, calc(100vw - 2rem)); width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); padding: 1rem; }
 	dialog.similar-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
 	.newacct { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin-top: 4px; padding: 6px; border: 1px dashed var(--border); border-radius: 6px; }

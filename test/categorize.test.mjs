@@ -142,6 +142,10 @@ test("pickable leaves out hidden accounts and Ledger's Unreconciled account", as
 	assert.equal(pickable({ code: "5900" }), true);
 	assert.equal(pickable({ code: "1900", hidden: true }), false);
 	assert.equal(pickable({ code: "1990", module_id: "ledger" }), false);
+	// A customer's or vendor's own account (Ledger 0.31.0) is never what a cost is for, nor a bank account.
+	assert.equal(pickable({ code: "2000-7", entity: { id: 7, name: "Hydro One", role: "vendor" } }), false);
+	assert.equal(pickable({ code: "2000", kind: "payable", entity: null }), true);
+	assert.deepEqual(candidateAccounts([{ code: "5900", currency: "CAD", is_active: true }, { code: "1200-4", currency: "CAD", is_active: true, entity: { id: 4, name: "Acme", role: "customer" } }], { code: "1000", currency: "CAD" }).map((x) => x.code), ["5900"], "the AI isn't offered them either");
 	const bank = { code: "1000", currency: "CAD" };
 	const got = candidateAccounts([{ code: "5900", currency: "CAD", is_active: true }, { code: "1900", currency: "CAD", is_active: true, hidden: true }], bank);
 	assert.deepEqual(got.map((a) => a.code), ["5900"]);

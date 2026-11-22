@@ -626,13 +626,18 @@ export default async function register(ctx) {
 	ctx.route("GET", "/status", async (req) => {
 		const [llm, cfg] = await Promise.all([ctx.llm.status(), readSettings()]);
 		let { ap_account } = await ctx.settings.get();
+		const chart = await ctx.ledger.listAccounts();
+		// Vendors' own accounts (Ledger 0.31.0): a bill posted to the account tagged "Accounts payable" sits in its
+		// vendor's account under it. An account chosen under Settings that isn't tagged keeps the bills itself.
+		const chosen = String(ap_account ?? "").trim();
+		const payables = { own_accounts: tags.ownAccounts, kept_in_chosen: tags.ownAccounts && chosen !== "" && chart.find((a) => a.code === chosen)?.kind !== "payable" };
 		// None chosen: the accounts Ledger has tagged "Accounts payable" are used (Ledger 0.30.0).
-		if (!String(ap_account ?? "").trim()) ap_account = (await ctx.ledger.listAccounts()).filter((a) => a.kind === "payable").map((a) => a.code).join(", ");
+		if (!chosen) ap_account = chart.filter((a) => a.kind === "payable").map((a) => a.code).join(", ");
 		// Organizations (separate books): which one this request works in; the full list only for admins.
 		const organization = await ctx.orgs.current();
 		const organizations = req.user.role === "admin" ? await ctx.orgs.list() : [];
 		const files_for_documents = await files.pendingInStorage();
-		return { name: ctx.name, id: ctx.id, files_for_documents, llm, settings: { ...cfg, ap_account: String(ap_account ?? "") }, role: req.user.role, username: req.user.username, root: req.user.root === true, ledger: ctx.ledgerVersion, version: ctx.version, organization, organizations };
+		return { name: ctx.name, id: ctx.id, files_for_documents, llm, settings: { ...cfg, ap_account: String(ap_account ?? "") }, payables, role: req.user.role, username: req.user.username, root: req.user.root === true, ledger: ctx.ledgerVersion, version: ctx.version, organization, organizations };
 	});
 
 	// POST /documents/move: file what is still in the module's old storage in Ledger's Documents now
@@ -786,7 +791,7 @@ export default async function register(ctx) {
 		const dateOrder = b.date_order ?? "auto";
 		const { account } = await statementAccount(b.account_code);
 		if (!account.is_active) throw bad(`account ${account.code} is inactive`);
-		if (!pickable(account)) throw bad(`account ${account.code} is a hidden or clearing account; choose a bank or card account`);
+		if (!pickable(account)) throw bad(account.entity ? `account ${account.code} is ${account.entity.name}'s own account; choose a bank or card account` : `account ${account.code} is a hidden or clearing account; choose a bank or card account`);
 
 		// The file goes in Ledger's Documents first (any type since Ledger 0.27.0), as this account's
 		// statement; what Ledger already keeps of it is used instead of parsing it again.
@@ -863,7 +868,11 @@ export default async function register(ctx) {
 		statement.reconciled = await statementReconciled(statement.id);
 		// Ledger 0.19.5: a person may have changed a posted entry's amounts since; show both, overwrite neither.
 		await markAmended(ctx, rows, statement.account_code);
-		return { statement, transactions: rows, review_threshold, flip_hint, suggested_account };
+		// A row that pays an invoice or a bill is booked to the customer's or vendor's own account
+		// (Ledger 0.31.0). Those aren't in the account pickers, so the page gets their names here.
+		const used = new Set(rows.map((t) => t.account_code).filter(Boolean));
+		const own_accounts = used.size === 0 ? [] : (await ctx.ledger.listAccounts({ includeInactive: true })).filter((a) => a.entity && used.has(a.code)).map((a) => ({ code: a.code, name: a.name, type: a.type, currency: a.currency }));
+		return { statement, transactions: rows, review_threshold, flip_hint, suggested_account, own_accounts };
 	});
 
 	ctx.route("POST", "/statements/:id/categorize", async (req) => {
@@ -887,7 +896,7 @@ export default async function register(ctx) {
 		if (statement.status === "categorizing" || statement.status === "queued") throw new ctx.HttpError(409, "wait until the suggestions are done");
 		const { account } = await statementAccount(b.account_code);
 		if (!account.is_active || !["asset", "liability"].includes(account.type)) throw bad("choose an active bank (asset) or card (liability) account");
-		if (!pickable(account)) throw bad(`account ${account.code} is a hidden or clearing account; choose a bank or card account`);
+		if (!pickable(account)) throw bad(account.entity ? `account ${account.code} is ${account.entity.name}'s own account; choose a bank or card account` : `account ${account.code} is a hidden or clearing account; choose a bank or card account`);
 		const flip = b.flip_signs === true;
 		// Rows this account already has (from an earlier upload) are dropped, as at upload.
 		const { rows: dupes } = await q(
@@ -1087,6 +1096,12 @@ export default async function register(ctx) {
 				// The row pays an entry another module tagged as owed (Ledger 0.23.0), if it still books to that
 				// entry's receivable or payable and the entry isn't paid or reversed since.
 				const pays = t.bill_id === null && t.pays_entry_id != null ? await tags.payableFor(t) : null;
+				// The payment of a bill posted to payables debits the account the bill's line sits in: its
+				// vendor's own account since Ledger 0.31.0, read from the bill's entry, not from a setting.
+				const payable = t.bill_id !== null && amt < 0n && !split ? await bills.paymentAccount(t.bill_id, t.code) : null;
+				// The other side: that account, the line of the entry the row pays (a customer's own account
+				// for an invoice), else the account chosen or suggested for the row.
+				const otherCode = payable ?? pays?.account_code ?? t.code;
 				const entry = await ctx.ledger.createJournalEntry(
 					{
 						entry_date: t.date,
@@ -1094,7 +1109,7 @@ export default async function register(ctx) {
 						reference: (t.fitid || `categorizer ${statement.id}/${id}`).slice(0, 100),
 						lines: [
 							{ account_code: t.account_code, debit_cents: amt > 0n ? abs : 0n, credit_cents: amt < 0n ? abs : 0n, memo: t.memo.slice(0, 500) },
-							...(split ?? [{ account_code: t.code, debit_cents: amt < 0n ? billAbs : 0n, credit_cents: amt > 0n ? abs : 0n, memo: "" }]),
+							...(split ?? [{ account_code: otherCode, debit_cents: amt < 0n ? billAbs : 0n, credit_cents: amt > 0n ? abs : 0n, memo: "" }]),
 							...restLines,
 						],
 						links: [link],
@@ -1117,9 +1132,10 @@ export default async function register(ctx) {
 					}
 				}
 				// A bill payment marks the bill paid; it isn't a payee rule (it books to payables).
-				const paidBill = t.bill_id !== null && (await bills.onPosted(id, t.code, entry.id, req.user));
+				const paidBill = t.bill_id !== null && (await bills.onPosted(id, t.code, entry.id, req.user, { payable: payable !== null }));
 				if (paidBill) await linkEntry(entry.id, await bills.linkFor(t.bill_id), req.user);
-				// The payment's entry is with the bill's vendor: tagged, unless it was posted with that vendor.
+				// The payment's entry is with the bill's vendor: tagged, unless its line in the vendor's own
+				// account already says so (Ledger 0.31.0).
 				if (vendorEntity) await tags.tagWho(entry, "vendor", vendorEntity, req.user);
 				// A person posted the money for what another module tagged as owed: that entry is "paid" now.
 				if (pays) await tags.paidBy(pays, entry, req.user);

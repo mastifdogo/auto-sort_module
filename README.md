@@ -110,6 +110,12 @@ The module creates no accounts. It works with your chart of accounts:
   later; one per currency), or choose one under Settings → Auto sort → Bills. A chosen account is
   in one currency: bills in the other currency can't be approved into it. With neither, bills
   and receipts are only tracked.
+- **Each vendor's own account** (Ledger 0.31.0 and later): Ledger keeps an account for every
+  vendor under accounts payable (and one for every customer under accounts receivable), made the
+  first time something is posted for them. A bill or receipt approved into the account tagged
+  "Accounts payable" sits in its vendor's account, and so does its payment, so what the vendor
+  is owed is that account's balance. Auto sort never offers these accounts as what a cost is
+  for, nor as a statement's bank or card account, and the AI isn't shown them.
 
 ### On Ledger's dashboard
 
@@ -694,7 +700,10 @@ put back. A vendor tagged on the entry of a bill that has none fills in the bill
 (e.g. a Sales invoice) or with a **vendor**, and not **paid**, are what a statement deposit or
 payment may pay. A row with exactly such an entry's amount is offered it (*Pays entry #12*; the
 customer's or vendor's name in the description raises the confidence; without the name it's only
-offered when nothing else has that amount) and gets the entry's receivable or payable account.
+offered when nothing else has that amount) and gets the account the entry's receivable or payable
+line is really in: the customer's or vendor's own account on Ledger 0.31.0 and later (a customer's
+payment of a Sales invoice is booked to that customer's account), followed when Ledger moves the
+line after the offer.
 **Not this one** drops the offer. Posting the row, which only a person does, tags that entry
 **paid** and the new entry with the customer or vendor. No AI is involved.
 
@@ -705,6 +714,32 @@ offered when nothing else has that amount) and gets the entry's receivable or pa
   account tagged "Accounts payable" in Ledger in the bill's currency; an active liability
   account): approving a bill or a receipt posts Dr *its account* / Cr *payables* on its date. The
   bank payment later books Dr *payables* / Cr *bank*.
+- *Each vendor's own account (Ledger 0.31.0 and later):* when the payables account is the one
+  tagged "Accounts payable" in Ledger and the bill has a vendor, Ledger posts the payable side to
+  that vendor's own account under it (e.g. `2000-7 Hydro One`): approval is Dr *its account* /
+  Cr *the vendor's account*, **Create bill** on a statement Dr *Statement bills to clear* /
+  Cr *the vendor's account*, and the bank or card payment Dr *the vendor's account* / Cr *bank*.
+  The payment always goes to the account the bill's line sits in, read from the bill's entry.
+  What the vendor is owed is that account's balance (Ledger's Customers and vendors page). The
+  statement row still shows accounts payable as its account; the bill's page says which account
+  its line is in. No "vendor" tag is set on these entries: the account says whose they are, and
+  Ledger shows the tag from it.
+- *An account chosen under Settings that isn't the tagged one* is kept as chosen: bills and their
+  payments are posted to that account itself, not to the vendors' own accounts (Ledger only keeps
+  those under the account tagged "Accounts payable"), and the entries carry the "vendor" tag as
+  before. The Status tab and the bill's page say so. To have each vendor's balance in Ledger,
+  clear the setting, or tag that account "Accounts payable" on Ledger's Accounts page. A vendor's
+  own account can't be chosen as the payables account (approving answers with what to change).
+- *Bills approved before Ledger 0.31.0:* Ledger's update moves their payable lines, and their
+  payments', into the vendors' accounts and drops the "vendor" tags it now reads from the
+  accounts. Auto sort follows: nothing is set back, a payment matched before the update is
+  posted to the account the bill's line is in now, the move isn't shown as a changed amount, and
+  Undo approval reverses the entry where it is.
+- *Changing a bill's vendor* moves its entry and the payments Auto sort posted for it to the new
+  vendor's account (Ledger logs the move on each entry). Unlinking a bill from an entry it was
+  linked to by hand leaves that entry's line in the vendor's account: it is still that vendor's.
+- *Mark paid* (no payment in the journal) posts nothing, as before: the vendor's account still
+  shows the amount until the payment is posted or linked.
 - *Without one:* bills and receipts are only tracked, and the payment books straight to the
   bill's account.
 - *Receipts* (already paid, e.g. an online order) go through payables the same way since 0.26.0:
@@ -725,7 +760,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | Method | Path | |
 |---|---|---|
 | `POST` | `/statements` | `{filename, content, account_code, flip_signs?, date_order?: "auto"\|"mdy"\|"dmy"}` files the text as a document, stages the statement and starts categorising it (up to about 1 MB; larger files go through `/inbox`) |
-| `GET` | `/statements`, `/statements/:id` | list; one statement with its transactions |
+| `GET` | `/statements`, `/statements/:id` | list; one statement with its transactions (`own_accounts`: the customers' and vendors' own accounts its rows are booked to, which aren't in `/accounts`) |
 | `POST` | `/statements/:id/categorize` | `{all?: true}` asks the model again (only unposted rows) |
 | `POST` | `/statements/:id/post` | `{ids?: [...]}` posts rows that have an account |
 | `POST` | `/statements/:id/account` | `{account_code, flip_signs?}`: choose or change the statement's account while nothing is posted (remembered for the sending module) |
@@ -768,14 +803,14 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/documents/move` | file what is still in the module's old storage in Documents now |
 | `POST` | `/suggest` | `{account_code, transactions: [{date, description, amount, memo?}]}` returns suggestions without storing anything (for scripts or other modules) |
 | `GET`/`DELETE` | `/rules`, `/rules/:key` | learned payee rules |
-| `GET` | `/status` | Ledger's LLM API status for this module, the options in effect, the user's role, the organization |
+| `GET` | `/status` | Ledger's LLM API status for this module, the options in effect, `payables` (`own_accounts`: Ledger keeps each vendor's own account; `kept_in_chosen`: the account chosen under Settings isn't the tagged one and keeps the bills itself), the user's role, the organization |
 | `POST` | `/sort-now` | match bills and transfers, count bills already in the journal; returns `{bill_matches, transfer_links, journal_matches, tag_matches}` (rows matched to entries tagged as owed) |
 | `GET` | `/journal-matches?bill_id=` | open bills and receipts already in the journal (no AI) |
 | `GET` | `/match-suggestions?statement_id=\|bill_id=` | Auto sort's pending matches, with what they point to |
 | `POST` | `/match-suggestions/:id/approve`, `/reject` | carry a match out, or turn it down |
 | `GET`/`POST` | `/bills?status=unpaid\|new\|open\|paid\|ignored&kind=bill\|receipt`, `/bills` | list; add by hand `{vendor, amount, due_date, ...}` |
 | `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF, a picture or an `.eml` (up to about 700 KB; larger files go through `/inbox`) |
-| `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payment and lines; edit fields (incl. `billable`, `customer_name`, `customer_ref`) or `status`; delete |
+| `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payment and lines (`payable_account`: where its payable line sits now, `own: true` for the vendor's own account); edit fields (incl. `billable`, `customer_name`, `customer_ref`) or `status`; delete |
 | `GET` | `/bills/:id/document` | the bill's document, base64 (it also opens at `document_url`, in Ledger's Documents) |
 | `POST` | `/bills/:id/approve`, `/unapprove` | approve (posts to payables if configured); undo (reverses that entry) |
 | `GET`/`POST` | `/bills/:id/candidates`, `/match {transaction_id}`, `/unmatch` | manual matching |
@@ -885,6 +920,7 @@ lib/files.mjs          every file is a document in Ledger; moving what old versi
 lib/extraction.mjs     what was read from a file, in the keys Ledger's modules share (read once)
 lib/doc-tags.mjs       Ledger's tags on files: posted, paid, overdue
 lib/tags.mjs           Ledger's tags on journal entries
+lib/payables.mjs       payable and receivable lines: the tagged accounts and customers' and vendors' own accounts
 lib/inbox.mjs          the inbox: uploads, what a file becomes, Extract data, hand-offs, clean-up
 lib/uploads.mjs        an upload's pieces in temporary files until it is complete
 lib/extract-data.mjs   Extract data: the prompt and the checks on what the AI read
@@ -956,6 +992,18 @@ app's updater reads it. `.github/workflows/app.yml` builds the app unsigned on e
 inside the module and is downloaded from the Inbox tab.
 
 ## Changes
+
+- **0.28.0:** **Bills, receipts and their payments are kept in each vendor's own account**
+  (Ledger 0.31.0 and later, where every vendor has an account under accounts payable and every
+  customer one under accounts receivable). Approving a bill or receipt, Create bill on a
+  statement, and the bank or card payment post the payable side to the vendor's account, so
+  Ledger shows what each vendor is owed. The "vendor" tag is no longer set on those entries (the
+  account says it), bills approved before the update keep working after Ledger moves their
+  lines, a changed vendor moves the bill's entries, and a row that pays a customer's invoice or
+  another module's bill is booked to the account that entry's line is really in. Customers' and
+  vendors' own accounts are never offered as what a cost is for or as a bank account, to people
+  or to the AI. An accounts payable account chosen under Settings that isn't the one tagged in
+  Ledger keeps the bills itself, as before. On an older Ledger nothing changes. See "Bills".
 
 - **0.27.0:** **Create bill on a statement makes an unpaid bill at once.** It is posted when
   created, Dr "Statement bills to clear" (Auto sort's own clearing account, made on first use)

@@ -14,12 +14,95 @@ class HttpError extends Error {
 	}
 }
 
-/** ctx.tags as Ledger has it: tags per entry, "paid" takes "overdue" off, listeners hear every change. */
-function fakeTags(entries = new Map()) {
+/**
+ * Ledger 0.31.0's books, for the tags and the postings below: every vendor has an account of their
+ * own under accounts payable and every customer one under accounts receivable, made when first
+ * needed. accounts: the chart (the same list ctx.ledger.listAccounts answers with); entries: the
+ * journal (the Map the stand-in ctx posts into).
+ */
+function fakeBooks(accounts, entries = new Map()) {
+	const KIND = { vendor: "payable", customer: "receivable" };
+	const own = (entityId, role, currency = "CAD", under = null) => {
+		const have = accounts.find((a) => a.entity?.id === Number(entityId) && a.entity.role === role && a.currency === currency);
+		if (have) return have;
+		const parent = accounts.find((a) => (under ? a.code === under : a.kind === KIND[role] && a.currency === currency));
+		if (!parent) throw new HttpError(422, `no accounts ${KIND[role]} in ${currency}`);
+		const a = { code: `${parent.code}-${entityId}`, name: `Entity ${entityId}`, type: parent.type, currency, is_active: true, kind: null, parent_code: parent.code, entity: { id: Number(entityId), name: `Entity ${entityId}`, role } };
+		accounts.push(a);
+		return a;
+	};
+	const account = (code) => accounts.find((a) => a.code === code);
+	return {
+		accounts,
+		entries,
+		own,
+		account,
+		/** What Ledger does to an entry posted with a customer or vendor: its receivable or payable lines go to their own account. */
+		route: (entry) =>
+			!entry.entity_id ? entry.lines : entry.lines.map((l) => {
+				const a = account(l.account_code);
+				const role = a && !a.entity ? Object.keys(KIND).find((r) => KIND[r] === a.kind) : null;
+				return role ? { ...l, account_code: own(entry.entity_id, role, a.currency, a.code).code } : l;
+			}),
+		/** The tags read from the accounts: a line in a customer's or vendor's own account says whose the entry is. */
+		derived: (entryId) => {
+			const out = [];
+			for (const l of entries.get(Number(entryId))?.lines ?? []) {
+				const e = account(l.account_code)?.entity;
+				if (e && !out.some((t) => t.tag === e.role && t.entity.id === e.id)) out.push({ id: 0, tag: e.role, entity: { id: e.id, name: e.name }, note: "", module_id: null, set_by: null, account_code: l.account_code });
+			}
+			return out;
+		},
+		/** Tagged "vendor": the entry's lines in accounts payable move to the vendor's account. → { moved, tracked } */
+		claim: (entryId, role, entityId) => {
+			const e = entries.get(Number(entryId));
+			let moved = 0;
+			for (const l of e?.lines ?? []) {
+				const a = account(l.account_code);
+				if (!a || a.entity || a.kind !== KIND[role]) continue;
+				l.account_code = own(entityId, role, a.currency, a.code).code;
+				moved++;
+			}
+			return { moved, tracked: (e?.lines ?? []).some((l) => account(l.account_code)?.entity?.id === Number(entityId) && account(l.account_code).entity.role === role) };
+		},
+		/** The tag taken off: the lines go back to accounts payable. → whose lines moved */
+		release: (entryId, role, entityId = null) => {
+			const freed = new Set();
+			for (const l of entries.get(Number(entryId))?.lines ?? []) {
+				const a = account(l.account_code);
+				if (a?.entity?.role !== role || (entityId && a.entity.id !== Number(entityId))) continue;
+				l.account_code = a.parent_code;
+				freed.add(a.entity.id);
+			}
+			return [...freed];
+		},
+		owed: (entityId) => {
+			let n = 0n;
+			for (const e of entries.values()) for (const l of e.lines ?? []) if (account(l.account_code)?.entity?.id === Number(entityId)) n += BigInt(l.credit_cents) - BigInt(l.debit_cents);
+			return n;
+		},
+	};
+}
+
+/**
+ * ctx.tags as Ledger has it: tags per entry, "paid" takes "overdue" off, listeners hear every
+ * change. With books (Ledger 0.31.0): "customer" and "vendor" are read from the accounts, setting
+ * one moves the entry's receivable or payable line and stores nothing, removing one moves it back.
+ */
+function fakeTags(entries = new Map(), books = null) {
 	const byEntry = new Map();
 	const listeners = [];
 	const log = [];
-	const list = (id) => byEntry.get(Number(id)) ?? [];
+	const stored = (id) => byEntry.get(Number(id)) ?? [];
+	const list = (id) => {
+		const out = stored(id).map((t) => ({ ...t }));
+		for (const d of books?.derived(id) ?? []) {
+			const kept = out.find((t) => t.tag === d.tag && t.entity?.id === d.entity.id);
+			if (kept) kept.account_code = d.account_code;
+			else out.push(d);
+		}
+		return out;
+	};
 	const announce = async (c) => {
 		log.push(c);
 		for (const fn of listeners) await fn(c);
@@ -29,17 +112,26 @@ function fakeTags(entries = new Map()) {
 		const id = Number(entryId);
 		const entity_id = opts.entity_id ?? null;
 		if ((tag === "customer" || tag === "vendor") && !entity_id) throw new HttpError(422, "entity_id is required");
-		if (list(id).some((t) => t.tag === tag && (t.entity?.id ?? null) === entity_id)) return list(id);
-		byEntry.set(id, [...list(id), { tag, entity: entity_id ? { id: entity_id, name: `Entity ${entity_id}` } : null, note: opts.note ?? "", module_id: by, set_by: user?.username ?? null }]);
+		if (books && entity_id && (tag === "customer" || tag === "vendor")) {
+			const { moved, tracked } = books.claim(id, tag, entity_id);
+			if (tracked) {
+				byEntry.set(id, stored(id).filter((t) => !(t.tag === tag && t.entity?.id === entity_id)));
+				if (moved > 0) await announce({ entry_id: id, action: "set", tag, entity_id, module_id: by });
+				return list(id);
+			}
+		}
+		if (stored(id).some((t) => t.tag === tag && (t.entity?.id ?? null) === entity_id)) return list(id);
+		byEntry.set(id, [...stored(id), { tag, entity: entity_id ? { id: entity_id, name: `Entity ${entity_id}` } : null, note: opts.note ?? "", module_id: by, set_by: user?.username ?? null }]);
 		await announce({ entry_id: id, action: "set", tag, entity_id, module_id: by });
 		if (tag === "paid") await removeAs(by, id, "overdue");
 		return list(id);
 	}
 	async function removeAs(by, entryId, tag, opts = {}) {
 		const id = Number(entryId);
-		const gone = list(id).filter((t) => t.tag === tag && (!opts.entity_id || t.entity?.id === opts.entity_id));
-		byEntry.set(id, list(id).filter((t) => !gone.includes(t)));
+		const gone = stored(id).filter((t) => t.tag === tag && (!opts.entity_id || t.entity?.id === opts.entity_id));
+		byEntry.set(id, stored(id).filter((t) => !gone.includes(t)));
 		for (const g of gone) await announce({ entry_id: id, action: "removed", tag, entity_id: g.entity?.id ?? null, module_id: by });
+		if (books && (tag === "customer" || tag === "vendor")) for (const who of books.release(id, tag, opts.entity_id ?? null)) await announce({ entry_id: id, action: "removed", tag, entity_id: who, module_id: by });
 		return list(id);
 	}
 	return {
@@ -54,6 +146,8 @@ function fakeTags(entries = new Map()) {
 		setAs,
 		removeAs,
 		names: (entryId) => list(entryId).map((t) => (t.entity ? `${t.tag}:${t.entity.id}` : t.tag)).sort(),
+		/** Only what is kept as a tag (not what is read from an account). */
+		kept: (entryId) => stored(entryId).map((t) => (t.entity ? `${t.tag}:${t.entity.id}` : t.tag)).sort(),
 		list,
 		log,
 	};
@@ -115,10 +209,12 @@ const CLEARING = { code: "2990", name: "Statement bills to clear", type: "liabil
 const ACCOUNT_MAP = new Map(ACCOUNTS.map((a) => [a.code, a]));
 
 /** Registers the module on a fake ctx with tags (or without: tags null, an older Ledger). */
-async function start({ answers = [], tags = fakeTags(), entries = new Map(), settings = {}, accounts = ACCOUNTS } = {}) {
+/** books: Ledger 0.31.0's own accounts for customers and vendors (fakeBooks); without, an older Ledger. */
+async function start({ answers = [], tags = fakeTags(), entries = new Map(), settings = {}, accounts = ACCOUNTS, books = null, entities = {} } = {}) {
 	const routes = new Map();
 	const posted = [];
 	const related = [];
+	const reversed = [];
 	const none = { rows: [], rowCount: 0 };
 	const ctx = {
 		id: "categorizer",
@@ -145,7 +241,7 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 		ledger: {
 			listAccounts: async () => accounts,
 			createJournalEntry: async (entry) => {
-				const e = { ...entry, id: 100 + posted.length, entity: entry.entity_id ? { id: entry.entity_id, name: "" } : null, reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }] };
+				const e = { ...entry, lines: (books ? books.route(entry) : entry.lines).map((l) => ({ ...l })), id: 100 + posted.length, entity: entry.entity_id ? { id: entry.entity_id, name: "" } : null, reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }] };
 				posted.push(e);
 				entries.set(e.id, e);
 				return e;
@@ -154,8 +250,12 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 				if (!entries.has(Number(id))) throw new HttpError(404, "not found");
 				return { ...entries.get(Number(id)), tags: tags ? tags.list(id) : undefined };
 			},
-			reverseJournalEntry: async (id) => ({ id: Number(id) + 1000 }),
+			reverseJournalEntry: async (id) => {
+				reversed.push(Number(id));
+				return { id: Number(id) + 1000 };
+			},
 			linkJournalEntry: async () => ({}),
+			unlinkJournalEntry: async () => true,
 			clearingAccount: async ({ key, currency }) => ({ ...CLEARING, module_key: key, currency }),
 			relateEntries: async (a, b, opts) => { related.push([Number(a), Number(b), opts.note]); return []; },
 		},
@@ -164,13 +264,15 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 		files: { onReceive() {}, inbox: async () => [] },
 		search: { provide() {} },
 		...(tags ? { tags: tags.api } : {}),
+		// Ledger's list of customers and vendors, with their own accounts on Ledger 0.31.0.
+		...(books ? { entities: { find: async () => null, list: async () => [], ensure: async (name) => ({ id: entities[name] ?? 99, name }), account: async (id, role, currency) => books.own(id, role, currency) } } : {}),
 	};
 	await register(ctx);
 	// The startup backfill isn't awaited by register.
 	await new Promise((r) => setImmediate(r));
 	const call = (route, { params = {}, body, query = "" } = {}) =>
 		routes.get(route)({ params, body, query: new URLSearchParams(query), user: { username: "pat", role: "bookkeeper" } });
-	return { call, posted, tags, entries, related };
+	return { call, posted, tags, entries, related, reversed };
 }
 
 const BILL = { id: 3n, kind: "bill", status: "new", vendor: "Hydro One", invoice_number: "H-1", bill_date: "2026-03-01", due_date: "2026-03-20", amount_cents: 8550n, currency: "CAD", account_code: "5100", ap_account: null, journal_entry_id: null, paid_entry_id: null, vendor_entity_id: 7, paid_by_tag: false, paid_tag_by: null, tags_synced_at: null };
@@ -454,4 +556,208 @@ test("posting a bill's payment tags the bill's payable entry paid, with a note n
 	assert.deepEqual(tags.names(50), ["paid", "vendor:7"]);
 	assert.equal(tags.list(50).find((t) => t.tag === "paid").note, `payment in entry #${posted[0].id}`);
 	assert.deepEqual(tags.names(posted[0].id), [], "the payment was posted with the vendor: no tag needed");
+});
+
+// ---------------------------------------------------------------------------
+// Vendors' and customers' own accounts (Ledger 0.31.0)
+// ---------------------------------------------------------------------------
+
+// Ledger 0.30.0 tags accounts receivable and payable; 0.31.0 keeps each customer's and vendor's own account under them.
+const TAGGED = () => ACCOUNTS.map((a) => ({ ...a, kind: a.code === "2000" ? "payable" : a.code === "1200" ? "receivable" : null, parent_code: null, entity: null }));
+const shape = (e) => e.lines.map((l) => [l.account_code, String(l.debit_cents), String(l.credit_cents)]);
+const vendorChanges = (tags) => tags.log.filter((c) => c.tag === "vendor" || c.tag === "customer");
+
+/** Ledger 0.31.0: the chart, the journal and the tags that read "vendor" from the accounts. */
+function ownBooks(accounts = TAGGED()) {
+	const books = fakeBooks(accounts);
+	return { books, tags: fakeTags(books.entries, books), entries: books.entries, accounts };
+}
+/** A bill's payable entry as Ledger keeps it, with its payable line in `code`. */
+const payableEntry = (id, code, extra = {}) => ({ id, entry_date: "2026-03-01", description: "Hydro One", reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }], lines: [{ account_code: "5100", debit_cents: 8550n, credit_cents: 0n }, { account_code: code, debit_cents: 0n, credit_cents: 8550n }], ...extra });
+/** The bill is among the ones the to-do refresh syncs (Sort now, every hour, after each change). */
+const refreshed = (bill) => [[/b\.paid_entry_id, b\.vendor_entity_id, b\.tags_synced_at,/, () => [{ ...bill, document_id: null, matched: false }]]];
+/** The claimed row is the payment of bill 3, and its posted payments cover the bill. */
+function billPayment(row, bill) {
+	const answers = [[/SELECT b\.id, b\.amount_cents FROM/, () => [{ id: 3n, amount_cents: 8550n }]], [/AS linked,/, () => [{ linked: "8550", posted: "8550" }]], [/SELECT vendor, vendor_entity_id FROM mod_categorizer\.bills/, () => [{ vendor: bill.vendor, vendor_entity_id: bill.vendor_entity_id }]], ...rowTable(row), ...billTable(bill)];
+	const claim = answers.find(([p]) => p.source.includes("SET status = 'posting'"));
+	const original = claim[1];
+	claim[1] = () => original().map((r) => ({ ...r, bill_id: 3n }));
+	return answers;
+}
+
+test("vendor accounts: an approved bill is posted to its vendor's own account, with no vendor tag; its payment clears that account", async () => {
+	const bill = { ...BILL, due_date: "2999-01-01" };
+	const row = { ...ROW, description: "HYDRO ONE", amount_cents: -8550n, suggested_code: "2000" };
+	const o = ownBooks();
+	const { call, posted } = await start({ answers: billPayment(row, bill), ...o });
+	await call("POST /bills/:id/approve", { params: { id: "3" } });
+	assert.deepEqual(shape(posted[0]), [["5100", "8550", "0"], ["2000-7", "0", "8550"]], "Ledger posts the payable line to the vendor's account");
+	assert.equal(posted[0].entity_id, 7);
+	assert.equal(bill.ap_account, "2000", "the bill keeps the account it went through");
+	assert.deepEqual(o.tags.kept(posted[0].id), [], "no vendor tag is kept: the account says whose it is");
+	assert.deepEqual(vendorChanges(o.tags), [], "and none was asked for");
+	assert.deepEqual(o.tags.names(posted[0].id), ["vendor:7"], "Ledger still reads it as the vendor's");
+	assert.equal(o.books.owed(7), 8550n);
+	// The page is told where the line sits.
+	const shown = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual(shown.bill.payable_account, { code: "2000-7", name: "Entity 7", own: true });
+	// The payment row is offered accounts payable and posted to the vendor's account.
+	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.deepEqual(shape(posted[1]), [["1000", "0", "8550"], ["2000-7", "8550", "0"]]);
+	assert.equal(bill.status, "paid");
+	assert.equal(o.books.owed(7), 0n, "nothing is owed to the vendor any more");
+	assert.deepEqual(o.tags.kept(posted[1].id), [], "the payment needs no vendor tag either");
+	assert.deepEqual(o.tags.kept(posted[0].id), ["paid"]);
+	assert.equal(row.learned, undefined, "a bill payment isn't a payee rule");
+});
+
+test("vendor accounts: an account chosen under Settings that isn't tagged payable keeps the bill itself, tagged as before", async () => {
+	const bill = { ...BILL, due_date: "2999-01-01" };
+	const accounts = [...TAGGED(), { code: "2100", name: "Trade creditors", type: "liability", currency: "CAD", is_active: true, kind: null, parent_code: null, entity: null }];
+	const o = ownBooks(accounts);
+	const row = { ...ROW, description: "HYDRO ONE", amount_cents: -8550n, suggested_code: "2100" };
+	const { call, posted } = await start({ answers: billPayment(row, bill), settings: { ap_account: "2100" }, ...o });
+	await call("POST /bills/:id/approve", { params: { id: "3" } });
+	assert.deepEqual(shape(posted[0]), [["5100", "8550", "0"], ["2100", "0", "8550"]]);
+	assert.deepEqual(o.tags.kept(posted[0].id), ["vendor:7"], "no account says whose it is: the tag does");
+	assert.equal((await call("GET /status")).payables.kept_in_chosen, true);
+	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.deepEqual(shape(posted[1]), [["1000", "0", "8550"], ["2100", "8550", "0"]]);
+	assert.equal(bill.status, "paid");
+	assert.equal(accounts.some((a) => a.entity), false, "no vendor account was made");
+	// A vendor's own account can't be the payables account for every bill.
+	const own = ownBooks();
+	own.books.own(7, "vendor");
+	const refused = await start({ answers: billTable({ ...BILL }), settings: { ap_account: "2000-7" }, ...own });
+	await assert.rejects(refused.call("POST /bills/:id/approve", { params: { id: "3" } }), (e) => e.status === 409 && /own account/.test(e.message));
+});
+
+test("vendor accounts: after Ledger moved a bill's line into the vendor's account and dropped the tag, nothing loops and everything still works", async () => {
+	// What Ledger's update leaves: ap_account says 2000, the line sits in 2000-7, the vendor tag is gone.
+	const bill = { ...BILL, status: "open", due_date: "2999-01-01", journal_entry_id: 50, ap_account: "2000", tags_synced_at: new Date() };
+	const row = { ...ROW, description: "HYDRO ONE", amount_cents: -8550n, suggested_code: "2000", chosen_code: "2000" };
+	const o = ownBooks();
+	o.books.own(7, "vendor");
+	o.entries.set(50, payableEntry(50, "2000-7", { amended: false, moves: [{ line: 2, from: "2000", to: "2000-7" }] }));
+	const { call, posted, reversed } = await start({ answers: [...refreshed(bill), ...billPayment(row, bill)], ...o });
+	// Syncing (startup, Sort now, the hourly refresh) neither sets nor removes a vendor tag, however often.
+	await call("POST /sort-now");
+	await call("POST /sort-now");
+	assert.deepEqual(vendorChanges(o.tags), []);
+	assert.deepEqual(shape(o.entries.get(50)), [["5100", "8550", "0"], ["2000-7", "0", "8550"]], "the line stays in the vendor's account");
+	// The move isn't shown as a change of the bill's amount.
+	const shown = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.equal(shown.bill.entry_amended, undefined);
+	assert.equal(shown.bill.payable_account.code, "2000-7");
+	// The row matched before the update (booked to 2000) still pays the bill, in the account its line is in now.
+	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.deepEqual(shape(posted[0]), [["1000", "0", "8550"], ["2000-7", "8550", "0"]]);
+	assert.equal(bill.status, "paid");
+	assert.equal(o.books.owed(7), 0n);
+	// Undoing the approval of such a bill reverses its entry and leaves the lines where they are.
+	const open = { ...BILL, status: "open", journal_entry_id: 50, ap_account: "2000", tags_synced_at: new Date() };
+	const again = ownBooks();
+	again.books.own(7, "vendor");
+	again.entries.set(50, payableEntry(50, "2000-7"));
+	const b = await start({ answers: billTable(open), ...again });
+	await b.call("POST /bills/:id/unapprove", { params: { id: "3" } });
+	assert.deepEqual(b.reversed, [50]);
+	assert.deepEqual([open.status, open.journal_entry_id, open.ap_account], ["new", null, null]);
+	assert.deepEqual(vendorChanges(again.tags), [], "the reversed entry's line isn't moved back");
+	assert.equal(again.entries.get(50).lines[1].account_code, "2000-7");
+});
+
+test("vendor accounts: a bill approved without a vendor is moved into the vendor's account once it has one; a changed vendor moves the bill and its payments", async () => {
+	const bill = { ...BILL, status: "open", due_date: "2999-01-01", journal_entry_id: 50, paid_entry_id: null, ap_account: "2000", vendor: "Hydro One", vendor_entity_id: 7, tags_synced_at: new Date() };
+	const o = ownBooks();
+	o.entries.set(50, payableEntry(50, "2000"));
+	// A payment this module posted for it, to the vendor's account.
+	o.entries.set(60, { id: 60, entry_date: "2026-03-15", description: "HYDRO ONE", reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }], lines: [{ account_code: "1000", debit_cents: 0n, credit_cents: 4000n }, { account_code: o.books.own(7, "vendor").code, debit_cents: 4000n, credit_cents: 0n }] });
+	const answers = [
+		[/SELECT vendor, customer_name FROM mod_categorizer\.bills/, () => [{ vendor: bill.vendor, customer_name: "" }]],
+		[/FROM mod_categorizer\.transactions t WHERE t\.bill_id = \$1 ORDER BY t\.id DESC/, () => [{ id: 8n, status: "posted", journal_entry_id: 60n, account_code: "1000", amount_cents: -4000n }]],
+		...refreshed(bill),
+		...billTable(bill),
+	];
+	const { call } = await start({ answers, entities: { "Hydro One": 7, "Hydro Two": 9 }, ...o });
+	// The sync claims the line for the bill's vendor: Ledger moves it, nothing is kept as a tag.
+	await call("POST /sort-now");
+	assert.equal(o.entries.get(50).lines[1].account_code, "2000-7");
+	assert.deepEqual(o.tags.kept(50), []);
+	assert.equal(o.books.owed(7), 4550n);
+	// The vendor is corrected on the bill: its entry and its payment move to the new vendor's account.
+	await call("PATCH /bills/:id", { params: { id: "3" }, body: { vendor: "Hydro Two" } });
+	assert.equal(String(bill.vendor_entity_id), "9");
+	assert.equal(o.entries.get(50).lines[1].account_code, "2000-9");
+	assert.equal(o.entries.get(60).lines[1].account_code, "2000-9");
+	assert.deepEqual([o.books.owed(7), o.books.owed(9)], [0n, 4550n]);
+	assert.deepEqual([o.tags.kept(50), o.tags.kept(60)], [[], []]);
+	// Saving again changes nothing.
+	const before = o.tags.log.length;
+	await call("PATCH /bills/:id", { params: { id: "3" }, body: { vendor: "Hydro Two" } });
+	assert.equal(o.tags.log.length, before);
+});
+
+test("vendor accounts: unlinking a bill from an entry it was linked to by hand doesn't move that entry's line back", async () => {
+	const bill = { ...BILL, status: "open", due_date: "2999-01-01", ap_account: null };
+	const o = ownBooks();
+	// Entered by hand in Ledger: Dr utilities / Cr accounts payable.
+	o.entries.set(70, payableEntry(70, "2000", { links: [] }));
+	const { call } = await start({ answers: [[/SELECT vendor, vendor_entity_id FROM mod_categorizer\.bills/, () => [{ vendor: bill.vendor, vendor_entity_id: 7 }]], ...billTable(bill)], ...o });
+	await call("POST /bills/:id/link-entry", { params: { id: "3" }, body: { entry_id: 70 } });
+	assert.equal(bill.status, "paid");
+	assert.equal(o.entries.get(70).lines[1].account_code, "2000-7", "said to be this vendor's bill: Ledger moves its payable line");
+	await call("POST /bills/:id/unlink-entry", { params: { id: "3" } });
+	assert.equal(bill.status, "open");
+	assert.equal(o.entries.get(70).lines[1].account_code, "2000-7", "unlinking is no reason to move it back");
+	assert.deepEqual(o.tags.kept(70), []);
+});
+
+test("vendor accounts: a deposit that pays a customer's invoice is booked to the customer's own account, also when the line moved after the offer", async () => {
+	const o = ownBooks();
+	const own = o.books.own(4, "customer").code;
+	assert.equal(own, "1200-4");
+	const inv = { ...invoice(10, 50000n, []), lines: [{ account_code: own, debit_cents: 50000n, credit_cents: 0n }, { account_code: "4000", debit_cents: 0n, credit_cents: 50000n }] };
+	o.entries.set(10, inv);
+	await o.tags.setAs("sales", 10, "billed");
+	const follow = (row) => [[/SET suggested_code = \$2 WHERE id = \$1 AND status = 'new' AND source = 'tag'/, (_, [, code]) => { row.suggested_code = code; return { rows: [], rowCount: 1 }; }], ...rowTable(row)];
+	// Offered: the row's account is the line's real account, and the customer is read from it.
+	const row = { ...ROW, description: "E-TRANSFER ENTITY 4" };
+	const a = await start({ answers: follow(row), ...o });
+	assert.equal((await a.call("POST /sort-now")).tag_matches, 1);
+	assert.equal(row.suggested_code, "1200-4");
+	assert.equal(row.confidence, 0.9, "the customer's name is in the description");
+	const page = await a.call("GET /statements/:id", { params: { id: "1" } });
+	assert.deepEqual(page.own_accounts, [], "(no rows are answered here; the page gets the names of own accounts its rows use)");
+	await a.call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.deepEqual(shape(a.posted[0]), [["1000", "50000", "0"], ["1200-4", "0", "50000"]]);
+	assert.deepEqual(o.tags.kept(10), ["billed", "paid"]);
+	assert.deepEqual(o.tags.kept(a.posted[0].id), [], "the payment needs no customer tag: its line is in the customer's account");
+	assert.equal(o.books.owed(4), 0n);
+
+	// Offered accounts receivable before Ledger moved the invoice's line: Sort now follows it, and so does posting by itself.
+	for (const sortFirst of [true, false]) {
+		const p = ownBooks();
+		p.books.own(4, "customer");
+		p.entries.set(10, { ...inv, lines: inv.lines.map((l) => ({ ...l })) });
+		await p.tags.setAs("sales", 10, "billed");
+		const stale = { ...ROW, pays_entry_id: 10, suggested_code: "1200", source: "tag", confidence: 0.9 };
+		const b = await start({ answers: follow(stale), ...p });
+		if (sortFirst) {
+			await b.call("POST /sort-now");
+			assert.equal(stale.suggested_code, "1200-4");
+		}
+		await b.call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+		assert.deepEqual(shape(b.posted[0]), [["1000", "50000", "0"], ["1200-4", "0", "50000"]]);
+		assert.deepEqual(p.tags.kept(10), ["billed", "paid"]);
+	}
+});
+
+test("vendor accounts: a payment that pays another module's bill is booked to the vendor's own account", () => {
+	const accounts = new Map(TAGGED().map((a) => [a.code, a]));
+	accounts.set("2000-7", { code: "2000-7", name: "Hydro One", type: "liability", currency: "CAD", is_active: true, kind: null, parent_code: "2000", entity: { id: 7, name: "Hydro One", role: "vendor" } });
+	const out = { id: 1n, account_code: "1000", date: "2026-03-15", description: "HYDRO ONE", amount_cents: -50000n };
+	// Tagged by Ledger from the account: { id: 0, tag: "vendor", account_code }.
+	const owed = { ...invoice(20, 50000n, [{ id: 0, tag: "vendor", entity: { id: 7, name: "Hydro One" }, account_code: "2000-7" }]), lines: [{ account_code: "5100", debit_cents: 50000n, credit_cents: 0n }, { account_code: "2000-7", debit_cents: 0n, credit_cents: 50000n }] };
+	assert.deepEqual(payableCandidates(out, [owed], accounts, "categorizer").map((c) => [c.entry_id, c.account_code, c.role, c.named, c.who.id]), [[20, "2000-7", "vendor", true, 7]]);
 });

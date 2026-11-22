@@ -971,6 +971,9 @@
 				const open = t.status === "new";
 				const sel = el("select", { disabled: !open || busy });
 				accountOptions(sel, candidates, { selected: t.account_code, placeholder: "Choose account…" });
+				// Booked to a customer's or vendor's own account (it pays their invoice or bill): shown, though it isn't one to pick.
+				const own = t.account_code && !candidates.some((a) => a.code === t.account_code) ? (current.own_accounts ?? []).find((a) => a.code === t.account_code) : null;
+				if (own) sel.append(el("option", { value: own.code, selected: true }, `${own.code} · ${own.name}`));
 				sel.onchange = () => setAccount([t.id], sel.value || null);
 				withNewAccount(sel, { type: t.amount_cents > 0 ? "revenue" : "expense", currency: cur }, (acc) => setAccount([t.id], acc.code));
 				// The AI's proposed account (none of yours fitted): Ledger's New account dialog, prefilled
@@ -1860,7 +1863,7 @@
 	function renderBill(b, payments) {
 		const [cls, text] = BILL_STATUS[b.status] || ["plain", b.status];
 		$("bd-title").textContent = `${b.vendor || "Bill"}${b.invoice_number ? ` #${b.invoice_number}` : ""}`;
-		$("bd-status").replaceChildren(el("span", { class: `pill ${cls}` }, billStatusText(b, text)), b.journal_entry_id ? el("span", { class: "pill plain" }, ` In payables (entry #${b.journal_entry_id})`) : "", amendedPill(b));
+		$("bd-status").replaceChildren(el("span", { class: `pill ${cls}` }, billStatusText(b, text)), b.journal_entry_id ? el("span", { class: "pill plain", title: b.payable_account ? `Its payable line is in ${b.payable_account.code} · ${b.payable_account.name}${b.payable_account.own ? " (the vendor's own account under accounts payable)" : ""}` : "" }, ` In payables (entry #${b.journal_entry_id}${b.payable_account?.own ? `, ${b.payable_account.code}` : ""})`) : "", amendedPill(b));
 		$("bd-error").textContent = b.error || "";
 		$("bd-kind").value = b.kind;
 		$("bd-vendor").value = b.vendor;
@@ -1893,7 +1896,7 @@
 		$("bd-delete").classList.toggle("hidden", locked || b.status === "paid");
 		$("bd-root-delete").classList.toggle("hidden", !rootMode);
 		$("bd-root-unpost").classList.toggle("hidden", !rootMode || !(b.journal_entry_id || b.paid_entry_id));
-		$("bd-ap-note").textContent = b.status === "new" ? `Approving posts this ${b.kind} to accounts payable: the account set under Settings → ${moduleName}, else the one tagged Accounts payable in Ledger.` : "";
+		$("bd-ap-note").textContent = b.status === "new" ? `Approving posts this ${b.kind} to accounts payable: the account set under Settings → ${moduleName}, else the one tagged Accounts payable in Ledger${payablesNote}` : "";
 
 		const pay = $("bd-payments");
 		if (payments.length === 0) pay.replaceChildren(el("p", { class: "muted small" }, b.status === "paid" ? (b.paid_entry_id ? `Recorded in journal entry #${b.paid_entry_id}.` : b.paid_by_tag ? `Paid elsewhere: its journal entry${b.journal_entry_id ? ` #${b.journal_entry_id}` : ""} was tagged "paid" in Ledger by ${b.paid_tag_by || "a person"}. ${moduleName} posted nothing for it. Taking the tag off there, or Reopen here, makes it unpaid again.` : "Marked paid by hand.") : "No matching bank transaction yet. It's matched when a statement with the payment is uploaded, or try Auto sort."));
@@ -2225,7 +2228,7 @@
 							: `PDFs and photos go to the connection for images${ai.images.model ? ` (${ai.images.model})` : ""}${ai.readsPdf ? "" : "; it reads photos of bills and receipts but not PDFs, so PDF amounts have to be typed in"}.`
 					}`)),
 		);
-		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${st.settings.ap_account || "none (bills and receipts are only tracked)"}.`;
+		$("st-options").textContent = `Needs review below ${Math.round(st.settings.review_threshold * 100)}% confidence · ${st.settings.batch_size} transactions per AI request · accounts payable: ${st.settings.ap_account || "none (bills and receipts are only tracked)"}.${st.settings.ap_account && payablesText(st.payables) ? ` ${payablesText(st.payables)}.` : ""}`;
 		$("st-version").textContent = `Module ${st.version} on Ledger ${st.ledger}.`;
 		// Files an older version kept in the module's own storage move to Documents when Ledger starts; any left are shown here.
 		const n = st.files_for_documents || 0;
@@ -2263,8 +2266,14 @@
 
 	// The module's name as set in its manifest (Ledger shows it in the sidebar and as the Settings tab).
 	let moduleName = "Auto sort";
+	// How bills sit in payables (Ledger 0.31.0: in each vendor's own account), said where a bill is approved.
+	let payablesNote = ".";
+	const payablesText = (p) => (!p?.own_accounts ? "" : p.kept_in_chosen
+		? "Bills stay in the account chosen under Settings: it isn't the one tagged Accounts payable in Ledger, so they aren't put in each vendor's own account"
+		: "Each bill and its payment are posted to its vendor's own account under accounts payable, so Ledger shows what each vendor is owed");
 	api("/status").then((st) => {
 		moduleName = st.name || moduleName;
+		payablesNote = payablesText(st.payables) ? `. ${payablesText(st.payables)}.` : ".";
 		role = st.role || role;
 		document.title = moduleName;
 		document.querySelectorAll(".mod-name").forEach((n) => (n.textContent = moduleName));

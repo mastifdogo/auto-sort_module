@@ -238,7 +238,7 @@ Extract data and hand-offs to other modules.
   module files, `matchBillTx`, `linkBillEntry`), `lib/mime.mjs` (uploaded
   `.eml`), `lib/parse.mjs` (statement formats), `lib/categorize.mjs` and
   `lib/bills.mjs` (prompts and schemas for `ctx.llm.json()`, matching),
-  `lib/transfers.mjs` + `lib/transfer-sync.mjs`, `lib/duplicates.mjs` +
+  `lib/transfers.mjs` + `lib/transfer-sync.mjs`, `lib/payables.mjs`, `lib/duplicates.mjs` +
   `lib/duplicate-routes.mjs`, `lib/matching.mjs` + `lib/journal-matches.mjs`,
   `lib/received-files.mjs`, `lib/email-statements.mjs` (statements from
   modules: account hints, PDF statements), `lib/dashboard.mjs`; the inbox:
@@ -281,8 +281,9 @@ Extract data and hand-offs to other modules.
   overwrite the module's own amount). Statements filed in Documents report
   `reconciled`.
 - Hidden accounts (Ledger 0.20.1): `pickable()` in lib/categorize.mjs leaves out
-  `hidden` accounts (clearing accounts) and Ledger's Unreconciled (`module_id`
-  "ledger"); use it for every picker, AI candidate list and account check.
+  `hidden` accounts (clearing accounts), Ledger's Unreconciled (`module_id`
+  "ledger") and, since 0.28.0, customers' and vendors' own accounts (`entity`,
+  Ledger 0.31.0); use it for every picker, AI candidate list and account check.
   `markAmended()` also flags `entry_date_changed` / `entry_date` and lines
   moved off the bank account (`moves`, Ledger 0.20.2).
 - Root mode (`lib/root-routes.mjs`, Ledger 0.21.1): `GET /root`, and POST
@@ -327,9 +328,50 @@ Extract data and hand-offs to other modules.
 - Restores (Ledger 0.14.0) can leave rows whose document's file is gone:
   `files.readBillFile()` / `readStatementFile()` return null, `billFileUrl()`
   null, and the inbox marks the row `missing` (its routes answer 410).
+- **Payables: each vendor's own account** (0.28.0, Ledger 0.31.0, feature-detected:
+  `tags.ownAccounts` = `typeof ctx.entities?.account === "function"`, so `"ledger"` stays
+  lower; pure helpers in `lib/payables.mjs`). How a bill is tracked:
+  - `bills.ap_account` is the account the bill **went through** at approval (`payableOf()`: the
+    setting, else the account tagged `kind: "payable"` in the bill's currency). It is what the
+    bill's payment rows are offered (`targetOf()`, `suggested_code`/`chosen_code`) and it never
+    follows the line. Never compare a posted line's code with it or with the setting.
+  - The entry is posted to that account **with `entity_id`** (the vendor): when the account is
+    the tagged one, Ledger posts the line to the vendor's own account (`2000-<id>`,
+    `account.entity = { id, name, role: "vendor" }`, `kind: null`). An account chosen under
+    Settings that is not tagged keeps the line itself (decided: the user's choice stands; the
+    Status tab, the bill page, the setting's help and the README say so). A vendor's own
+    account as the setting is refused (409).
+  - Where the line sits **now** is read from the entry every time: `payableOfBill(bill)` /
+    `payableLineAccount(entry, accounts, ap_account)` (vendor's own account first, then
+    `ap_account`, then a tagged payable). `paymentAccount(billId, code)` gives the account a
+    payment row debits at posting (server.mjs posts to it and calls
+    `onPosted(…, { payable: true })`); `GET /bills/:id` returns `payable_account`;
+    `markAmended` takes `(row, entry) => payableCodes(entry, accounts, ap_account)` so a line
+    Ledger moved isn't shown as a changed amount. Ledger's update (migration 034) moves old
+    lines into vendor accounts and deletes their vendor tags: nothing here may depend on the
+    line still being in `ap_account`.
+  - To recognise a payable (receivable) line use `isPayable(account)` / `isReceivable(account)`
+    (`kind === "payable" || entity?.role === "vendor"`), never the setting.
+  - The `vendor`/`customer` tag: Ledger reads it from the account (`{ id: 0, account_code }`,
+    nothing stored). `syncBill()` and `tagWho()` set it only when no line says it
+    (`saidByAccount`); on an entry with a line in the tagged payable account that set makes
+    Ledger move the line into the vendor's account. `ctx.tags.remove(entry, "vendor")` on a
+    tag read from an account **moves the line back to accounts payable**: only
+    `tags.vendorChanged()` does that (a person changed the bill's vendor: the bill's payable
+    entry and the payments this module posted go to the new vendor's account), never
+    `clearLinked()` or any tidy-up. `paid`, `overdue`, `rate` are as before.
+  - Rows that pay another entry (`matchPayables()`, Sales invoices included) are offered the
+    account the entry's line is really in (`payableCandidates().account_code`, the customer's
+    own account); an offer made before the line moved follows at Sort now, and
+    `payableFor()` books to the real account at posting (`sameControl()`). The page shows such
+    an account from `own_accounts` of `GET /statements/:id` (it isn't in the pickers).
+  - The stand-in for tests is `fakeBooks()` + `fakeTags(entries, books)` in
+    test/tags.test.mjs (routing on post, tags read from accounts, set/remove moving lines);
+    test both with and without it.
 - Tags (`lib/tags.mjs`, Ledger 0.23.0, feature-detected: `if (ctx.tags)`, so
   `"ledger"` stays lower): a bill's entry (`journal_entry_id`, else
-  `paid_entry_id`) carries `vendor`, `paid`, `overdue`; `syncBill()` sets
+  `paid_entry_id`) carries `vendor` (unless its line is in the vendor's own account, above),
+  `paid`, `overdue`; `syncBill()` sets
   what differs (called by the bill routes and by `syncBillTodos()`, which
   also runs hourly) and `backfill()` once at startup (`bills.tags_synced_at`).
   `ctx.tags.onChange` (own changes skipped): `paid` set by someone else makes
@@ -338,6 +380,8 @@ Extract data and hand-offs to other modules.
   `matchPayables()` offers rows the entries other modules tagged billed /
   overdue / vendor and not paid (`transactions.pays_entry_id`, source `tag`,
   no AI); only posting the row (a person) sets `paid` on that entry.
+- Transfers (`lib/transfer-sync.mjs`): the other side of a transfer already in the journal is
+  a bank or card account, never payables, receivables or a customer's or vendor's own account.
 - Several rows can pay one bill (0.25.0): `matchBillTx()` adds a row beside the ones linked
   (`paidOf()` = what they cover; a row for less is a partial payment, none once covered),
   `onPosted()` marks the bill paid only when its posted payments reach its amount, and

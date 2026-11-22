@@ -1,0 +1,255 @@
+// The Vendor statements tab: a supplier's statement of account (their list of invoices, our
+// payments and credit notes, and the balance they say is owed). It is not a bill: nothing is posted
+// for it. A person checks what was read (vendor, currency, date, balances, lines), then starts a
+// reconcile session, which opens Ledger's own Reconcile page for the vendor's account with this
+// statement beside it. Whether that reconciliation is in progress or finished is read from Ledger
+// each time the list or a statement is shown.
+//
+// Loaded before the page's own script; it uses that script's helpers when it runs (api, $, el,
+// toast, fail, money, role, showTab, openBill). Everything goes into the page with textContent.
+"use strict";
+const VendorStatements = (() => {
+	let list = [];
+	let current = null; // { statement, lines, reconcile }
+	let rows = []; // the lines being edited: { date, description, amount }
+	let dirtyLines = false;
+	const viewer = () => role === "viewer";
+	const goLedger = (path) => (window.top.location.href = path); // the page is shown in a frame inside Ledger
+	const day = (v) => String(v ?? "").slice(0, 10);
+	const dec = (cents) => (cents == null ? "" : (Number(cents) / 100).toFixed(2));
+	const signed = (cents) => `${Number(cents) < 0 ? "−" : ""}${money(Math.abs(Number(cents)))}`;
+
+	/** The pill for what Ledger says about a statement's reconciliation. */
+	function statePill(rec) {
+		if (!rec || rec.state === "unavailable") return el("span", { class: "pill plain", title: "Reconciling needs Ledger 0.34.0 or later" }, "Kept");
+		if (rec.state === "finished") return el("span", { class: "pill good" }, `Reconciled${rec.finished_at ? ` on ${day(rec.finished_at)}` : ""}`);
+		if (rec.state === "open") return el("span", { class: "pill warn" }, "In progress");
+		if (rec.state === "unknown") return el("span", { class: "pill plain", title: rec.error || "" }, "Not known");
+		return el("span", { class: "pill plain" }, "Not started");
+	}
+	/** A link to the reconciliation, a page of Ledger itself (outside this frame). */
+	const recLink = (rec, text) => el("a", { href: rec.href, target: "_top", onclick: (e) => { e.preventDefault(); goLedger(rec.href); } }, text);
+
+	async function load() {
+		const r = await api("/vendor-statements");
+		list = r.data;
+		$("vs-older").textContent = r.reconcile.available ? "" : r.reconcile.reason;
+		$("vs-older").classList.toggle("hidden", r.reconcile.available);
+		const body = $("vstatements").tBodies[0];
+		if (list.length === 0) {
+			body.replaceChildren(el("tr", {}, el("td", { colspan: 5, class: "muted" }, "No vendor statements here. One arrives like a bill does (upload, email, scanner, the browser extension): when it is read as a statement of account it lands here instead of on the Bills tab.")));
+			return;
+		}
+		body.replaceChildren(...list.map((s) =>
+			el("tr", { class: `clickable ${current?.statement.id === s.id ? "selected" : ""}`, onclick: () => open(s.id).catch(fail) },
+				el("td", { class: "nowrap" }, s.statement_date || "—"),
+				el("td", { class: "wide" }, s.vendor || el("span", { class: "muted" }, s.mail_subject || s.document_name || "(unknown vendor)"), s.error ? el("span", { class: "err", title: s.error }, " !") : null),
+				el("td", { class: "num" }, s.closing_balance_cents == null ? "—" : `${signed(s.closing_balance_cents)} ${s.currency}`),
+				el("td", { class: "num" }, `${s.line_count} line${s.line_count === 1 ? "" : "s"}`),
+				el("td", {}, statePill(s.reconciliation), s.reconciliation?.href ? el("span", {}, " ", recLink(s.reconciliation, "Open")) : null),
+			)));
+	}
+
+	async function open(id) {
+		const r = await api(`/vendor-statements/${id}`);
+		if (activeTab !== "vstatements") showTab("vstatements");
+		current = r;
+		rows = r.lines.map((l) => ({ date: l.date, description: l.description, amount: dec(l.amount_cents) }));
+		dirtyLines = false;
+		render();
+		document.querySelectorAll("#vstatements tbody tr").forEach((tr, i) => tr.classList.toggle("selected", list[i]?.id === r.statement.id));
+		$("vs-detail").classList.remove("hidden");
+		$("vs-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+	}
+
+	function close() {
+		current = null;
+		$("vs-detail").classList.add("hidden");
+	}
+
+	function renderLines() {
+		const ro = viewer();
+		const body = $("vs-lines").tBodies[0];
+		const input = (row, key, attrs) => {
+			const i = el("input", { ...attrs, value: row[key] ?? "", disabled: ro });
+			i.oninput = () => { row[key] = i.value; dirtyLines = true; totals(); };
+			return i;
+		};
+		body.replaceChildren(...rows.map((row, n) =>
+			el("tr", {},
+				el("td", {}, input(row, "date", { type: "date", class: "cell-date", "aria-label": "Date" })),
+				el("td", { class: "wide" }, input(row, "description", { class: "cell-desc", maxlength: 300, placeholder: "Invoice, credit note or payment, with its number", "aria-label": "Description" })),
+				el("td", {}, input(row, "amount", { class: "cell-num", inputmode: "decimal", placeholder: "0.00", "aria-label": "Amount" })),
+				el("td", {}, ro ? "" : el("button", { class: "btn small-btn", type: "button", title: "Remove this line", onclick: () => { rows.splice(n, 1); dirtyLines = true; renderLines(); } }, "✕")),
+			)));
+		if (rows.length === 0) body.replaceChildren(el("tr", {}, el("td", { colspan: 4, class: "muted" }, ro ? "No lines." : "No lines yet: add the statement's lines, or start with none and tick the vendor's bills and payments in Ledger.")));
+		totals();
+	}
+
+	/** Invoices, payments and whether the opening balance plus the lines gives the balance owed. */
+	function totals() {
+		const cents = (v) => { const n = Number(String(v ?? "").replace(/[$,\s]/g, "")); return Number.isFinite(n) ? Math.round(n * 100) : 0; };
+		let up = 0, down = 0;
+		for (const r of rows) { const c = cents(r.amount); if (c > 0) up += c; else down += c; }
+		const parts = [`Invoices and charges ${money(up)}`, `payments and credits ${signed(down)}`];
+		const opening = $("vs-opening").value.trim(), closing = $("vs-closing").value.trim();
+		if (opening !== "" && closing !== "" && rows.length > 0) {
+			const diff = cents(opening) + up + down - cents(closing);
+			parts.push(diff === 0 ? "the lines add up to the balance" : `the lines don't add up to the balance: ${signed(diff)} apart (check the lines, or go on and see in Ledger)`);
+		}
+		$("vs-totals").textContent = `${parts.join(" · ")}.`;
+	}
+
+	function render() {
+		const s = current.statement;
+		const rec = s.reconciliation;
+		const ro = viewer();
+		$("vs-title").textContent = `${s.vendor || "Vendor statement"}${s.statement_date ? ` · ${s.statement_date}` : ""}`;
+		$("vs-status").replaceChildren(statePill(rec));
+		$("vs-error").textContent = s.error || "";
+		$("vs-vendor").value = s.vendor;
+		$("vs-currency").value = s.currency;
+		$("vs-date").value = s.statement_date || "";
+		$("vs-from").value = s.period_start || "";
+		$("vs-opening").value = dec(s.opening_balance_cents);
+		$("vs-closing").value = dec(s.closing_balance_cents);
+		for (const id of ["vs-vendor", "vs-currency", "vs-date", "vs-from", "vs-opening", "vs-closing"]) $(id).disabled = ro;
+		api("/vendors").then((r) => $("vs-vendors").replaceChildren(...r.data.map((v) => el("option", { value: v.name })))).catch(() => {});
+		const summary = s.summary && !/[.!?]$/.test(s.summary) ? `${s.summary}.` : s.summary;
+		$("vs-summary").textContent = [summary, s.read_by === "ai" ? `Read by the AI${s.confidence != null ? ` with ${Math.round(s.confidence * 100)}% confidence` : ""}; check it against the statement.` : "", s.was_kind ? `It was a ${s.was_kind} here before a person said it is a vendor statement.` : ""].filter(Boolean).join(" ");
+		renderLines();
+
+		// Its reconciliation in Ledger: read from Ledger just now, nothing is copied here.
+		const box = $("vs-rec");
+		const kids = [];
+		const can = current.reconcile.available;
+		if (!can) kids.push(el("p", { class: "small review-note" }, current.reconcile.reason));
+		else if (rec.state === "finished") {
+			kids.push(el("p", {}, `Reconciled on ${day(rec.finished_at)}${rec.finished_by ? ` by ${rec.finished_by}` : ""}: `, recLink(rec, "open the reconciliation in Ledger"), "."));
+		} else if (rec.state === "open") {
+			kids.push(el("p", {}, "A reconcile session is in progress in Ledger", rec.started_by ? ` (started by ${rec.started_by})` : "", ": ", recLink(rec, "continue there"), ". A person finishes it on Ledger's Reconcile page. What you change here now stays here: Ledger has the statement as it was when the session started."));
+			if (rec.matched != null) kids.push(el("p", { class: "small muted" }, `${rec.matched} line${rec.matched === 1 ? "" : "s"} of the statement matched the books and ${rec.matched === 1 ? "is" : "are"} ticked${rec.not_on_statement ? `; ${rec.not_on_statement} line${rec.not_on_statement === 1 ? "" : "s"} in the vendor's account ${rec.not_on_statement === 1 ? "isn't" : "aren't"} ticked` : ""}${rec.difference_cents != null ? `; ${Number(rec.difference_cents) === 0 ? "nothing is left to explain" : `${signed(rec.difference_cents)} ${s.currency} left to explain`}` : ""}.`));
+			if (rec.unmatched?.length) {
+				kids.push(el("h3", { style: "margin:0.6rem 0 0.2rem; font-size:14px" }, "On the statement, not in the books"),
+					el("p", { class: "small muted", style: "margin:0 0 0.3rem" }, "These lines have no bill or payment in the vendor's account in Ledger: a missing bill to find and enter, or a payment not recorded."),
+					el("div", { class: "table-wrap" }, el("table", { class: "stack" }, el("tbody", {}, ...rec.unmatched.map((l) =>
+						el("tr", {}, el("td", { class: "nowrap" }, l.date), el("td", { class: "wide" }, l.description || "—"), el("td", { class: "num" }, `${signed(l.amount_cents)} ${s.currency}`)))))));
+			} else if (rec.unmatched) kids.push(el("p", { class: "small muted" }, "Every line of the statement has a line in the books."));
+		} else if (rec.state === "unknown") {
+			kids.push(el("p", { class: "small review-note" }, `Ledger couldn't say whether this statement is being reconciled${rec.error ? `: ${rec.error}` : "."}`));
+		} else {
+			kids.push(el("p", { class: "small muted" }, "Not reconciled yet. Start reconcile session opens Ledger's Reconcile page for this vendor's own account, with the statement beside the vendor's bills and payments: the ones that match are ticked, and you see which statement lines the books don't have and which book lines the statement doesn't. Nothing is posted."));
+		}
+		if (can && rec.other_open) kids.push(el("p", { class: "small review-note" }, `A reconciliation of this vendor is already in progress${rec.other_open.statement_date ? ` (statement of ${rec.other_open.statement_date})` : ""}: `, recLink(rec.other_open, "open it in Ledger"), ". Finish or delete it there before starting this one."));
+		box.replaceChildren(...kids);
+
+		const started = rec.state === "open" || rec.state === "finished";
+		$("vs-save").classList.toggle("hidden", ro);
+		$("vs-add-line").classList.toggle("hidden", ro);
+		$("vs-start").classList.toggle("hidden", ro || !can || started);
+		$("vs-start").disabled = !!rec.other_open;
+		$("vs-open").classList.toggle("hidden", !started);
+		$("vs-open").textContent = rec.state === "finished" ? "Open the reconciliation in Ledger" : "Continue in Ledger";
+		$("vs-bill").classList.toggle("hidden", ro || started);
+		$("vs-receipt").classList.toggle("hidden", ro || started);
+		$("vs-delete").classList.toggle("hidden", ro);
+
+		$("vs-source").textContent = [s.source === "email" ? `Email from ${s.mail_from || "?"}${s.mail_subject ? `: "${s.mail_subject}"` : ""}` : s.source === "module" ? `Sent by ${String(s.mail_from || "").replace(/^module:/, "") || "another module"}` : "Uploaded", s.document_name || ""].filter(Boolean).join(" · ");
+		const doc = $("vs-doc");
+		doc.replaceChildren();
+		$("vs-show-doc").classList.toggle("hidden", !s.document_url);
+		$("vs-show-doc").onclick = () => {
+			if (doc.firstChild) return doc.replaceChildren();
+			doc.replaceChildren(/\.(png|jpe?g|gif|webp)$/i.test(s.document_name || "") ? el("img", { src: s.document_url, alt: "The statement", style: "max-width:100%" }) : el("iframe", { class: "pdf", src: s.document_url, title: "The statement" }));
+		};
+	}
+
+	/** What the form says that differs from what is kept. */
+	function changed() {
+		const s = current.statement;
+		const out = {};
+		const put = (k, now, was) => { if ((now ?? "") !== (was ?? "")) out[k] = now; };
+		put("vendor", $("vs-vendor").value.trim(), s.vendor);
+		put("currency", $("vs-currency").value, s.currency);
+		put("statement_date", $("vs-date").value, s.statement_date || "");
+		put("period_start", $("vs-from").value, s.period_start || "");
+		const amount = (id, was) => { const v = $(id).value.trim(); return v !== "" && was != null && Number(v.replace(/[$,\s]/g, "")) === Number(was) / 100 ? dec(was) : v; };
+		put("opening_balance", amount("vs-opening", s.opening_balance_cents), dec(s.opening_balance_cents));
+		put("closing_balance", amount("vs-closing", s.closing_balance_cents), dec(s.closing_balance_cents));
+		return out;
+	}
+
+	/** Saves the details and the lines when they changed. → true when everything is saved. */
+	async function save({ quiet = false } = {}) {
+		const id = current.statement.id;
+		const f = changed();
+		try {
+			if (Object.keys(f).length > 0) await api(`/vendor-statements/${id}`, { method: "PATCH", body: JSON.stringify(f) });
+			if (dirtyLines) {
+				const lines = rows.filter((r) => r.date || r.description.trim() || String(r.amount).trim());
+				await api(`/vendor-statements/${id}/lines`, { method: "PUT", body: JSON.stringify({ lines }) });
+			}
+			if (Object.keys(f).length === 0 && !dirtyLines) { if (!quiet) toast("Nothing changed."); return true; }
+			await load();
+			await open(id);
+			if (!quiet) toast("Saved.");
+			return true;
+		} catch (e) { fail(e); return false; }
+	}
+
+	async function start() {
+		// What is on the page goes first, so Ledger gets the statement as the person sees it.
+		if (!(await save({ quiet: true }))) return;
+		$("vs-start").disabled = true;
+		try {
+			const r = await api(`/vendor-statements/${current.statement.id}/reconcile`, { method: "POST", body: "{}" });
+			if (r.already_open) {
+				// One is in progress for this vendor already: say so and link to it, nothing new was started.
+				current = r; render(); load().catch(() => {});
+				toast(r.message);
+				if (confirm(`${r.message}\n\nOpen it in Ledger now?`)) goLedger(r.href);
+				return;
+			}
+			goLedger(r.href);
+		} catch (e) { fail(e); } finally { $("vs-start").disabled = false; }
+	}
+
+	async function toBill(kind) {
+		if (!confirm(`This is a ${kind}, not a vendor's statement of account? It goes to the ${kind === "receipt" ? "Receipts" : "Bills"} tab${current.statement.was_kind ? " as it was" : " as Needs review"}.`)) return;
+		try {
+			const b = await api(`/vendor-statements/${current.statement.id}/bill`, { method: "POST", body: JSON.stringify({ kind }) });
+			close();
+			toast(`It is a ${kind} again.`);
+			openBill(b.id);
+		} catch (e) { fail(e); }
+	}
+
+	/** "This is a vendor statement" on a bill or receipt: the server says why not when it has posted something. */
+	async function fromBill(billId) {
+		if (!confirm("This is a vendor's statement of account (their list of invoices and payments with the balance owed), not a bill?\n\nNo bill is kept for it and nothing is posted: you check its lines and reconcile it against the vendor's account in Ledger.")) return false;
+		try {
+			await api(`/bills/${billId}/vendor-statement`, { method: "POST", body: "{}" });
+			toast("It is a vendor statement now. Check its date, balance and lines, then start a reconcile session.");
+			showTab("vstatements");
+			await open(billId);
+			return true;
+		} catch (e) { fail(e); return false; }
+	}
+
+	function init() {
+		$("vs-close").onclick = close;
+		$("vs-save").onclick = () => save();
+		$("vs-add-line").onclick = () => { rows.push({ date: rows.at(-1)?.date || $("vs-date").value || "", description: "", amount: "" }); dirtyLines = true; renderLines(); };
+		$("vs-start").onclick = start;
+		$("vs-open").onclick = () => current?.statement.reconciliation?.href && goLedger(current.statement.reconciliation.href);
+		$("vs-bill").onclick = () => toBill("bill");
+		$("vs-receipt").onclick = () => toBill("receipt");
+		$("vs-delete").onclick = async () => {
+			if (!confirm("Delete this vendor statement? Its lines here go with it. A reconciliation in Ledger stays as it is.")) return;
+			try { await api(`/vendor-statements/${current.statement.id}`, { method: "DELETE" }); close(); await load(); toast("Deleted."); } catch (e) { fail(e); }
+		};
+		for (const id of ["vs-opening", "vs-closing"]) $(id).oninput = totals;
+	}
+
+	return { init, load, open, close, fromBill };
+})();

@@ -160,6 +160,7 @@
 	<button data-tab="review" class="active">Statements<span id="review-count" class="badge hidden" title="Transactions needing review"></span></button>
 	<button data-tab="bills">Bills<span id="bills-count" class="badge hidden" title="Bills needing review"></span><span id="overdue-count" class="badge red hidden" title="Overdue bills"></span></button>
 	<button data-tab="receipts">Receipts<span id="receipts-count" class="badge hidden" title="Receipts needing review"></span></button>
+	<button data-tab="vstatements" title="Suppliers' statements of account: checked against the vendor's account in Ledger, never posted">Vendor statements</button>
 	<button data-tab="duplicates">Duplicates<span id="dup-count" class="badge hidden" title="Possible duplicates to review"></span></button>
 	<button data-tab="rules">Learned rules</button>
 	<button data-tab="scan">Scan</button>
@@ -438,6 +439,7 @@
 			<button class="btn" id="bd-unapprove">Undo approval</button>
 			<button class="btn" id="bd-paid">Mark paid (paid elsewhere)</button>
 			<button class="btn" id="bd-reopen">Reopen</button>
+			<button class="btn" id="bd-vstatement" title="It is a supplier's statement of account (a list of their invoices and your payments with the balance owed), not a bill: no bill is kept, and it is reconciled against the vendor's account in Ledger">This is a vendor statement</button>
 			<button class="btn danger" id="bd-ignore">Ignore</button>
 			<button class="btn danger" id="bd-delete">Delete</button>
 			<button class="btn root hidden" id="bd-root-unpost" title="Root mode: forget the journal entry this bill is in (the entry isn't touched). Ledger can put it back.">Root: take out of entry</button>
@@ -462,6 +464,63 @@
 </section>
 
 
+
+<!-- Vendor statements: a supplier's statement of account, reconciled against the vendor's own account in Ledger -->
+<section id="tab-vstatements" class="hidden">
+	<p class="muted small">A vendor statement is a supplier's statement of account: their list of invoices, your payments and credit notes, and the balance they say you owe. It isn't a bill, so no bill is made and nothing is posted. Check what was read, then <strong>Start reconcile session</strong>: Ledger shows the statement beside the vendor's bills and payments, ticks the ones that match, and lists what the books don't have. To add one, send a file here from the Inbox (Send… → Vendor statement), or use <em>This is a vendor statement</em> on a bill or receipt.</p>
+	<p class="small review-note hidden" id="vs-older"></p>
+	<div class="table-wrap">
+		<table id="vstatements" class="stack">
+			<thead><tr><th>Date</th><th>Vendor</th><th class="num">Balance owed</th><th class="num">Lines</th><th>Reconciliation</th></tr></thead>
+			<tbody></tbody>
+		</table>
+	</div>
+
+	<div id="vs-detail" class="panel bill-detail hidden">
+		<div class="row">
+			<h2 id="vs-title"></h2>
+			<span id="vs-status"></span>
+			<span class="spacer"></span>
+			<button class="btn" id="vs-close">Close</button>
+		</div>
+		<p class="err" id="vs-error"></p>
+		<form id="vs-form" class="grid" onsubmit="return false">
+			<label>Vendor <input id="vs-vendor" list="vs-vendors" maxlength="200" placeholder="Pick one of Ledger's vendors, or type a new one"></label>
+			<label>Currency <select id="vs-currency"><option>CAD</option><option>USD</option></select></label>
+			<label>Statement date <input id="vs-date" type="date"></label>
+			<label>Period from <input id="vs-from" type="date"></label>
+			<label>Opening balance <input id="vs-opening" inputmode="decimal" placeholder="0.00" title="The balance brought forward, when the statement shows one"></label>
+			<label>Balance owed <input id="vs-closing" inputmode="decimal" placeholder="0.00" title="What the statement says you owe at its date; negative when the vendor owes you"></label>
+		</form>
+		<datalist id="vs-vendors"></datalist>
+		<p class="muted small" id="vs-summary"></p>
+		<h2>Lines</h2>
+		<p class="muted small">As on the statement: an invoice or a charge as a positive amount, a payment or a credit note as a negative one.</p>
+		<div class="review-wrap">
+			<table id="vs-lines" class="review">
+				<thead><tr><th>Date</th><th>Description</th><th class="num">Amount</th><th></th></tr></thead>
+				<tbody></tbody>
+			</table>
+		</div>
+		<p class="muted small" id="vs-totals"></p>
+		<div class="row" style="margin: 0.75rem 0">
+			<button class="btn" id="vs-add-line" type="button">Add a line</button>
+			<button class="btn" id="vs-save">Save changes</button>
+			<button class="btn primary" id="vs-start" title="Opens Ledger's Reconcile page for this vendor's own account, with this statement and its lines. Nothing is posted.">Start reconcile session</button>
+			<button class="btn primary" id="vs-open">Continue in Ledger</button>
+			<span class="spacer"></span>
+			<button class="btn" id="vs-bill" title="It is a bill after all: it goes back to the Bills tab">This is a bill</button>
+			<button class="btn" id="vs-receipt" title="It is a receipt after all: it goes to the Receipts tab">This is a receipt</button>
+			<button class="btn danger" id="vs-delete">Delete</button>
+		</div>
+		<h2>Reconciliation</h2>
+		<div id="vs-rec"></div>
+		<h2>Source</h2>
+		<p class="small" id="vs-source"></p>
+		<button class="btn hidden" id="vs-show-doc">Show the statement</button>
+		<div id="vs-doc"></div>
+	</div>
+</section>
 
 <!-- Duplicates: the same transaction staged twice, or already in the journal -->
 <section id="tab-duplicates" class="hidden">
@@ -530,6 +589,7 @@
 <script src="receipt.js"></script>
 <script src="mail-view.js"></script>
 <script src="inbox.js"></script>
+<script src="vendor-statements.js"></script>
 <script src="scan.js"></script>
 <script>
 	// Served by Ledger at /m/categorizer/, so API calls carry your login.
@@ -597,7 +657,7 @@
 		document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
 		// Bills and Receipts are the same list, of one kind each.
 		const section = name === "receipts" ? "bills" : name;
-		for (const t of ["inbox", "review", "bills", "duplicates", "rules", "scan", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== section);
+		for (const t of ["inbox", "review", "bills", "vstatements", "duplicates", "rules", "scan", "settings"]) $(`tab-${t}`).classList.toggle("hidden", t !== section);
 		activeTab = name;
 		if (section === "bills") {
 			const kind = name === "receipts" ? "receipt" : "bill";
@@ -607,6 +667,7 @@
 			loadBills().catch(fail);
 		}
 		if (name === "review") { loadStatements().catch(fail); loadUploadAccounts().catch(fail); }
+		if (name === "vstatements") VendorStatements.load().catch(fail);
 		if (name === "rules") loadRules().catch(fail);
 		if (name === "duplicates") loadDuplicates().catch(fail);
 		if (name === "settings") { loadStatus().catch(fail); loadFiles().catch(fail); }
@@ -1410,6 +1471,12 @@
 			// Into the inbox in pieces, filed in Ledger's Documents, then read from there (what was read before is used again).
 			const f = await Inbox.uploadBytes(Inbox.safeName(name), blob.type || file.type || "application/octet-stream", new Uint8Array(await blob.arrayBuffer()));
 			const b = (await api(`/inbox/${f.id}/bill`, { method: "POST", body: JSON.stringify({ kind: billKind }) })).bill;
+			// Read as a supplier's statement of account: no bill is made; it is on the Vendor statements tab.
+			if (b.kind === "vendor_statement") {
+				toast("This is a vendor's statement of account, not a bill: it is on the Vendor statements tab. Check it, then start a reconcile session.");
+				await VendorStatements.open(b.id);
+				return;
+			}
 			$("b-filter").value = "unpaid";
 			showTab(b.kind === "receipt" ? "receipts" : "bills");
 			openBill(b.id);
@@ -1432,6 +1499,12 @@
 	async function openBill(id) {
 		const [r] = await Promise.all([api(`/bills/${id}`).catch(fail), loadRoot(), loadTaxes()]);
 		if (!r) return;
+		// It is a vendor's statement of account (read as one, or a person said so): it opens on its own tab.
+		if (r.bill.kind === "vendor_statement") {
+			currentBill = null;
+			$("bill-detail").classList.add("hidden");
+			return VendorStatements.open(r.bill.id).catch(fail);
+		}
 		// A receipt opens on the Receipts tab, a bill on Bills (also after its type was changed).
 		const tab = r.bill.kind === "receipt" ? "receipts" : "bills";
 		if (activeTab !== tab) showTab(tab);
@@ -1989,6 +2062,8 @@
 		$("bd-paid").classList.toggle("hidden", !open);
 		$("bd-reopen").classList.toggle("hidden", !["ignored", "paid"].includes(b.status) || !!b.paid_entry_id);
 		$("bd-ignore").classList.toggle("hidden", !open || locked);
+		// A bill that has posted something stays a bill (the server says why when asked).
+		$("bd-vstatement").classList.toggle("hidden", role === "viewer" || locked || !!b.paid_entry_id);
 		$("bd-delete").classList.toggle("hidden", locked || b.status === "paid");
 		$("bd-root-delete").classList.toggle("hidden", !rootMode);
 		$("bd-root-unpost").classList.toggle("hidden", !rootMode || !(b.journal_entry_id || b.paid_entry_id));
@@ -2138,6 +2213,13 @@
 	$("bd-paid").onclick = () => confirm("Mark this bill paid without a matching bank transaction?") && billAction("save", { status: "paid" });
 	$("bd-reopen").onclick = () => billAction("save", { status: "new" });
 	$("bd-ignore").onclick = () => billAction("save", { status: "ignored" });
+	$("bd-vstatement").onclick = async () => {
+		const id = currentBill.id;
+		if (!(await VendorStatements.fromBill(id))) return;
+		currentBill = null;
+		$("bill-detail").classList.add("hidden");
+		loadCounts();
+	};
 	$("bd-delete").onclick = () => confirm("Delete this bill?") && billAction("delete");
 	$("bd-root-delete").onclick = async () => {
 		if (!(await rootAction(`/root/bills/${currentBill.id}/delete`, "Root mode: delete this bill with its lines? Its journal entries and its document stay; Ledger's root log can put it back.", "Deleted (root)."))) return;
@@ -2154,6 +2236,7 @@
 		statement: ["good", "Statement"],
 		bill: ["good", "Bill"],
 		receipt: ["good", "Receipt"],
+		vendor_statement: ["good", "Vendor statement"],
 		duplicate: ["plain", "Already here"],
 		rejected: ["bad", "Couldn't be read"],
 	};
@@ -2169,7 +2252,7 @@
 					: f.outcome ? FILE_OUTCOME[f.outcome] || ["plain", f.outcome] : ["plain", f.status === "new" ? "Waiting" : "Working on it…"];
 				const extra = [];
 				if (f.bill_id) {
-					extra.push(el("a", { href: "#", onclick: (e) => { e.preventDefault(); openBill(f.bill_id); } }, `Open in ${f.bill_kind === "receipt" ? "Receipts" : "Bills"}${f.bill_vendor ? `: ${f.bill_vendor}` : ""}`));
+					extra.push(el("a", { href: "#", onclick: (e) => { e.preventDefault(); openBill(f.bill_id); } }, `Open in ${f.bill_kind === "vendor_statement" ? "Vendor statements" : f.bill_kind === "receipt" ? "Receipts" : "Bills"}${f.bill_vendor ? `: ${f.bill_vendor}` : ""}`));
 				} else if (f.statement_id) {
 					extra.push(el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(f.statement_id); } }, "Open in Statements"));
 				}
@@ -2357,7 +2440,9 @@
 		let params;
 		try { params = new URLSearchParams(window.parent.location.search); } catch { return false; }
 		const tab = params.get("tab");
-		if (tab && ["inbox", "review", "bills", "receipts", "duplicates", "rules", "scan", "settings"].includes(tab)) { showTab(tab); return true; }
+		if (tab && ["inbox", "review", "bills", "receipts", "vstatements", "duplicates", "rules", "scan", "settings"].includes(tab)) { showTab(tab); return true; }
+		const vs = params.get("vendor_statement");
+		if (vs && /^\d+$/.test(vs)) { showTab("vstatements"); VendorStatements.open(Number(vs)).catch(fail); return true; }
 		const file = params.get("file");
 		if (file && /^\d+$/.test(file)) { Inbox.show(Number(file), { filter: "all" }); return true; }
 		const bill = params.get("bill");
@@ -2389,6 +2474,7 @@
 	}).catch(() => {});
 
 	Inbox.init();
+	VendorStatements.init();
 	Scan.init();
 	if (!openFromLink()) showTab("review");
 	loadDupCount();

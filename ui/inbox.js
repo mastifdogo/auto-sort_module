@@ -257,6 +257,8 @@ const Inbox = (() => {
 			// A photographed receipt is most likely a receipt.
 			if (f.origin === "camera" || f.origin === "app") pair.reverse();
 			opts.push(...pair);
+			// A supplier's statement of account isn't a bill: it is reconciled against the vendor's account in Ledger.
+			opts.push(["vendor_statement", "Vendor statement: a supplier's statement of account, to reconcile"]);
 		}
 		opts.push(...moduleOptions(f));
 		if (/\.csv$/i.test(f.name) || read) opts.push(["ledger-file", read && !/\.csv$/i.test(f.name) ? "Ledger's CSV files: a CSV of its transactions (journal import)" : "Ledger's CSV files (journal import)"]);
@@ -291,6 +293,7 @@ const Inbox = (() => {
 		const HINTS = {
 			statement: read && !STATEMENT_RE.test(f.name) ? "Its transactions were read before and are kept with the file: they are staged as they are, nothing is read again." : "Its lines are staged on the Statements tab. Nothing is posted until you review them and press Post.",
 			bill: read || f.document?.extracted ? "What was read from it before is used. It lands on the Bills tab as Needs review." : "The AI reads the vendor, amount and dates. It lands on the Bills tab as Needs review: you approve it.",
+			vendor_statement: "The AI reads the vendor, the date, the balance and the statement's lines. It lands on the Vendor statements tab, where you check it and start a reconcile session in Ledger. No bill is made and nothing is posted.",
 			receipt: read || f.document?.extracted ? "What was read from it before is used. It lands on the Receipts tab as Needs review." : "The AI reads the vendor, amount and date. It lands on the Receipts tab as Needs review: you approve it.",
 		};
 		const sync = () => {
@@ -301,13 +304,13 @@ const Inbox = (() => {
 			dateOrder.classList.toggle("hidden", v !== "statement" || !STATEMENT_RE.test(f.name));
 			ext.classList.toggle("hidden", v !== "extract");
 			hint.textContent = HINTS[v] || "";
-			go.textContent = v === "extract" ? (read ? "Read again" : "Extract") : v === "statement" ? "Stage the statement" : v === "bill" || v === "receipt" ? "Read it" : "Send";
+			go.textContent = v === "extract" ? (read ? "Read again" : "Extract") : v === "statement" ? "Stage the statement" : v === "bill" || v === "receipt" || v === "vendor_statement" ? "Read it" : "Send";
 		};
 		dest.onchange = sync;
 		const go = el("button", { class: "btn primary", onclick: async () => {
 			go.disabled = true;
 			const label = go.textContent;
-			if (dest.value === "extract" || dest.value === "bill" || dest.value === "receipt") go.textContent = "Reading… (up to a few minutes)";
+			if (dest.value === "extract" || dest.value === "bill" || dest.value === "receipt" || dest.value === "vendor_statement") go.textContent = "Reading… (up to a few minutes)";
 			try {
 				if (dest.value === "extract") await extract(f, instructions.value, read);
 				else if (dest.value.startsWith("mod:")) await handoff(f, dest.value, account.value);
@@ -431,7 +434,7 @@ const Inbox = (() => {
 			showTab("review");
 			return openStatement(s.id);
 		}
-		if (dest === "bill" || dest === "receipt") {
+		if (dest === "bill" || dest === "receipt" || dest === "vendor_statement") {
 			let r = await api(`/inbox/${f.id}/bill`, { method: "POST", body: JSON.stringify({ kind: dest, check_similar: true }) });
 			if (r.similar) {
 				const choice = await askSimilar(r.similar);
@@ -447,6 +450,12 @@ const Inbox = (() => {
 				r = await api(`/inbox/${f.id}/bill`, { method: "POST", body: JSON.stringify({ kind: dest, confirm: true }) });
 			}
 			openId = null;
+			// A supplier's statement of account (read as one, or said to be): no bill is made.
+			if (r.bill.kind === "vendor_statement") {
+				toast(dest === "vendor_statement" ? "Kept as a vendor statement. Check it, then start a reconcile session." : "This is a vendor's statement of account, not a bill: it is on the Vendor statements tab. Check it, then start a reconcile session.");
+				loadCount();
+				return VendorStatements.open(r.bill.id);
+			}
 			toast(r.bill.read === "extracted" ? "Made from what was read before; the AI wasn't asked again. Check it, then approve." : "Read. Check it, then approve.");
 			loadCount();
 			return openBill(r.bill.id);

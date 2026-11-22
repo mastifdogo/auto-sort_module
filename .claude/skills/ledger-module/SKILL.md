@@ -239,6 +239,7 @@ Extract data and hand-offs to other modules.
   bill), `lib/mime.mjs` (uploaded
   `.eml`), `lib/parse.mjs` (statement formats), `lib/categorize.mjs` and
   `lib/bills.mjs` (prompts and schemas for `ctx.llm.json()`, matching),
+  `lib/vendor-statements.mjs` + `lib/vendor-statement-routes.mjs` (vendors' statements of account),
   `lib/transfers.mjs` + `lib/transfer-sync.mjs`, `lib/payables.mjs`, `lib/duplicates.mjs` +
   `lib/duplicate-routes.mjs`, `lib/matching.mjs` + `lib/journal-matches.mjs`,
   `lib/received-files.mjs`, `lib/email-statements.mjs` (statements from
@@ -247,7 +248,7 @@ Extract data and hand-offs to other modules.
   `lib/uploads.mjs`, `lib/extract-data.mjs`, `lib/mail.mjs` + `lib/learn.mjs`
   + `lib/eml.mjs` (the one mail check, through `ctx.mail`),
   `lib/scanner-routes.mjs` + `lib/escl.mjs` + `lib/pdf.mjs`, `lib/adopt.mjs`;
-  the page: `ui/index.html` plus `ui/inbox.js`, `ui/scan.js`,
+  the page: `ui/index.html` plus `ui/inbox.js`, `ui/vendor-statements.js`, `ui/scan.js`,
   `ui/mail-view.js`, `ui/receipt.js`, and `ui/mail-range.html` (a settings
   tab page). Tests: `test/*.test.mjs` (`npm test`); `test/fake-ledger.mjs`
   is the stand-in ctx (Documents with tags and extracted data), `test/pg.mjs`
@@ -307,7 +308,8 @@ Extract data and hand-offs to other modules.
   where used.
 - Tabs (no Import tab since 0.7.0): **Statements** (upload, Sort now, Create
   bill), **Bills** and **Receipts** (`/bills?kind=`; upload, split, billable
-  + customer), **Duplicates** (duplicates, journal matches, Recheck by
+  + customer), **Vendor statements** (`/vendor-statements`; review, Start
+  reconcile session), **Duplicates** (duplicates, journal matches, Recheck by
   period), **Status** (files from modules).
 - Account dropdowns end with "+ New account…" through `withNewAccount()` in
   the UI, which opens Ledger's dialog (`ledger-new-account` message, Ledger ≥
@@ -374,6 +376,72 @@ Extract data and hand-offs to other modules.
   - The stand-in for tests is `fakeBooks()` + `fakeTags(entries, books)` in
     test/tags.test.mjs (routing on post, tags read from accounts, set/remove moving lines);
     test both with and without it.
+- **Vendor statements** (0.31.0, Ledger 0.34.0, feature-detected: `ctx.reconcile.start/open/list`
+  and `ctx.entities.account` are functions, so `"ledger"` stays lower; `lib/vendor-statements.mjs`
+  pure helpers, `lib/vendor-statement-routes.mjs` routes, `ui/vendor-statements.js` the tab,
+  migration 030). The owner's rule: **a vendor's statement of account is never made a bill and
+  nothing is posted for it; it is loaded into a reconcile session in Ledger.**
+  - **One row in `bills`** with `kind = 'vendor_statement'` (so its document in `bill_documents`,
+    the inbox or received file that points at it, its vendor and `vendor_entity_id` stay when a
+    person changes what it is), **`status = 'ignored'` for as long as it is one** (no bill query
+    matches, pays, lists, counts or reminds of it), `bill_date` = the statement's date. What only
+    a statement has: `vendor_statements` (`period_start`, `opening_balance_cents`,
+    `closing_balance_cents`, `reconciliation_id`, `was_kind` / `was_status` to put a bill back)
+    and `vendor_statement_lines` (`line_no`, `line_date`, `description`, `amount_cents`).
+  - **`getBill(id)` answers 409 for a vendor statement** unless `{ any: true }`: that is what
+    keeps every bill route (approve, match, pay, split, items, delete, Auto sort) off it. Pass
+    `any` only where a statement is expected (`GET /bills/:id` answers a pointer the page follows,
+    `/bills/upload` and `/inbox/:id/bill` return what the file became, the switch route). A new
+    query over `bills` must leave them out (`status` filter, or `kind <> 'vendor_statement'`).
+  - **Recognised** in `ingest()` (lib/bill-routes.mjs), before the similar and duplicate checks:
+    `extractBill()` returns `kind: "vendor_statement"` with `statement: { period_start,
+    opening_balance_cents, closing_balance_cents, lines }` (schema fields `period_start`,
+    `opening_balance`, `closing_balance`, `statement_lines`; the prompt keeps card and loan
+    statements with an amount due as bills), or a person passed `kind: "vendor_statement"`
+    (`POST /inbox/:id/bill`). The AI's kind wins over a `bill` / `receipt` the person or a
+    sending module chose (a person changes it back with one click). `vendorStatements.create()`
+    stores it; a person's `vendor_statement` where the AI can't read the file is kept unread
+    (`unread()`), never refused. The AI-read vendor is only `find()`-linked; a person's save or
+    Start adds it (`linkEntities(…, { create: true })`).
+  - **By hand**: `POST /bills/:id/vendor-statement` only while the bill has posted nothing
+    (`postedWhy()`: `journal_entry_id`, `paid_entry_id`, a `posting`/`posted` row with `bill_id`
+    or `standin_bill_id`; the 409 says which), then unlinks offered rows, takes its rate items and
+    document tags off and removes its to-do. `POST /vendor-statements/:id/bill {kind?}` puts back
+    `was_kind` / `was_status` (else `new`); refused while its reconciliation exists in Ledger.
+    Both relabel the inbox row (`sent_to`); the link `?bill=<id>` keeps working (the page follows
+    the pointer), `?vendor_statement=<id>` opens one directly.
+  - **Signs**: the vendor account's own sign everywhere (the AI's reading, what a person types,
+    the table, what Ledger gets): an invoice or charge positive, a payment or credit note
+    negative, a balance what is owed. Never flip them on the way to Ledger. Lines with amount 0
+    or no date are not lines (`normalizeLine`; Ledger refuses them).
+  - **Start** (`POST /vendor-statements/:id/reconcile`, a person): `ctx.entities.account(vendor,
+    "vendor", currency)` (looked up each time, never saved), then `ctx.reconcile.open(code)`
+    first: an account has one reconciliation in progress and `start` would hand that one back
+    whatever is asked, so when one is open nothing is started and the answer is `already_open:
+    true` with its `href` and a message (it is adopted as this statement's only when it is
+    checked against this statement's document). Otherwise `ctx.reconcile.start(reconcileInput(…),
+    req.user)` with `document_id`, `statement_date`, `statement_balance_cents`,
+    `opening_balance_cents`, `period_start` and the module's `lines` (so Ledger doesn't ask the AI
+    again), and the page goes to `r.href` with `window.top.location`. Validate before calling:
+    Ledger creates the reconciliation before it checks the lines.
+  - **State is Ledger's**: only `vendor_statements.reconciliation_id` is kept. `stateOf()` reads
+    `ctx.reconcile.list(code)` (and `open(code)` for one statement) every time through
+    `reconciliationState()`: `none` (also when it was deleted in Ledger), `open`, `finished`
+    (`finished_at`, `finished_by`), `unavailable` (older Ledger), `unknown` (Ledger threw), plus
+    `other_open`. While open, `unmatched` (statement lines the books don't have, from
+    `r.reading.unmatched`), `matched`, `not_on_statement`, `difference_cents`. Never store any of
+    it. The vendor's account code for reading comes from `ctx.entities.get(id).accounts`, which
+    doesn't create the account.
+  - **Older Ledger**: without `ctx.reconcile` (or vendors' own accounts) statements are still
+    recognised, kept, reviewed and switched by hand; `can()` gives the reason shown on the tab and
+    Start answers 409 with it.
+  - Delete (`DELETE /vendor-statements/:id`) keeps the document when a reconciliation uses it;
+    root delete (`/root/bills/:id/delete`) removes `vendor_statement_lines` and
+    `vendor_statements` rows first, through `ctx.root`.
+  - Tests: `test/vendor-statements.test.mjs` (pure helpers anywhere; routes on a scratch
+    PostgreSQL with `fakeVendors()` and `fakeReconcile()` from test/fake-ledger.mjs, and
+    `start({ more })` to give ctx `entities` / `reconcile` / `ledgerVersion` before the module
+    registers). Test with and without `reconcile`.
 - **Linked payments** (0.30.0, Ledger 0.33.0, feature-detected: `tags.paymentsOn` =
   `ctx.ledger.linkPayment`, `unlinkPayment` and `payments` are functions, so `"ledger"` stays
   lower; lib/tags.mjs and lib/bill-routes.mjs, migration 029). The owner's rule: **when a

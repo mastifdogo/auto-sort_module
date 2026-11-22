@@ -139,6 +139,144 @@ export function fakePayments(entries, { accounts = () => [], setTag = async () =
 	};
 }
 
+/**
+ * ctx.entities for vendors as Ledger 0.31.0 has it: one list (find / list / get / ensure) and each
+ * vendor's own account under accounts payable, per currency, made the first time it is asked for
+ * (account). chart: the accounts (an array the own accounts are added to; it needs one with
+ * kind "payable" in the currency). → { api, entities, chart }
+ */
+export function fakeVendors(chart = []) {
+	const entities = [];
+	let next = 0;
+	const view = (e) => ({
+		id: e.id, name: e.name, is_active: true, roles: [...e.roles],
+		accounts: chart.filter((a) => a.entity?.id === e.id).map((a) => ({ role: a.entity.role, code: a.code, currency: a.currency, owed_cents: 0 })),
+	});
+	const must = (id) => {
+		const e = entities.find((x) => x.id === Number(id));
+		if (!e) throw new HttpError(404, "no such customer or vendor");
+		return e;
+	};
+	const api = {
+		list: async ({ role } = {}) => entities.filter((e) => !role || e.roles.has(role)).map(view),
+		get: async (id) => view(must(id)),
+		find: async (name) => {
+			const e = entities.find((x) => x.name.toLowerCase() === String(name).trim().toLowerCase());
+			return e ? view(e) : null;
+		},
+		ensure: async (name, role) => {
+			let e = entities.find((x) => x.name.toLowerCase() === String(name).trim().toLowerCase());
+			if (!e) entities.push((e = { id: ++next, name: String(name).trim(), roles: new Set() }));
+			e.roles.add(role);
+			return view(e);
+		},
+		account: async (id, role, currency) => {
+			const e = must(id);
+			const have = chart.find((a) => a.entity?.id === e.id && a.entity.role === role && a.currency === currency);
+			if (have) return have;
+			const parent = chart.find((a) => a.kind === (role === "vendor" ? "payable" : "receivable") && a.currency === currency && !a.entity);
+			if (!parent) throw new HttpError(422, `no accounts ${role === "vendor" ? "payable" : "receivable"} account in ${currency}`);
+			const a = { code: `${parent.code}-${e.id}`, name: e.name, type: parent.type, currency, is_active: true, kind: null, parent_code: parent.code, entity: { id: e.id, name: e.name, role } };
+			chart.push(a);
+			return a;
+		},
+	};
+	return { api, entities, chart };
+}
+
+/**
+ * ctx.reconcile as Ledger 0.34.0 has it (statement-reading.ts: startReconciliation). start opens a
+ * reconciliation of an account against a statement and ticks the account's lines that match the
+ * statement lines given (same amount, the journal line up to 60 days before or 5 days after), each
+ * once; an account's reconciliation in progress is returned as it is, whatever is asked. open is
+ * the one in progress (with href) or null; list the account's reconciliations, the open one first.
+ * book: Map account code → [{ transaction_id, entry_date, amount_cents, description }] in the
+ * account's own sign (a vendor's bills positive, payments negative); chart: the accounts.
+ * → { api, calls, recs, finish(id, by), remove(id) }: finish and remove are what a person does on
+ * Ledger's Reconcile page.
+ */
+export function fakeReconcile(book = new Map(), chart = []) {
+	const recs = []; // { id, account_code, status, statement_date, statement_balance_cents, document_id, created_by, finished_by, finished_at, reading, cleared: Set }
+	const calls = [];
+	let next = 100;
+	const bad = (m) => {
+		throw new HttpError(422, m);
+	};
+	const isDate = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+	const days = (d) => Math.round(Date.parse(`${d}T00:00:00Z`) / 86_400_000);
+	const row = (r) => {
+		const a = chart.find((x) => x.code === r.account_code);
+		return {
+			id: r.id, account_code: r.account_code, account_name: a?.name ?? "", account_type: a?.type ?? "liability", currency: a?.currency ?? "CAD",
+			statement_date: r.statement_date, statement_balance_cents: BigInt(r.statement_balance_cents), status: r.status, created_by: r.created_by, created_at: r.created_at,
+			finished_by: r.finished_by, finished_at: r.finished_at, cleared_count: r.cleared.size, document_id: r.document_id, document_title: null, document_url: null, document_type: null,
+			entity_role: a?.entity?.role ?? null,
+		};
+	};
+	const detail = (r) => {
+		const lines = (book.get(r.account_code) ?? []).map((l) => ({ ...l, amount_cents: BigInt(l.amount_cents), cleared: r.cleared.has(l.transaction_id), tags: [] }));
+		const cleared = lines.filter((l) => l.cleared).reduce((s, l) => s + l.amount_cents, 0n);
+		return { reconciliation: row(r), opening_balance_cents: 0n, cleared_balance_cents: cleared, difference_cents: BigInt(r.statement_balance_cents) - cleared, lines, reading: r.reading, previous_statement_date: null, gap_days: null, gap_warning: false };
+	};
+	const sorted = (code) => recs.filter((r) => r.account_code === String(code)).sort((a, b) => (a.status === "open" ? -1 : 0) - (b.status === "open" ? -1 : 0) || (a.statement_date < b.statement_date ? 1 : -1));
+	const api = {
+		start: async (input, user) => {
+			calls.push(["start", structuredClone(input), user?.username ?? null]);
+			const o = input ?? {};
+			if (typeof o.account_code !== "string" || !chart.some((a) => a.code === o.account_code)) bad(`account ${JSON.stringify(o.account_code)} does not exist`);
+			const open = recs.find((r) => r.account_code === o.account_code && r.status === "open");
+			if (open) return { ...detail(open), href: `/reconcile/${open.id}` };
+			if (!isDate(o.statement_date)) bad("statement_date must be a date (YYYY-MM-DD)");
+			if (o.statement_balance_cents === undefined) bad("statement_balance_cents is required");
+			const last = recs.filter((r) => r.account_code === o.account_code && r.status === "finished").map((r) => r.statement_date).sort().at(-1);
+			if (last && o.statement_date < last) bad(`statement_date: must not be before the last reconciled statement (${last})`);
+			const r = { id: ++next, account_code: o.account_code, status: "open", statement_date: o.statement_date, statement_balance_cents: o.statement_balance_cents, document_id: o.document_id ?? null,
+				created_by: user?.username ?? null, created_at: new Date(), finished_by: null, finished_at: null, reading: null, cleared: new Set() };
+			recs.push(r);
+			if (o.lines === undefined) return { ...detail(r), href: `/reconcile/${r.id}` };
+			if (!Array.isArray(o.lines)) bad("lines must be a list");
+			o.lines.forEach((l, i) => {
+				if (!isDate(l?.date) || !Number.isSafeInteger(l?.amount_cents) || l.amount_cents === 0) bad(`lines[${i}] needs a date (YYYY-MM-DD) and amount_cents (whole cents, not 0)`);
+			});
+			const matched = [];
+			const used = new Set();
+			o.lines.forEach((l, i) => {
+				const hit = (book.get(r.account_code) ?? [])
+					.filter((b) => !used.has(b.transaction_id) && Number(b.amount_cents) === l.amount_cents && days(l.date) - days(b.entry_date) >= -5 && days(l.date) - days(b.entry_date) <= 60)
+					.sort((x, y) => Math.abs(days(l.date) - days(x.entry_date)) - Math.abs(days(l.date) - days(y.entry_date)))[0];
+				if (!hit) return;
+				used.add(hit.transaction_id);
+				r.cleared.add(hit.transaction_id);
+				matched.push([hit.transaction_id, i]);
+			});
+			const hit = new Set(matched.map(([, i]) => i));
+			r.reading = {
+				read_at: new Date().toISOString(), model: "", period_start: o.period_start ?? null, end_date: o.statement_date, opening_balance_cents: o.opening_balance_cents ?? null,
+				closing_balance_cents: Number(o.statement_balance_cents), adds_up: null, lines: o.lines.map((l) => ({ date: l.date, description: String(l.description ?? ""), amount_cents: l.amount_cents })),
+				matched, unmatched: o.lines.map((_, i) => i).filter((i) => !hit.has(i)),
+			};
+			return { ...detail(r), href: `/reconcile/${r.id}` };
+		},
+		open: async (code) => {
+			calls.push(["open", String(code)]);
+			const r = recs.find((x) => x.account_code === String(code) && x.status === "open");
+			return r ? { ...detail(r), href: `/reconcile/${r.id}` } : null;
+		},
+		list: async (code) => (calls.push(["list", String(code)]), sorted(code).map(row)),
+	};
+	return {
+		api, calls, recs,
+		/** A person presses Finish on Ledger's Reconcile page. */
+		finish(id, by = "sam") {
+			Object.assign(recs.find((r) => r.id === Number(id)), { status: "finished", finished_by: by, finished_at: new Date() });
+		},
+		/** A person deletes the reconciliation in Ledger. */
+		remove(id) {
+			recs.splice(recs.findIndex((r) => r.id === Number(id)), 1);
+		},
+	};
+}
+
 /** Ledger's Documents: add / ensure / get / read / update / remove / url, tags, extracted data. */
 export function fakeDocuments(self = "categorizer") {
 	const docs = new Map(); // id -> { id, kind, filename, data, source, ... }
@@ -271,9 +409,11 @@ export function fakeStorage(initial = {}) {
 
 /**
  * Registers the whole module on a fake ctx. answers: [[RegExp, (sql, params) => rows | { rows, rowCount }]].
+ * more: other parts of ctx (entities, reconcile, ledgerVersion…), there from the start as the module
+ * feature-detects them when it is registered.
  * → { call(route, { params, body, query, user }), ctx, documents, storage, sql, dashboard }
  */
-export async function start({ answers = [], ledger = {}, llm = {}, documents = fakeDocuments(), storage = fakeStorage(), settings = {}, files = {} } = {}) {
+export async function start({ answers = [], ledger = {}, llm = {}, documents = fakeDocuments(), storage = fakeStorage(), settings = {}, files = {}, more = {} } = {}) {
 	const routes = new Map();
 	const dashboard = [];
 	const sql = [];
@@ -309,6 +449,8 @@ export async function start({ answers = [], ledger = {}, llm = {}, documents = f
 		search: { provide() {} },
 		documents: documents.api,
 		storage: storage.api,
+		// Anything else a test's Ledger has (entities, reconcile, a newer ledgerVersion…).
+		...more,
 	};
 	await register(ctx);
 	// Startup work that isn't awaited (moving old files, clean-up) settles before the test goes on.

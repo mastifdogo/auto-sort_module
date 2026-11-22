@@ -32,6 +32,7 @@
 
 import { createHash } from "node:crypto";
 import { registerBills } from "./lib/bill-routes.mjs";
+import { registerVendorStatements } from "./lib/vendor-statement-routes.mjs";
 import { billInfoOf } from "./lib/bills.mjs";
 import { registerRoot } from "./lib/root-routes.mjs";
 import { moduleFiles } from "./lib/files.mjs";
@@ -537,6 +538,8 @@ export default async function register(ctx) {
 	const taxes = registerTaxes(ctx, { q, T, bad });
 	const billHelpers = { q, T, bad, ai, requeue, stageStatement, readStatement, settleFile: null, rowsChanged: null, txLink, files, tags, dtags, taxes };
 	const bills = registerBills(ctx, billHelpers);
+	// Vendors' statements of account (0.31.0): kept as what they are and reconciled in Ledger, never posted.
+	billHelpers.vendorStatements = registerVendorStatements(ctx, billHelpers, bills);
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
 	const journal = registerJournalMatches(ctx, { q, T, bad, ai, bills, duplicates, transfers, syncStatementNotice });
@@ -1259,7 +1262,7 @@ export default async function register(ctx) {
 		const n = Math.min(limit, 20);
 		const [b, st, tx, inboxFiles] = await Promise.all([
 			q(
-				`SELECT id, vendor, invoice_number, due_date::text AS due_date, amount_cents, currency, status FROM ${T("bills")}
+				`SELECT id, kind, vendor, invoice_number, bill_date::text AS bill_date, due_date::text AS due_date, amount_cents, currency, status FROM ${T("bills")}
 				  WHERE vendor ILIKE $1 OR invoice_number ILIKE $1 OR mail_subject ILIKE $1 ORDER BY id DESC LIMIT $2`,
 				[like(term), n],
 			),
@@ -1276,7 +1279,7 @@ export default async function register(ctx) {
 			),
 		]);
 		return [
-			...b.rows.map((r) => ({
+			...b.rows.map((r) => (r.kind === "vendor_statement" ? { title: `Vendor statement: ${r.vendor || "unknown vendor"}`, subtitle: r.bill_date ? `dated ${r.bill_date}` : "", href: `/apps/${ctx.id}?vendor_statement=${r.id}` } : {
 				title: `Bill: ${r.vendor || "unknown vendor"}${r.invoice_number ? ` #${r.invoice_number}` : ""}`,
 				subtitle: [r.amount_cents === null ? "" : money(r.amount_cents, r.currency), r.due_date ? `due ${r.due_date}` : "", r.status].filter(Boolean).join(" · "),
 				href: `/apps/${ctx.id}?bill=${r.id}`,

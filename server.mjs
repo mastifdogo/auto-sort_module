@@ -807,9 +807,14 @@ export default async function register(ctx) {
 		       min(t.tx_date)::text AS first_date, max(t.tx_date)::text AS last_date
 		  FROM ${T("statements")} s LEFT JOIN ${T("transactions")} t ON t.statement_id = s.id`;
 
+	// GET /statements: what the Statements tab lists, in one answer. data: the statements of bank, card
+	// and loan accounts (as before); vendor_statements: suppliers' statements of account (0.32.0; they
+	// are kept with the bills, lib/vendor-statement-routes.mjs), each with the state of its
+	// reconciliation read from Ledger; reconcile: whether this Ledger can reconcile one.
 	ctx.route("GET", "/statements", async () => {
 		const { rows } = await q(`${STATEMENT_SELECT} GROUP BY s.id ORDER BY s.id DESC LIMIT 200`);
-		return { data: rows };
+		const vs = billHelpers.vendorStatements;
+		return { data: rows, vendor_statements: await vs.list(), reconcile: vs.can() };
 	});
 
 	ctx.route("POST", "/statements", async (req) => {
@@ -994,6 +999,75 @@ export default async function register(ctx) {
 		await syncStatementNotice(statement.id);
 		// Auto sort's matches for the rows that went are no longer to review.
 		await journal.syncTodo();
+	});
+
+	/** Why a staged statement can't become a vendor's statement of account (it posted, merged or linked something). null: it can. */
+	async function notAVendorStatementWhy(statement) {
+		if (statement.status === "categorizing" || statement.status === "queued") return "wait until the suggestions are done";
+		const n = (k, one, many) => `${k} of its transactions ${k === 1 ? one : many}`;
+		const { rows } = await q(
+			`SELECT count(*) FILTER (WHERE t.status IN ('posting', 'posted'))::int AS posted,
+			        count(*) FILTER (WHERE t.status = 'merged')::int AS merged,
+			        (SELECT count(*)::int FROM ${T("transactions")} o WHERE o.statement_id <> $1 AND o.duplicate_of IN (SELECT id FROM ${T("transactions")} WHERE statement_id = $1)) AS merged_in,
+			        min(t.line_no) FILTER (WHERE t.bill_id IS NOT NULL AND t.chosen_code IS NOT NULL) AS linked_line,
+			        min(t.bill_id) FILTER (WHERE t.bill_id IS NOT NULL AND t.chosen_code IS NOT NULL) AS linked_bill,
+			        min(t.line_no) FILTER (WHERE EXISTS (SELECT 1 FROM ${T("transaction_splits")} x WHERE x.transaction_id = t.id)) AS split_line
+			   FROM ${T("transactions")} t WHERE t.statement_id = $1`,
+			[statement.id],
+		);
+		const c = rows[0];
+		if (c.posted > 0) return `${n(c.posted, "is", "are")} posted${statement.account_code ? ` to ${statement.account_code}` : ""}; a statement that has posted something stays that account's statement`;
+		if (c.merged > 0) return `${n(c.merged, "is", "are")} merged as ${c.merged === 1 ? "a duplicate" : "duplicates"}; unmerge ${c.merged === 1 ? "it" : "them"} first (Show: Merged duplicates)`;
+		if (c.merged_in > 0) return `${c.merged_in} transaction${c.merged_in === 1 ? "" : "s"} of another statement ${c.merged_in === 1 ? "is" : "are"} merged into this one as ${c.merged_in === 1 ? "a duplicate" : "duplicates"}; unmerge ${c.merged_in === 1 ? "it" : "them"} first`;
+		if (c.linked_line != null) return `line ${c.linked_line} is linked to bill #${c.linked_bill} as its payment; unlink it first (Not this one)`;
+		if (c.split_line != null) return `line ${c.split_line} is split between a bill and other accounts; unlink it from the bill first`;
+		const { rows: made } = await q(`SELECT id FROM ${T("bills")} WHERE statement_id = $1 AND status <> 'ignored' ORDER BY id LIMIT 1`, [statement.id]);
+		if (made.length > 0) return `bill #${made[0].id} was made from this statement (Create bill); delete that bill first`;
+		return null;
+	}
+
+	// POST /statements/:id/vendor-statement {vendor, currency?}: a person says a statement staged for a
+	// bank or card account is really a vendor's statement of account (0.32.0). Only while nothing of it
+	// is posted, merged or linked by hand (409 with the reason). Its rows become the vendor statement's
+	// lines, its document goes with it, the staged statement is removed (as Discard does: what was only
+	// offered for its rows is free again), and nothing is posted. Answers like GET /vendor-statements/:id.
+	ctx.route("POST", "/statements/:id/vendor-statement", async (req) => {
+		const statement = await getStatement(req.params.id);
+		const b = req.body ?? {};
+		if (typeof b.vendor !== "string" || b.vendor.trim() === "" || b.vendor.length > 200) throw bad("vendor (whose statement of account this is) is required, at most 200 characters");
+		if (b.currency !== undefined && !["CAD", "USD"].includes(b.currency)) throw bad("currency must be CAD or USD");
+		const why = await notAVendorStatementWhy(statement);
+		if (why) throw new ctx.HttpError(409, `This statement can't become a vendor's statement: ${why}.`);
+		const vs = billHelpers.vendorStatements;
+		const account = statement.account_code ? (await ctx.ledger.listAccounts({ includeInactive: true })).find((a) => a.code === statement.account_code) : null;
+		const { rows: txs } = await q(
+			`SELECT tx_date::text AS date, CASE WHEN memo <> '' AND memo <> description THEN description || ' ' || memo ELSE description END AS description, amount_cents
+			   FROM ${T("transactions")} WHERE statement_id = $1 ORDER BY line_no, id`,
+			[statement.id],
+		);
+		const { rows: file } = await q(`SELECT document_id, file_name, content_type, size_bytes FROM ${T("statement_files")} WHERE statement_id = $1`, [statement.id]);
+		const id = await vs.fromStatement(
+			{ vendor: b.vendor.trim(), currency: b.currency ?? account?.currency, source: statement.source, mail_from: statement.mail_from, mail_subject: statement.mail_subject, filename: statement.filename, account_label: account ? `${account.code} ${account.name}` : "" },
+			txs,
+			file[0] ?? null,
+			req.user,
+		);
+		// What pointed at the staged statement points at what it is now: the inbox file, a file another module sent.
+		await q(`UPDATE ${T("inbox_files")} SET statement_id = NULL, bill_id = $2, sent_to = $3, sent_link = $4, updated_at = now() WHERE statement_id = $1`, [
+			statement.id,
+			id,
+			`Vendor statement #${id} (${b.vendor.trim()})`.slice(0, 200),
+			`/apps/${ctx.id}?bill=${id}`,
+		]);
+		await q(`UPDATE ${T("received_files")} SET statement_id = NULL, bill_id = $2, outcome = 'vendor_statement' WHERE statement_id = $1`, [statement.id, id]);
+		// The staged statement goes, with its rows (none posted) and what was offered for them; its document stays, with the vendor statement.
+		await q(`DELETE FROM ${T("statements")} WHERE id = $1`, [statement.id]);
+		await syncStatementNotice(statement.id);
+		await transfers.matchTransfers().catch((err) => ctx.log.warn("transfers not matched", { err: String(err?.message || err) }));
+		await bills.autoMatch().catch((err) => ctx.log.warn("bills not matched", { err: String(err?.message || err) }));
+		await journal.syncTodo().catch(() => {});
+		ctx.log.info("statement made a vendor statement", { statement: String(statement.id), vendor_statement: String(id), lines: txs.length, by: req.user.username });
+		return vs.detail(id);
 	});
 
 	// -----------------------------------------------------------------------

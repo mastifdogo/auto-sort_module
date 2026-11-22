@@ -307,10 +307,12 @@ Extract data and hand-offs to other modules.
   size, payables account), per organization: read with `ctx.settings.get()`
   where used.
 - Tabs (no Import tab since 0.7.0): **Statements** (upload, Sort now, Create
-  bill), **Bills** and **Receipts** (`/bills?kind=`; upload, split, billable
-  + customer), **Vendor statements** (`/vendor-statements`; review, Start
-  reconcile session), **Duplicates** (duplicates, journal matches, Recheck by
-  period), **Status** (files from modules).
+  bill; vendors' statements of account are in the same list since 0.32.0, with
+  Reconcile, see below), **Bills** and **Receipts** (`/bills?kind=`; upload,
+  split, billable + customer), **Duplicates** (duplicates, journal matches,
+  Recheck by period), **Status** (files from modules). There is no Vendor
+  statements tab (0.31.0 had one; the owner asked for it to go): don't add a
+  tab for one kind of statement.
 - Account dropdowns end with "+ New account…" through `withNewAccount()` in
   the UI, which opens Ledger's dialog (`ledger-new-account` message, Ledger ≥
   0.11.3); never build an account form of our own.
@@ -378,9 +380,38 @@ Extract data and hand-offs to other modules.
     test both with and without it.
 - **Vendor statements** (0.31.0, Ledger 0.34.0, feature-detected: `ctx.reconcile.start/open/list`
   and `ctx.entities.account` are functions, so `"ledger"` stays lower; `lib/vendor-statements.mjs`
-  pure helpers, `lib/vendor-statement-routes.mjs` routes, `ui/vendor-statements.js` the tab,
-  migration 030). The owner's rule: **a vendor's statement of account is never made a bill and
-  nothing is posted for it; it is loaded into a reconcile session in Ledger.**
+  pure helpers, `lib/vendor-statement-routes.mjs` routes, `ui/vendor-statements.js` their part of
+  the Statements tab, migration 030). The owner's rules: **a vendor's statement of account is never
+  made a bill and nothing is posted for it; it is loaded into a reconcile session in Ledger**, and
+  (0.32.0) **there is no separate tab for them: they are in the Statements tab's list, and the
+  option on one is Reconcile.**
+  - **On the Statements tab** (0.32.0): `GET /statements` answers `{ data, vendor_statements,
+    reconcile }` in one request (`data` is only bank/card/loan statements, unchanged, because
+    statement ids and vendor statement ids are different tables' ids; `vendor_statements` is
+    `vendorStatements.list()`, one read of Ledger per vendor account). `loadStatements()` in
+    ui/index.html merges both by `created_at`; a vendor statement's row is
+    `VendorStatements.listRow()` (the vendor in the account column, the balance owed in the
+    "Posted / owed" column, the reconciliation's state, and Reconcile / Continue in Ledger / Open
+    the reconciliation). Clicking it opens `#vs-view`, a sibling of the bank statement's
+    `#detail-view` inside `#tab-review` (`VendorStatements.open()`; the page's `closeDetail()` and
+    `openStatement()` call `VendorStatements.hide()`). Reconcile on a row posts straight away; when
+    the server refuses (no date, no balance) the statement opens and shows why. `?vendor_statement=`
+    and `?bill=` links open it there; `?tab=vstatements` (0.31.0) shows Statements.
+  - **From a staged statement** (0.32.0): `POST /statements/:id/vendor-statement {vendor,
+    currency?}` (server.mjs; `notAVendorStatementWhy()` gives the 409's reason: queued or
+    categorising, a row `posting`/`posted`, a row `merged` or another statement's row merged into
+    one, a row linked to a bill by hand (`bill_id` with `chosen_code`) or split, a bill made from it
+    with Create bill). Offers that were only automatic (bill match, transfer pairing, tagged entry)
+    are dropped with the rows, as Discard does. `vendorStatements.fromStatement()` makes the `bills`
+    row (kind `vendor_statement`, `was_kind` null) from the rows as staged (signs untouched: the
+    note in `bills.error` says to check them, the page has Flip signs; no balance is guessed),
+    points `bill_documents` at the same document and **clears the document's `account_code`**
+    (`updateDocument(…, { account_code: null, entity_id }, { onlyOwn: false })`): Ledger refuses to
+    reconcile an account against a document that belongs to another account. The inbox row and
+    received file that pointed at the statement point at the vendor statement; then the
+    `statements` row is deleted. There is no way back to a bank statement (upload it again).
+  - Also at upload: "Upload a vendor's statement" on the Statements tab is the inbox upload plus
+    `POST /inbox/:id/bill {kind: "vendor_statement"}`.
   - **One row in `bills`** with `kind = 'vendor_statement'` (so its document in `bill_documents`,
     the inbox or received file that points at it, its vendor and `vendor_entity_id` stay when a
     person changes what it is), **`status = 'ignored'` for as long as it is one** (no bill query
@@ -402,7 +433,7 @@ Extract data and hand-offs to other modules.
     sending module chose (a person changes it back with one click). `vendorStatements.create()`
     stores it; a person's `vendor_statement` where the AI can't read the file is kept unread
     (`unread()`), never refused. The AI-read vendor is only `find()`-linked; a person's save or
-    Start adds it (`linkEntities(…, { create: true })`).
+    Reconcile adds it (`linkEntities(…, { create: true })`).
   - **By hand**: `POST /bills/:id/vendor-statement` only while the bill has posted nothing
     (`postedWhy()`: `journal_entry_id`, `paid_entry_id`, a `posting`/`posted` row with `bill_id`
     or `standin_bill_id`; the 409 says which), then unlinks offered rows, takes its rate items and
@@ -414,7 +445,7 @@ Extract data and hand-offs to other modules.
     the table, what Ledger gets): an invoice or charge positive, a payment or credit note
     negative, a balance what is owed. Never flip them on the way to Ledger. Lines with amount 0
     or no date are not lines (`normalizeLine`; Ledger refuses them).
-  - **Start** (`POST /vendor-statements/:id/reconcile`, a person): `ctx.entities.account(vendor,
+  - **Reconcile** (`POST /vendor-statements/:id/reconcile`, a person): `ctx.entities.account(vendor,
     "vendor", currency)` (looked up each time, never saved), then `ctx.reconcile.open(code)`
     first: an account has one reconciliation in progress and `start` would hand that one back
     whatever is asked, so when one is open nothing is started and the answer is `already_open:
@@ -422,7 +453,8 @@ Extract data and hand-offs to other modules.
     checked against this statement's document). Otherwise `ctx.reconcile.start(reconcileInput(…),
     req.user)` with `document_id`, `statement_date`, `statement_balance_cents`,
     `opening_balance_cents`, `period_start` and the module's `lines` (so Ledger doesn't ask the AI
-    again), and the page goes to `r.href` with `window.top.location`. Validate before calling:
+    again), and the page goes to `r.href` with `window.top.location` (the button is "Reconcile"
+    since 0.32.0; the route and what it does are 0.31.0's). Validate before calling:
     Ledger creates the reconciliation before it checks the lines.
   - **State is Ledger's**: only `vendor_statements.reconciliation_id` is kept. `stateOf()` reads
     `ctx.reconcile.list(code)` (and `open(code)` for one statement) every time through
@@ -433,15 +465,15 @@ Extract data and hand-offs to other modules.
     it. The vendor's account code for reading comes from `ctx.entities.get(id).accounts`, which
     doesn't create the account.
   - **Older Ledger**: without `ctx.reconcile` (or vendors' own accounts) statements are still
-    recognised, kept, reviewed and switched by hand; `can()` gives the reason shown on the tab and
-    Start answers 409 with it.
+    recognised, kept, reviewed and switched by hand; `can()` gives the reason shown under the
+    Statements tab's list and on the opened statement, and Reconcile answers 409 with it.
   - Delete (`DELETE /vendor-statements/:id`) keeps the document when a reconciliation uses it;
     root delete (`/root/bills/:id/delete`) removes `vendor_statement_lines` and
     `vendor_statements` rows first, through `ctx.root`.
   - Tests: `test/vendor-statements.test.mjs` (pure helpers anywhere; routes on a scratch
     PostgreSQL with `fakeVendors()` and `fakeReconcile()` from test/fake-ledger.mjs, and
     `start({ more })` to give ctx `entities` / `reconcile` / `ledgerVersion` before the module
-    registers). Test with and without `reconcile`.
+    registers; `staged()` stages a bank statement to convert). Test with and without `reconcile`.
 - **Linked payments** (0.30.0, Ledger 0.33.0, feature-detected: `tags.paymentsOn` =
   `ctx.ledger.linkPayment`, `unlinkPayment` and `payments` are functions, so `"ledger"` stays
   lower; lib/tags.mjs and lib/bill-routes.mjs, migration 029). The owner's rule: **when a

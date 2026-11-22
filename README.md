@@ -56,8 +56,9 @@ module itself. See [Files, tags and reading a file once](#files-tags-and-reading
   searches the journal for similar transactions, by amounts, dates and accounts you can change.
 - **Bills and receipts:** a PDF, a photo or a saved email; the AI reads it, you approve it, and it's
   matched to the bank transaction that pays it. See [Bills](#bills).
-- **Vendor statements:** a supplier's statement of account is not made a bill: it is checked
-  against the vendor's account in a reconcile session in Ledger. See [Vendor statements](#vendor-statements).
+- **Vendor statements:** a supplier's statement of account is not made a bill: it is listed with
+  your other statements, and **Reconcile** checks it against the vendor's account in Ledger. See
+  [Vendor statements](#vendor-statements).
 - **Sends on:** a file can also be handed to another module, filed in Ledger's Documents as what it
   is, or saved to Ledger's CSV files for the journal import.
 
@@ -151,12 +152,12 @@ The page has these tabs:
   it to Ledger's CSV files, or has the AI read its transactions (**Extract data**). Also **Check
   email now**, **What it learned**, and **Get the browser extension**.
 - **Statements:** **Upload a statement**, **Sort now**, and each statement to categorise and post,
-  with **Auto sort** and **Create bill** (from what a card or loan statement says is owed).
+  with **Auto sort** and **Create bill** (from what a card or loan statement says is owed). A
+  supplier's statement of account is in the same list, marked **Vendor statement**: **Reconcile**
+  on it compares it with the vendor's account in Ledger, and no bill is made. See
+  [Vendor statements](#vendor-statements).
 - **Bills** and **Receipts:** **Upload a bill/receipt** (PDF, photo or saved email) or add one by
   hand; approve, match, **Split** and mark billable to a customer.
-- **Vendor statements:** suppliers' statements of account: check what was read, then **Start
-  reconcile session** to compare one with the vendor's account in Ledger. No bill is made. See
-  [Vendor statements](#vendor-statements).
 - **Duplicates:** duplicates and things already in the journal, to merge or link.
 - **Learned rules.**
 - **Scan:** the network scanner, a phone's camera, the Android app, and plain uploads to the inbox.
@@ -188,8 +189,9 @@ Files wait in the inbox until you say what they are. Each row shows the file, wh
 - **Bill** or **Receipt:** a PDF, a photo or a saved email. The AI reads the vendor, amount, dates
   and line items; it lands on the Bills or Receipts tab as **Needs review**.
 - **Vendor statement:** a supplier's statement of account (their invoices and your payments, with
-  the balance owed). It lands on the Vendor statements tab to check and reconcile; no bill is made.
-  A file sent as a Bill or Receipt that the AI reads as a vendor statement lands there too.
+  the balance owed). It lands on the Statements tab, marked Vendor statement, to check and
+  reconcile; no bill is made. A file sent as a Bill or Receipt that the AI reads as a vendor
+  statement lands there too.
 - **Extract data:** the AI reads the transactions out of a PDF, a photo or a text file. You get the
   rows to check, correct, add to or remove; nothing is kept until you press **Approve**. Then the
   transactions are saved with the file in Ledger's Documents, and **Statement** stages them as they
@@ -494,8 +496,8 @@ Following Ledger's rule for modules, nothing the AI decides takes effect until a
 - Account suggestions for transactions are posted only when you press **Post**.
 - Bills and receipts read from uploads or files wait as **Needs review** until you **Approve** them.
 - A match **Auto sort** finds is carried out only when you press **Approve**.
-- A vendor statement the AI read is only kept for you to check; its reconcile session starts when
-  you press **Start reconcile session**, and you finish it in Ledger. Nothing is posted for it.
+- A vendor statement the AI read is only kept for you to check; reconciling it starts when you
+  press **Reconcile**, and you finish it in Ledger. Nothing is posted for it.
 - A new account the AI suggests is created only when you press **Create account**.
 - The bank or card account the AI guesses for a PDF statement is only preselected; you choose it.
 - A file another module sent that the AI read is marked done for its sender only when you approve
@@ -869,76 +871,98 @@ LLM (see above).
 
 A **vendor statement** is a statement of account a supplier sends: a list of their invoices, your
 payments and their credit notes, and the balance they say you owe. It is not a bill. Nothing new is
-owed because of it, so Auto sort makes **no bill** from it and **posts nothing** for it. Instead it
-is checked against the books in a **reconcile session** in Ledger, so you can make sure every
-invoice and payment on it is in your books.
+owed because of it, so Auto sort makes **no bill** from it and **posts nothing** for it. Instead you
+**reconcile** it: Ledger compares it with the vendor's account, so you can make sure every invoice
+and payment on it is in your books.
 
-A bank, card or loan statement is something else: it keeps the Statements tab, and Create bill on
-a card or loan statement works as before (see [Bills](#bills)).
+Vendor statements live on the **Statements** tab, in the same list as the statements of your bank,
+card and loan accounts. (0.31.0 had a tab of its own for them; that tab is gone.) A vendor
+statement's row is marked **Vendor statement** and shows the vendor where a bank statement shows
+its account, the period, the balance owed where a bank statement shows how many lines are posted,
+and where its reconciliation stands: **Not started**, **In progress** or **Reconciled on** a date.
+The row's button is **Reconcile**; once a reconciliation exists it is **Continue in Ledger** or
+**Open the reconciliation**. A bank, card or loan statement works as before, Create bill included
+(see [Bills](#bills)).
 
-**1. It is recognised.** A vendor statement arrives like a bill does (an upload, an email, the
-scanner, the browser extension, another module). When the AI reads the document it says what it
-is: a bill, a receipt, a vendor statement, or none of these. For a vendor statement it reads the
-vendor, the currency, the statement's date, the opening balance and the balance owed, and every
-line: its date, a description with the reference as printed (the invoice, credit note or payment
-number) and its amount. A document read as a vendor statement lands on the **Vendor statements**
-tab and never on Bills, also when you sent it as a bill or a receipt.
+**1. How one gets there.**
 
-You can also say so yourself:
-
-- **In the inbox:** Send… → **Vendor statement**. If the AI can't read the file (it isn't set up,
-  or its connection doesn't read PDFs or pictures), the statement is kept all the same, empty, and
-  you type its date, balance and lines.
+- **Upload a vendor's statement** on the Statements tab: a PDF, a photo or a saved email.
+- **It is recognised.** A vendor statement also arrives like a bill does (the Bills tab's upload,
+  an email, the scanner, the browser extension, another module). When the AI reads a document it
+  says what it is: a bill, a receipt, a vendor statement, or none of these. For a vendor statement
+  it reads the vendor, the currency, the statement's date, the opening balance and the balance
+  owed, and every line: its date, a description with the reference as printed (the invoice, credit
+  note or payment number) and its amount. A document read as a vendor statement goes to the
+  Statements tab and never to Bills, also when you sent it as a bill or a receipt.
+- **In the inbox:** Send… → **Vendor statement**.
 - **On a bill or a receipt** (also one the AI read as "not a bill"): **This is a vendor
   statement**. It leaves the Bills tab with its document, its vendor and its date. This only works
   while the bill has posted nothing: a bill that is posted to payables, linked to a journal entry
   as its payment, or paid by a posted statement row stays a bill, and Auto sort says which of
   these is in the way (undo the approval or unlink first).
-- **Back again:** **This is a bill** / **This is a receipt** on the vendor statement. It returns
-  to the Bills or Receipts tab as it was (Needs review if it never was one). Not while its
-  reconciliation exists in Ledger: delete that one there first.
+- **On a statement that was staged for a bank or card account** (someone uploaded a supplier's
+  statement as a statement): open it and press **This is a vendor's statement…**, then choose the
+  vendor. Its lines stop being that account's transactions to post and become the vendor
+  statement's lines, and its file goes along (in Ledger's Documents it becomes the vendor's
+  statement, no longer the bank account's). The button is there while nothing of the statement is
+  posted. Auto sort refuses, and says why, when one of its lines is posted, merged as a duplicate
+  (or has another statement's line merged into it), linked to a bill by hand or split, or when
+  Create bill was used on it: undo that first. What was only offered for its lines (a bill's
+  payment, a transfer) is simply free again. The amounts are taken as they were staged, so check
+  their signs; **Flip signs** turns them all round. The balance owed is not known from such a file:
+  enter it.
 
-**2. You review it.** The Vendor statements tab lists each statement with its date, vendor,
-balance, number of lines and the state of its reconciliation. Open one to check and correct what
-was read: the vendor (one of Ledger's customers and vendors, or a new name, which is added to
-that list when you save), the currency, the statement date, the period's first day, the opening
+If the AI can't read an uploaded or sent file (it isn't set up, or its connection doesn't read PDFs
+or pictures), the statement is kept all the same, empty, and you type its date, balance and lines.
+
+**Back again:** **This is a bill** / **This is a receipt** on the opened vendor statement. It goes
+to the Bills or Receipts tab as it was (Needs review if it never was one). Not while its
+reconciliation exists in Ledger: delete that one there first.
+
+**2. You review it.** Click the row: the statement opens inside the Statements tab, where a bank
+statement shows its transactions, with **← All statements** to go back. Check and correct what was
+read: the vendor (one of Ledger's customers and vendors, or a new name, which is added to that
+list when you save), the currency, the statement date, the period's first day, the opening
 balance, the balance owed, and the lines (change, add or remove them). The page says whether the
-opening balance plus the lines gives the balance. Saving posts nothing.
+opening balance plus the lines gives the balance. **Save changes** posts nothing.
 
 Amounts are in the vendor's sense, as on the statement: **an invoice or a charge is positive, a
 payment or a credit note is negative**, and the balance is what you owe (negative when the vendor
 owes you).
 
-**3. Start reconcile session.** The button opens Ledger's reconciliation for **that vendor's own
-account** (the account Ledger keeps for the vendor under accounts payable, in the statement's
-currency) and takes you to Ledger's Reconcile page. Ledger shows the statement beside the vendor's
-bills and payments, ticks the ones that match a statement line (same amount, near date), and lists
-the statement lines your books don't have and the lines in your books the statement doesn't have.
-You finish it there. Auto sort hands Ledger the statement's document, its date, its balances and
-the lines as you reviewed them, so the AI isn't asked a second time. It needs the vendor, the
-statement date and the balance owed (0 when nothing is owed).
+**3. Reconcile.** The button (on the row, or on the opened statement, where what you changed is
+saved first) opens Ledger's reconciliation for **that vendor's own account** (the account Ledger
+keeps for the vendor under accounts payable, in the statement's currency) and takes you to
+Ledger's Reconcile page. Ledger shows the statement beside the vendor's bills and payments, ticks
+the ones that match a statement line (same amount, near date), and lists the statement lines your
+books don't have and the lines in your books the statement doesn't have. You finish it there. Auto
+sort hands Ledger the statement's document, its date, its balances and the lines as you reviewed
+them, so the AI isn't asked a second time. It needs the vendor, the statement date and the balance
+owed (0 when nothing is owed); pressed on a row that lacks one of these, the statement opens and
+says which.
 
 An account has one reconciliation in progress at a time. If this vendor's account already has
 one, nothing new is started: Auto sort says **a reconciliation of this vendor is already in
 progress** and links to it. Finish or delete that one in Ledger first.
 
-**4. Afterwards** the statement shows where it stands: **Not started**, **In progress** (with a
-link to continue in Ledger) or **Reconciled on** a date (with a link to the reconciliation). This
-is read from Ledger each time; Auto sort keeps only the reconciliation's number, so it can't go
-stale. Undo or delete the reconciliation in Ledger and the statement says Not started again.
-While a session is in progress the statement's page also lists **On the statement, not in the
-books**: the lines Ledger found no bill or payment for. That is the useful finding: a missing bill
-to find and enter, or a payment that wasn't recorded. (Once the session is finished that list is
-on Ledger's page only: of a finished reconciliation Ledger tells a module just that it is finished.)
+**4. Afterwards** the row and the opened statement show where it stands: **Not started**, **In
+progress** (with **Continue in Ledger**) or **Reconciled on** a date (with **Open the
+reconciliation**). This is read from Ledger each time; Auto sort keeps only the reconciliation's
+number, so it can't go stale. Undo or delete the reconciliation in Ledger and the statement says
+Not started again. While a reconciliation is in progress the opened statement also lists **On the
+statement, not in the books**: the lines Ledger found no bill or payment for. That is the useful
+finding: a missing bill to find and enter, or a payment that wasn't recorded. (Once it is finished
+that list is on Ledger's page only: of a finished reconciliation Ledger tells a module just that
+it is finished.)
 
 **What it needs.** Reconciling needs **Ledger 0.34.0 or later** (and vendors' own accounts, Ledger
 0.31.0). On an older Ledger a vendor statement is still recognised and kept, and can be reviewed
-and changed back by hand, so it isn't taken for a bill; the tab says reconciling it needs a newer
-Ledger, and there is no Start button. Viewers can look at vendor statements; bookkeepers and
-admins change them and start sessions.
+and changed back by hand, so it isn't taken for a bill; the Statements tab says reconciling it
+needs a newer Ledger, and there is no Reconcile button. Viewers can look at vendor statements;
+bookkeepers and admins change them and reconcile.
 
-**Deleting** a vendor statement removes it and its lines here. A reconciliation in Ledger, and
-the document it is checked against, stay as they are.
+**Deleting** a vendor statement (**Delete** on the opened statement) removes it and its lines
+here. A reconciliation in Ledger, and the document it is checked against, stay as they are.
 
 ## API
 
@@ -947,7 +971,8 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | Method | Path | |
 |---|---|---|
 | `POST` | `/statements` | `{filename, content, account_code, flip_signs?, date_order?: "auto"\|"mdy"\|"dmy"}` files the text as a document, stages the statement and starts categorising it (up to about 1 MB; larger files go through `/inbox`) |
-| `GET` | `/statements`, `/statements/:id` | list; one statement with its transactions (`own_accounts`: the customers' and vendors' own accounts its rows are booked to, which aren't in `/accounts`) |
+| `GET` | `/statements`, `/statements/:id` | what the Statements tab lists, in one answer: `data` (the statements of bank, card and loan accounts), `vendor_statements` (suppliers' statements of account, as `GET /vendor-statements` gives them, each with `reconciliation` read from Ledger) and `reconcile: {available, reason}`; one statement with its transactions (`own_accounts`: the customers' and vendors' own accounts its rows are booked to, which aren't in `/accounts`) |
+| `POST` | `/statements/:id/vendor-statement` | `{vendor, currency?}`: a person says a statement staged for a bank or card account is a vendor's statement of account. Its rows become the vendor statement's lines, its document goes along, the staged statement is removed and nothing is posted → as `GET /vendor-statements/:id`. 409 with the reason when a row is posted, merged, linked to a bill by hand or split, or a bill was made from it |
 | `POST` | `/statements/:id/categorize` | `{all?: true}` asks the model again (only unposted rows) |
 | `POST` | `/statements/:id/post` | `{ids?: [...]}` posts rows that have an account |
 | `POST` | `/statements/:id/account` | `{account_code, flip_signs?}`: choose or change the statement's account while nothing is posted (remembered for the sending module) |
@@ -999,7 +1024,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF, a picture or an `.eml` (up to about 700 KB; larger files go through `/inbox`) |
 | `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payments and lines (`payable_account`: where its payable line sits now, `own: true` for the vendor's own account; `payment_status`, `paid_cents`, `left_cents`, `due_cents`, `payments_from` as in the list; `remaining_cents`: what is still to pay after the rows linked to it; each posted payment row has `linked_cents` and `counted`, what Ledger counts of it; `other_payments`: payments linked to its entry in Ledger that aren't its rows); edit fields (incl. `billable`, `customer_name`, `customer_ref`) or `status`; delete |
 | `POST` | `/bills/:id/vendor-statement` | a person says it is a vendor's statement of account, not a bill: it leaves the bills (409 with the reason when it has posted something). Every other `/bills/:id` route answers 409 for a vendor statement; `GET /bills/:id` answers `{bill: {id, kind: "vendor_statement", vendor}}` |
-| `GET` | `/vendor-statements`, `/vendor-statements/:id` | the vendor statements, each with `reconciliation` read from Ledger (`state`: `none`, `open`, `finished`, `unavailable` on a Ledger without `ctx.reconcile`, `unknown` when Ledger couldn't say; `id`, `href`, `finished_at`, `other_open`; one statement also with `matched`, `unmatched` lines, `not_on_statement`, `difference_cents` while in progress), and `reconcile: {available, reason}`; one statement with its `lines` and `adds_up` |
+| `GET` | `/vendor-statements`, `/vendor-statements/:id` | the vendor statements alone (the page lists them through `GET /statements`), each with `reconciliation` read from Ledger (`state`: `none`, `open`, `finished`, `unavailable` on a Ledger without `ctx.reconcile`, `unknown` when Ledger couldn't say; `id`, `href`, `finished_at`, `other_open`; one statement also with `matched`, `unmatched` lines, `not_on_statement`, `difference_cents` while in progress), and `reconcile: {available, reason}`; one statement with its `lines` and `adds_up` |
 | `PATCH` | `/vendor-statements/:id` | `{vendor?, currency?, statement_date?, period_start?, opening_balance?, closing_balance?}` (balances: signed decimals, `""` for not known) |
 | `PUT` | `/vendor-statements/:id/lines` | `{lines: [{date, description, amount}]}`: all its lines, in order; an invoice or charge positive, a payment or credit note negative |
 | `POST` | `/vendor-statements/:id/reconcile` | starts Ledger's reconciliation of the vendor's own account with the statement's document, date, balances and lines → the statement plus `{href, reconciliation_id, already_open, message}`; when the vendor's account has one in progress, that one is answered (`already_open: true`) and nothing is started |
@@ -1137,7 +1162,7 @@ lib/categorize.mjs     prompt, schema, rules, batching
 lib/bill-routes.mjs    bill routes, reading uploads and files, matching bills to transactions, linking to entries
 lib/bills.mjs          bill extraction prompt, picture types, duplicates, match scoring
 lib/vendor-statements.mjs        a vendor's statement of account: its lines, what Ledger's reconciliation is given and says
-lib/vendor-statement-routes.mjs  vendor statements: kept, reviewed, changed by hand, reconcile session started in Ledger
+lib/vendor-statement-routes.mjs  vendor statements: kept, listed with the statements, reviewed, changed by hand, reconciled in Ledger
 lib/email-statements.mjs  statements from other modules: account hints, PDF statements, card signs
 lib/mime.mjs           email (MIME) parser for bills sent as .eml files
 lib/matching.mjs       journal and Auto sort candidates, the AI's match prompt
@@ -1152,7 +1177,7 @@ lib/root-routes.mjs    root mode
 lib/ledger-sync.mjs    renumbered accounts, entries changed in Ledger
 ui/index.html          the page shown in Ledger
 ui/inbox.js, scan.js   the Inbox and Scan tabs
-ui/vendor-statements.js  the Vendor statements tab
+ui/vendor-statements.js  vendor statements on the Statements tab: their rows, the opened statement, Reconcile
 ui/mail-view.js        the email viewer
 ui/receipt.js          finding and straightening a receipt in a photo
 ui/mail-range.html     Settings → Auto sort → Email: import a date range
@@ -1196,6 +1221,22 @@ app's updater reads it. `.github/workflows/app.yml` builds the app unsigned on e
 inside the module and is downloaded from the Inbox tab.
 
 ## Changes
+
+- **0.32.0:** **Vendor statements are on the Statements tab; the separate Vendor statements tab
+  is gone.** A supplier's statement of account is listed with the bank, card and loan statements,
+  marked Vendor statement, with the vendor, the balance owed and where its reconciliation stands.
+  **Reconcile** on its row (or on the opened statement) launches the reconciliation of the
+  vendor's own account in Ledger, as Start reconcile session did; afterwards the button is
+  Continue in Ledger or Open the reconciliation. Clicking the row opens the statement inside the
+  Statements tab to check its vendor, currency, date, balances and lines, with This is a bill,
+  This is a receipt, Delete and, while in progress, the lines the books don't have. New:
+  **Upload a vendor's statement** on the Statements tab; **This is a vendor's statement…** on a
+  statement staged for a bank or card account turns it into a vendor statement (choose the
+  vendor) while nothing of it is posted, merged or linked, and says why when it can't; **Flip
+  signs** on a vendor statement's lines. `GET /statements` now also returns `vendor_statements`
+  and `reconcile` (its `data` is unchanged); new `POST /statements/:id/vendor-statement`. Links to
+  a vendor statement (`?vendor_statement=`, `?bill=`) open it on the Statements tab. No migration;
+  nothing stored changes. See [Vendor statements](#vendor-statements).
 
 - **0.31.0:** **Vendor statements: a supplier's statement of account is reconciled, not turned
   into a bill.** The step that reads bills can now say a document is a vendor statement (a list of

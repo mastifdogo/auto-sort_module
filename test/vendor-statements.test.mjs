@@ -1,5 +1,7 @@
 // Vendor statements (0.31.0): a supplier's statement of account is recognised, kept as what it is
 // (never a bill, nothing posted) and reconciled against the vendor's own account in Ledger.
+// Since 0.32.0 they are listed with the other statements (GET /statements), and a statement staged
+// for a bank or card account can be made one while nothing of it is posted, merged or linked.
 // The pure parts run anywhere; the routes run on a scratch PostgreSQL (test/pg.mjs; skipped
 // without one) with the stand-ins for Ledger's entities and ctx.reconcile (test/fake-ledger.mjs).
 
@@ -193,6 +195,15 @@ test("a document read as a vendor statement is kept as one: no bill, nothing pos
 	const list = await s.call("GET /vendor-statements");
 	assert.equal(list.data.length, 1);
 	assert.deepEqual(list.reconcile, { available: true, reason: "" });
+	// The Statements tab gets it in the same answer as the bank and card statements, with what its row shows.
+	const tab = await s.call("GET /statements");
+	assert.deepEqual(tab.data, []);
+	assert.deepEqual(tab.reconcile, { available: true, reason: "" });
+	assert.deepEqual(
+		tab.vendor_statements.map((v) => [v.id, v.vendor, v.statement_date, v.period_start, v.closing_balance_cents, v.currency, v.line_count, v.document_name, v.reconciliation.state]),
+		[[made.id, "Acme Supply", "2026-03-31", "2026-03-01", 115000n, "CAD", 5, "acme-statement.pdf", "none"]],
+	);
+	assert.ok(tab.vendor_statements[0].created_at);
 	const { statement, lines } = await s.call("GET /vendor-statements/:id", { params: { id: String(made.id) } });
 	assert.deepEqual(
 		[statement.vendor, statement.currency, statement.statement_date, statement.period_start, statement.opening_balance_cents, statement.closing_balance_cents, statement.read_by, statement.adds_up],
@@ -284,6 +295,113 @@ test("by hand: something read as \"not a bill\" and a bill added by hand can be 
 	assert.equal((await s.call("GET /bills/:id", { params: { id: String(hand.id) } })).bill.kind, "bill");
 });
 
+/** A statement staged for the chequing account: two "deposits" (a supplier's invoices) and a "withdrawal" (our payment), with its file in Documents. */
+async function staged(s, { status = "ready", name = "acme-march.csv" } = {}) {
+	const doc = await s.documents.api.add({ kind: "statement", filename: name, data: Buffer.from(`date,description,amount\n${name}\n`), content_type: "text/csv", account_code: "1000" }, { username: "pat" });
+	const { rows } = await s.db.q(`INSERT INTO mod_categorizer.statements (filename, format, account_code, uploaded_by, status) VALUES ('acme-march.csv', 'csv', '1000', 'pat', $1) RETURNING id`, [status]);
+	const id = rows[0].id;
+	await s.db.q(`INSERT INTO mod_categorizer.statement_files (statement_id, file_name, content_type, size_bytes, document_id) VALUES ($1, 'acme-march.csv', 'text/csv', 24, $2)`, [id, doc.id]);
+	const tx = [];
+	for (const [n, date, description, cents] of [[1, "2026-03-05", "Invoice INV-101", 50000], [2, "2026-03-12", "Invoice INV-102", 30000], [3, "2026-03-20", "Payment received", -50000], [4, "2026-03-31", "Balance", 0]]) {
+		tx.push((await s.db.q(`INSERT INTO mod_categorizer.transactions (statement_id, line_no, fingerprint, account_code, tx_date, description, amount_cents, suggested_code, source) VALUES ($1, $2, $3, '1000', $4, $5, $6, '5100', 'llm') RETURNING id`, [id, n, `f${id}-${n}`, date, description, cents])).rows[0].id);
+	}
+	return { id: String(id), doc: doc.id, tx };
+}
+
+test("a statement staged for a bank account is made a vendor's statement: its rows become the lines, its document goes along, nothing is posted", async (t) => {
+	const s = await setup(t);
+	if (!s) return;
+	const st = await staged(s);
+	// A bill the AI's matching offered one of its rows: only an offer, it is free again afterwards.
+	const bill = (await s.call("POST /bills", { body: { vendor: "Globex", kind: "bill", amount: "500.00", bill_date: "2026-03-10" } })).body;
+	await s.db.q(`UPDATE mod_categorizer.transactions SET bill_id = $2, source = 'bill' WHERE id = $1`, [st.tx[2], bill.id]);
+	await s.db.q(`INSERT INTO mod_categorizer.inbox_files (name, size_bytes, status, received_by, statement_id, sent_to, sent_link, document_id) VALUES ('acme-march.csv', 24, 'sent', 'pat', $1, 'Statement', '/apps/categorizer?statement=1', $2)`, [st.id, st.doc]);
+	assert.equal((await s.call("GET /statements")).data.length, 1);
+
+	for (const body of [{}, { vendor: "" }, { vendor: 7 }, { vendor: "Acme Supply", currency: "EUR" }]) {
+		assert.equal(await status(s.call("POST /statements/:id/vendor-statement", { params: { id: st.id }, body })), 422, JSON.stringify(body));
+	}
+	assert.equal(await status(s.call("POST /statements/:id/vendor-statement", { params: { id: "999" }, body: { vendor: "Acme Supply" } })), 404);
+
+	const r = await s.call("POST /statements/:id/vendor-statement", { params: { id: st.id }, body: { vendor: "Acme Supply" } });
+	assert.deepEqual(
+		[r.statement.vendor, r.statement.vendor_entity_id, r.statement.currency, r.statement.statement_date, r.statement.period_start, r.statement.closing_balance_cents, r.statement.document_id, r.statement.document_name, r.statement.reconciliation.state],
+		["Acme Supply", 2n, "CAD", "2026-03-20", "2026-03-05", null, BigInt(st.doc), "acme-march.csv", "none"],
+	);
+	assert.match(r.statement.error, /staged as a statement of 1000 Chequing before pat said it is a statement of account from Acme Supply\./);
+	// The rows as they were staged, in order; the row without an amount isn't a line.
+	assert.deepEqual(r.lines.map((l) => [l.line_no, l.date, l.description, l.amount_cents]), [[1, "2026-03-05", "Invoice INV-101", 50000n], [2, "2026-03-12", "Invoice INV-102", 30000n], [3, "2026-03-20", "Payment received", -50000n]]);
+	// A person chose the vendor: it is in Ledger's list.
+	assert.deepEqual(s.vendors.entities.map((e) => [e.name, [...e.roles]]), [["Globex", ["vendor"]], ["Acme Supply", ["vendor"]]]);
+	// The staged statement and its rows are gone; the tab lists a vendor statement in its place.
+	const tab = await s.call("GET /statements");
+	assert.deepEqual([tab.data.length, tab.vendor_statements.map((v) => v.id)], [0, [r.statement.id]]);
+	assert.equal((await s.db.q(`SELECT count(*)::int AS n FROM mod_categorizer.transactions`)).rows[0].n, 0);
+	assert.equal(await status(s.call("GET /statements/:id", { params: { id: st.id } })), 404);
+	// The same document, kept: no longer the bank account's statement in Documents, but this vendor's.
+	assert.equal(s.documents.calls.some((c) => c[0] === "remove"), false);
+	assert.deepEqual(s.documents.calls.filter((c) => c[0] === "update").map((c) => [c[1], c[2].kind, c[2].account_code, c[2].entity_id, c[2].doc_date]), [[st.doc, "statement", null, 2, "2026-03-20"]]);
+	// The inbox file it came from says what it is now and opens it.
+	const { rows: inbox } = await s.db.q(`SELECT statement_id, bill_id, sent_to, sent_link FROM mod_categorizer.inbox_files`);
+	assert.deepEqual(inbox, [{ statement_id: null, bill_id: r.statement.id, sent_to: `Vendor statement #${r.statement.id} (Acme Supply)`, sent_link: `/apps/categorizer?bill=${r.statement.id}` }]);
+	assert.equal(s.posted.length, 0);
+
+	// From there it is a vendor statement like any other: the balance is entered, and Reconcile goes to Ledger.
+	const id = String(r.statement.id);
+	assert.match((await s.call("POST /vendor-statements/:id/reconcile", { params: { id } }).catch((e) => e)).message, /enter the balance/);
+	await s.call("PATCH /vendor-statements/:id", { params: { id }, body: { closing_balance: "300.00" } });
+	const go = await s.call("POST /vendor-statements/:id/reconcile", { params: { id } });
+	assert.equal(go.href, `/reconcile/${go.reconciliation_id}`);
+	const [, input] = s.reconcile.calls.find((c) => c[0] === "start");
+	assert.deepEqual([input.account_code, input.document_id, input.statement_balance_cents, input.lines.length], ["2000-2", st.doc, 30000, 3]);
+});
+
+test("a statement that posted, merged or linked something stays a statement, and the answer says why", async (t) => {
+	const s = await setup(t);
+	if (!s) return;
+	const st = await staged(s, { status: "categorizing" });
+	const tx = `mod_categorizer.transactions`;
+	const why = async () => {
+		const e = await s.call("POST /statements/:id/vendor-statement", { params: { id: st.id }, body: { vendor: "Acme Supply" } }).catch((x) => x);
+		assert.equal(e.status, 409);
+		assert.match(e.message, /^This statement can't become a vendor's statement: /);
+		return e.message;
+	};
+	assert.match(await why(), /wait until the suggestions are done/);
+	await s.db.q(`UPDATE mod_categorizer.statements SET status = 'ready' WHERE id = $1`, [st.id]);
+
+	await s.db.q(`UPDATE ${tx} SET status = 'posted', journal_entry_id = 91 WHERE id = $1`, [st.tx[0]]);
+	assert.match(await why(), /1 of its transactions is posted to 1000; a statement that has posted something stays that account's statement/);
+	await s.db.q(`UPDATE ${tx} SET status = 'new', journal_entry_id = NULL WHERE id = $1`, [st.tx[0]]);
+
+	await s.db.q(`UPDATE ${tx} SET status = 'merged', duplicate_entry_id = 92 WHERE id = ANY($1::bigint[])`, [[st.tx[0], st.tx[1]]]);
+	assert.match(await why(), /2 of its transactions are merged as duplicates; unmerge them first/);
+	await s.db.q(`UPDATE ${tx} SET status = 'new', duplicate_entry_id = NULL WHERE statement_id = $1`, [st.id]);
+
+	// A row of another statement merged into one of its rows.
+	const other = await staged(s, { name: "other.csv" });
+	await s.db.q(`UPDATE ${tx} SET status = 'merged', duplicate_of = $2 WHERE id = $1`, [other.tx[0], st.tx[0]]);
+	assert.match(await why(), /1 transaction of another statement is merged into this one as a duplicate/);
+	await s.db.q(`UPDATE ${tx} SET status = 'new', duplicate_of = NULL WHERE id = $1`, [other.tx[0]]);
+
+	// A person linked a row to a bill as its payment.
+	const bill = (await s.call("POST /bills", { body: { vendor: "Globex", kind: "bill", amount: "500.00", bill_date: "2026-03-10" } })).body;
+	await s.db.q(`UPDATE ${tx} SET bill_id = $2, chosen_code = '2000', source = 'bill' WHERE id = $1`, [st.tx[2], bill.id]);
+	assert.match(await why(), new RegExp(`line 3 is linked to bill #${bill.id} as its payment; unlink it first`));
+	await s.db.q(`UPDATE ${tx} SET bill_id = NULL, chosen_code = NULL, source = '' WHERE id = $1`, [st.tx[2]]);
+
+	// Create bill was used on it.
+	await s.db.q(`UPDATE mod_categorizer.bills SET statement_id = $2 WHERE id = $1`, [bill.id, st.id]);
+	assert.match(await why(), new RegExp(`bill #${bill.id} was made from this statement \\(Create bill\\); delete that bill first`));
+	await s.db.q(`UPDATE mod_categorizer.bills SET statement_id = NULL WHERE id = $1`, [bill.id]);
+
+	// Nothing was changed by any of the refusals; with nothing in the way it goes through.
+	assert.equal((await s.call("GET /statements")).data.length, 2);
+	assert.equal((await s.call("GET /vendor-statements")).data.length, 0);
+	assert.equal((await s.call("POST /statements/:id/vendor-statement", { params: { id: st.id }, body: { vendor: "Acme Supply", currency: "USD" } })).statement.currency, "USD");
+	assert.deepEqual((({ data, vendor_statements }) => [data.length, vendor_statements.length])(await s.call("GET /statements")), [1, 1]);
+});
+
 /** A vendor statement with its vendor in Ledger and two bills and a payment in the vendor's account. */
 async function reviewed(s) {
 	const id = String((await s.upload()).body.id);
@@ -331,6 +449,8 @@ test("Start reconcile session: the vendor's own account, the document and the li
 	// The statement lines the books don't have: the invoice to go and find, and the credit note.
 	assert.deepEqual(rec.unmatched, [{ date: "2026-03-28", description: "Invoice INV-103", amount_cents: 90000 }, { date: "2026-03-30", description: "Credit note CN-7", amount_cents: -5000 }]);
 	assert.equal((await s.call("GET /vendor-statements")).data[0].reconciliation.state, "open");
+	const listed = (await s.call("GET /statements")).vendor_statements[0].reconciliation;
+	assert.deepEqual([listed.state, listed.href, listed.id], ["open", r.href, r.reconciliation_id]);
 
 	// Pressed again: the same one, nothing new started.
 	const again = await s.call("POST /vendor-statements/:id/reconcile", { params: { id } });
@@ -345,6 +465,7 @@ test("Start reconcile session: the vendor's own account, the document and the li
 	const done = (await s.call("GET /vendor-statements/:id", { params: { id } })).statement.reconciliation;
 	assert.deepEqual([done.state, done.finished_by, done.href, done.finished_at.slice(0, 4)], ["finished", "sam", r.href, String(new Date().getUTCFullYear())]);
 	assert.equal((await s.call("GET /vendor-statements")).data[0].reconciliation.state, "finished");
+	assert.deepEqual((({ state, finished_by }) => [state, finished_by])((await s.call("GET /statements")).vendor_statements[0].reconciliation), ["finished", "sam"]);
 	assert.equal(await status(s.call("POST /vendor-statements/:id/reconcile", { params: { id } })), 409);
 	// Deleted in Ledger: not started again here, and it can be started anew.
 	s.reconcile.remove(r.reconciliation_id);

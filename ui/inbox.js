@@ -293,7 +293,7 @@ const Inbox = (() => {
 		const HINTS = {
 			statement: read && !STATEMENT_RE.test(f.name) ? "Its transactions were read before and are kept with the file: they are staged as they are, nothing is read again." : "Its lines are staged on the Statements tab. Nothing is posted until you review them and press Post.",
 			bill: read || f.document?.extracted ? "What was read from it before is used. It lands on the Bills tab as Needs review." : "The AI reads the vendor, amount and dates. It lands on the Bills tab as Needs review: you approve it.",
-			vendor_statement: "The AI reads the vendor, the date, the balance and the statement's lines. It lands on the Vendor statements tab, where you check it and start a reconcile session in Ledger. No bill is made and nothing is posted.",
+			vendor_statement: "The AI reads the vendor, the date, the balance and the statement's lines. It lands on the Statements tab, marked as a vendor statement, where you check it and press Reconcile to compare it with the vendor's account in Ledger. No bill is made and nothing is posted.",
 			receipt: read || f.document?.extracted ? "What was read from it before is used. It lands on the Receipts tab as Needs review." : "The AI reads the vendor, amount and date. It lands on the Receipts tab as Needs review: you approve it.",
 		};
 		const sync = () => {
@@ -452,7 +452,7 @@ const Inbox = (() => {
 			openId = null;
 			// A supplier's statement of account (read as one, or said to be): no bill is made.
 			if (r.bill.kind === "vendor_statement") {
-				toast(dest === "vendor_statement" ? "Kept as a vendor statement. Check it, then start a reconcile session." : "This is a vendor's statement of account, not a bill: it is on the Vendor statements tab. Check it, then start a reconcile session.");
+				toast(dest === "vendor_statement" ? "Kept as a vendor statement, on the Statements tab. Check it, then press Reconcile." : "This is a vendor's statement of account, not a bill: it is on the Statements tab. Check it, then press Reconcile.");
 				loadCount();
 				return VendorStatements.open(r.bill.id);
 			}

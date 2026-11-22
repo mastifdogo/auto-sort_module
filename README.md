@@ -626,9 +626,17 @@ module that sends a statement can say it in the file's meta (`amount_due`, `due_
 `statement_date`, `minimum_payment`, `reference`, `vendor`, `currency`), and an earlier Create bill
 reading is kept. Otherwise Ledger's LLM API reads the statement file (a PDF needs a connection that
 reads PDFs); **Read again with the LLM** asks it anyway. It never adds up the transactions itself.
-You check the form, then **Create bill**; one bill per statement. Its account is the card or loan
-account, so paying it pays down the card. Statements uploaded before 0.7.0 have no file kept; the
-LLM then only sees the transactions, so type the amount.
+You check the form, then **Create bill**; one bill per statement. Since 0.27.0 the bill is unpaid
+and posted straight away, and shows on the **Bills** tab (no Approve step, no account to choose):
+Dr **Statement bills to clear**, a clearing account Auto sort makes for itself (one per currency,
+hidden in Ledger like every clearing account), Cr accounts payable. Its payment from the bank
+then books Dr payables / Cr bank and marks it paid. The clearing account is cleared by the other
+side of that payment: book the payment line on the card's or loan's own statement to **Statement
+bills to clear** (show the account under Ledger's Settings → Clearing accounts to pick it).
+It needs an accounts payable account (tagged in Ledger, or chosen under Settings → Auto sort →
+Bills); without one Create bill says so and makes nothing. Undo approval on the Bills tab
+reverses the entry. Statements uploaded before 0.7.0 have no file kept; the LLM then only sees
+the transactions, so type the amount.
 
 **Customers and vendors** (Ledger 0.16.0): a bill's vendor and customer are linked to Ledger's own
 list of customers and vendors (**Entities** in Ledger's sidebar), shared with every module, and the
@@ -948,6 +956,11 @@ app's updater reads it. `.github/workflows/app.yml` builds the app unsigned on e
 inside the module and is downloaded from the Inbox tab.
 
 ## Changes
+
+- **0.27.0:** **Create bill on a statement makes an unpaid bill at once.** It is posted when
+  created, Dr "Statement bills to clear" (Auto sort's own clearing account, made on first use)
+  / Cr accounts payable, and goes to the Bills tab as an open bill; before, it waited for Approve
+  and was booked to an account you chose. It needs an accounts payable account.
 
 - **0.26.0:** **Bills and receipts are posted to accounts payable.** Receipts are posted there on
   approval like bills (before, a receipt only told its bank transaction which account to use),

@@ -325,7 +325,7 @@
 			<strong id="d-title"></strong>
 			<span id="d-status"></span>
 			<span class="spacer"></span>
-			<button class="btn" id="d-makebill" title="Ledger's LLM API reads what the statement says is owed (balance, due date); you check it, then create the bill">Create bill</button>
+			<button class="btn" id="d-makebill" title="What the statement says is owed (balance, due date): you check it, then create an unpaid bill, posted to accounts payable and shown on the Bills tab">Create bill</button>
 			<button class="btn primary" id="d-autosort" title="Ask Ledger's LLM API whether each unposted line is already in the journal, on another statement, or a bill's payment. You approve each match.">Auto sort</button>
 			<button class="btn" id="rerun" title="Ask the model again for every transaction that isn't posted">Re-run suggestions</button>
 			<button class="btn danger" id="discard" title="Remove the transactions that aren't posted">Discard unposted</button>
@@ -1121,10 +1121,7 @@
 				bill_date: el("input", { type: "date", value: d.bill_date ?? "" }),
 				due_date: el("input", { type: "date", value: d.due_date ?? "" }),
 				amount: el("input", { inputmode: "decimal", value: d.amount_cents == null ? "" : (Number(d.amount_cents) / 100).toFixed(2), placeholder: "0.00" }),
-				account_code: el("select"),
 			};
-			accountOptions(f.account_code, accounts.filter((a) => a.currency === d.currency), { selected: d.account_code, placeholder: "Choose account…" });
-			withNewAccount(f.account_code, { type: "liability", currency: d.currency });
 			const create = el("button", { class: "btn primary" }, "Create bill");
 			create.onclick = async () => {
 				create.disabled = true;
@@ -1132,10 +1129,10 @@
 					const b = await api("/bills", { method: "POST", body: JSON.stringify({
 						kind: "bill", statement_id: s.id, currency: d.currency,
 						vendor: f.vendor.value, invoice_number: f.invoice_number.value, bill_date: f.bill_date.value || null, due_date: f.due_date.value || null,
-						amount: f.amount.value.trim() || null, account_code: f.account_code.value || null,
+						amount: f.amount.value.trim() || null,
 					}) });
 					box.classList.add("hidden");
-					toast(`Bill #${b.id} created; approve it on the Bills tab.`);
+					toast(`Bill #${b.id} created, unpaid: posted to accounts payable. It is on the Bills tab.`);
 					showTab("bills");
 					openBill(b.id);
 				} catch (e) { fail(e); } finally { create.disabled = false; }
@@ -1144,7 +1141,8 @@
 			box.replaceChildren(
 				el("strong", {}, "New bill from this statement"),
 				el("p", { class: "muted small" }, `${d.read_from === "saved" ? `From ${SAVED_FROM[d.saved_from] ?? "what was already read"} (the LLM wasn't asked again)` : `Read from the ${d.read_from === "pdf" ? "PDF" : d.read_from === "file" ? "statement file" : "transactions (no file kept for this statement; check the amount)"}`}${d.confidence == null ? "" : ` with ${Math.round(d.confidence * 100)}% confidence`}.${d.minimum_cents ? ` Minimum payment: ${money(d.minimum_cents)}.` : ""}${d.summary ? ` ${d.summary.replace(/[.!?]?$/, ".")}` : ""} Paying it books to the account below (for a card, the card itself).`),
-				el("div", { class: "grid" }, lab("Vendor", f.vendor), lab("Reference", f.invoice_number), lab("Statement date", f.bill_date), lab("Due date", f.due_date), lab(`Amount owed (${d.currency})`, f.amount), lab("Account", f.account_code)),
+				el("div", { class: "grid" }, lab("Vendor", f.vendor), lab("Reference", f.invoice_number), lab("Statement date", f.bill_date), lab("Due date", f.due_date), lab(`Amount owed (${d.currency})`, f.amount)),
+				el("p", { class: "muted small" }, `Creates an unpaid bill and posts it: “Statement bills to clear” (${moduleName}'s clearing account) is debited and accounts payable credited. Its payment from the bank clears payables.`),
 				el("div", { class: "row", style: "margin-top:0.5rem" }, create, el("button", { class: "btn", onclick: () => box.classList.add("hidden") }, "Cancel"),
 					d.read_from === "saved" ? el("button", { class: "btn", onclick: () => makeBill(true) }, "Read again with the LLM") : null),
 			);

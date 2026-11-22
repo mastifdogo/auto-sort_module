@@ -110,6 +110,8 @@ const ACCOUNTS = [
 	{ code: "4000", name: "Sales", type: "revenue", currency: "CAD", is_active: true },
 	{ code: "5100", name: "Utilities", type: "expense", currency: "CAD", is_active: true },
 ];
+// Auto sort's own clearing account for bills made from statements (hidden, like every clearing account).
+const CLEARING = { code: "2990", name: "Statement bills to clear", type: "liability", currency: "CAD", is_active: true, kind: "clearing", hidden: true, module_id: "categorizer" };
 const ACCOUNT_MAP = new Map(ACCOUNTS.map((a) => [a.code, a]));
 
 /** Registers the module on a fake ctx with tags (or without: tags null, an older Ledger). */
@@ -154,6 +156,7 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 			},
 			reverseJournalEntry: async (id) => ({ id: Number(id) + 1000 }),
 			linkJournalEntry: async () => ({}),
+			clearingAccount: async ({ key, currency }) => ({ ...CLEARING, module_key: key, currency }),
 			relateEntries: async (a, b, opts) => { related.push([Number(a), Number(b), opts.note]); return []; },
 		},
 		dashboard: Object.fromEntries(["notify", "todo", "complete", "remove"].map((call) => [call, async () => {}])),
@@ -206,6 +209,28 @@ test("bills and receipts go to accounts payable: the account set, else the one L
 	await c.call("POST /bills/:id/approve", { params: { id: "3" } });
 	assert.equal(c.posted.length, 0);
 	assert.equal(lone.status, "open");
+});
+
+test("Create bill on a statement: an unpaid bill at once, Dr Auto sort's clearing account / Cr accounts payable", async () => {
+	const bill = { ...BILL, status: "new", vendor: "", invoice_number: null, bill_date: null, due_date: null, amount_cents: null, account_code: null, vendor_entity_id: 7, statement_id: 9n };
+	const statementAnswers = [
+		[/SELECT id FROM mod_categorizer\.statements WHERE id = \$1/, () => [{ id: 9n }]],
+		[/SELECT id FROM mod_categorizer\.bills WHERE statement_id = \$1/, () => []],
+		[/INSERT INTO mod_categorizer\.bills \(source, vendor, updated_by, statement_id\)/, (_, [source, vendor]) => { Object.assign(bill, { source, vendor }); return [{ id: 3n }]; }],
+	];
+	const body = { kind: "bill", statement_id: "9", currency: "CAD", vendor: "Visa", bill_date: "2026-03-01", due_date: "2999-01-01", amount: "850.00" };
+	const { call, posted } = await start({ answers: [...statementAnswers, ...billTable(bill)], settings: { ap_account: "2000" }, accounts: [...ACCOUNTS, CLEARING] });
+	const r = await call("POST /bills", { body });
+	assert.equal(r.status, 201);
+	assert.equal(posted.length, 1);
+	assert.deepEqual(posted[0].lines.map((l) => [l.account_code, String(l.debit_cents), String(l.credit_cents)]), [["2990", "85000", "0"], ["2000", "0", "85000"]]);
+	assert.deepEqual([bill.status, bill.source, bill.account_code, bill.ap_account, bill.journal_entry_id], ["open", "statement", "2990", "2000", 100]);
+	// Without an accounts payable account nothing is created; without an amount neither.
+	const none = await start({ answers: [...statementAnswers, ...billTable({ ...bill })], accounts: [...ACCOUNTS, CLEARING] });
+	await assert.rejects(none.call("POST /bills", { body }), (e) => e.status === 409 && /accounts payable/.test(e.message));
+	assert.equal(none.posted.length, 0);
+	const blank = await start({ answers: [...statementAnswers, ...billTable({ ...bill })], settings: { ap_account: "2000" }, accounts: [...ACCOUNTS, CLEARING] });
+	await assert.rejects(blank.call("POST /bills", { body: { ...body, amount: null } }), (e) => e.status === 422 || e.status === 400);
 });
 
 test("Mark paid tags the bill's entry paid (and no longer overdue); Reopen takes it off", async () => {

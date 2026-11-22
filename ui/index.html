@@ -1010,8 +1010,8 @@
 				cb.checked = selected.has(t.id);
 				cb.onchange = () => { cb.checked ? selected.add(t.id) : selected.delete(t.id); updateButtons(); };
 				let conf;
-				if (t.status === "posted") conf = el("span", {}, el("span", { class: "pill good", title: t.standin_bill_id ? `Recorded by bill ${t.standin_bill_id}'s journal entry: its line moved from accounts payable to this account. Nothing else was posted for this row.` : "" }, `Posted #${t.journal_entry_id}`, t.standin_bill_id ? ` · bill ${t.standin_bill_id}'s entry` : t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : t.pays_entry_id ? ` · paid entry #${t.pays_entry_id}` : ""), amendedPill(t),
-					t.standin_bill_id && role !== "viewer" ? el("button", { class: "btn small", title: "This row isn't that bill's payment: the line goes back to accounts payable and the row waits to be posted again", onclick: () => unlinkBillRow(t.standin_bill_id) }, "Unlink") : "",
+				if (t.status === "posted") conf = el("span", {}, el("span", { class: "pill good", title: t.standin_own_entry ? `Posted as its own entry, booked to accounts payable, where it clears the stand-in of bill ${t.standin_bill_id}; linked to that bill's entry in Ledger.` : t.standin_bill_id ? `Recorded by bill ${t.standin_bill_id}'s journal entry: its line moved from accounts payable to this account. Nothing else was posted for this row.` : "" }, `Posted #${t.journal_entry_id}`, t.standin_own_entry ? ` · clears bill ${t.standin_bill_id}'s stand-in` : t.standin_bill_id ? ` · bill ${t.standin_bill_id}'s entry` : t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : t.pays_entry_id ? ` · paid entry #${t.pays_entry_id}` : ""), amendedPill(t),
+					t.standin_bill_id && role !== "viewer" ? el("button", { class: "btn small", title: t.standin_own_entry ? "This row isn't that bill's payment: its entry is reversed and the row waits to be posted again" : "This row isn't that bill's payment: the line goes back to accounts payable and the row waits to be posted again", onclick: () => unlinkBillRow(t.standin_bill_id, t) }, "Unlink") : "",
 					rootMode ? el("button", { class: "btn small root", title: "Root mode: mark this row not posted (its entry isn't touched)", onclick: async () => { if (await rootAction(`/root/transactions/${t.id}/unpost`, `Mark row ${t.id} not posted? Entry #${t.journal_entry_id} isn't touched.`, "Marked not posted.")) refresh().catch(fail); } }, "Root: unpost") : "");
 				else if (t.status === "skipped") conf = el("span", { class: "pill plain" }, "Skipped");
 				else if (t.status === "merged") conf = el("span", {},
@@ -1122,10 +1122,10 @@
 		if (sb && role !== "viewer") {
 			out.push(el("div", { class: "match" },
 				el("strong", {}, "Pays the statement's bill: "), `bill ${sb.id} · ${sb.vendor || "bill"}${sb.invoice_number ? ` ${sb.invoice_number}` : ""} · ${money(sb.amount_cents)}${sb.due_date ? ` · due ${sb.due_date}` : ""} (entry #${sb.entry_id})`,
-				el("button", { class: "btn", title: "This row is that bill's payment on this account: the bill's entry then debits this account instead of accounts payable, and this row isn't posted again", onclick: async () => {
+				el("button", { class: "btn", title: standinLinks === "move" ? "This row is that bill's payment on this account: the bill's entry then debits this account instead of accounts payable, and this row isn't posted again" : "This row is that bill's payment on this account: it is posted as its own entry, booked to accounts payable, where it clears the bill's stand-in, and linked to the bill's entry (which stays as posted)", onclick: async () => {
 					try {
 						await api(`/bills/${sb.id}/link-statement-row`, { method: "POST", body: JSON.stringify({ transaction_id: t.id }) });
-						toast(`Linked: entry #${sb.entry_id} of bill ${sb.id} now debits ${accountLabel(current.statement.account_code)}; this row won't be posted again.`);
+						toast(standinLinks === "move" ? `Linked: entry #${sb.entry_id} of bill ${sb.id} now debits ${accountLabel(current.statement.account_code)}; this row won't be posted again.` : `Linked and posted: this row clears the stand-in of bill ${sb.id} in accounts payable; its entry and the bill's entry #${sb.entry_id} show each other in Ledger.`);
 						await refresh();
 					} catch (e) { fail(e); }
 				} }, "Link"),
@@ -1139,10 +1139,10 @@
 		for (const x of current.suggestions?.get(String(t.id)) ?? []) out.push(suggestionNote(x, () => refresh()));
 		return out;
 	}
-	async function unlinkBillRow(billId) {
-		if (!confirm(`Unlink this row from bill ${billId}? The line of the bill's entry goes back to accounts payable, and the row waits to be posted again.`)) return;
+	async function unlinkBillRow(billId, t) {
+		if (!confirm(t?.standin_own_entry ? `Unlink this row from bill ${billId}? Its journal entry #${t.journal_entry_id} is reversed, and the row waits to be posted again. The bill's entry isn't touched.` : `Unlink this row from bill ${billId}? The line of the bill's entry goes back to accounts payable, and the row waits to be posted again.`)) return;
 		try {
-			await api(`/bills/${billId}/unlink-statement-row`, { method: "POST" });
+			await api(`/bills/${billId}/unlink-statement-row`, { method: "POST", body: JSON.stringify(t ? { transaction_id: t.id } : {}) });
 			toast("Unlinked: the row is back to be reviewed and posted.");
 			await refresh();
 		} catch (e) { fail(e); }
@@ -1187,7 +1187,7 @@
 				el("p", { class: "muted small" }, `${d.read_from === "saved" ? `From ${SAVED_FROM[d.saved_from] ?? "what was already read"} (the LLM wasn't asked again)` : `Read from the ${d.read_from === "pdf" ? "PDF" : d.read_from === "file" ? "statement file" : "transactions (no file kept for this statement; check the amount)"}`}${d.confidence == null ? "" : ` with ${Math.round(d.confidence * 100)}% confidence`}.${d.minimum_cents ? ` Minimum payment: ${money(d.minimum_cents)}.` : ""}${d.summary ? ` ${d.summary.replace(/[.!?]?$/, ".")}` : ""} Paying it books to the account below (for a card, the card itself).`),
 				el("div", { class: "grid" }, lab("Vendor", f.vendor), lab("Reference", f.invoice_number), lab("Statement date", f.bill_date), lab("Due date", f.due_date), lab(`Amount owed (${d.currency})`, f.amount)),
 				el("p", { class: "muted small" }, statementBills === "standin"
-					? "Creates an unpaid bill and posts it: accounts payable is debited as a stand-in and the vendor's own account credited. When the payment shows on this account's statement, link that row to the bill (it is offered under the row): the stand-in line then moves to this account. The payment from the bank clears the vendor's account."
+					? `Creates an unpaid bill and posts it: accounts payable is debited as a stand-in and the vendor's own account credited. When the payment shows on this account's statement, link that row to the bill (it is offered under the row): ${standinLinks === "move" ? "the stand-in line then moves to this account" : "the row is then posted to accounts payable, which clears the stand-in, and linked to the bill's entry"}. The payment from the bank clears the vendor's account.`
 					: `Creates an unpaid bill and posts it: “Statement bills to clear” (${moduleName}'s clearing account) is debited and accounts payable credited. Its payment from the bank clears payables.`),
 				el("div", { class: "row", style: "margin-top:0.5rem" }, create, el("button", { class: "btn", onclick: () => box.classList.add("hidden") }, "Cancel"),
 					d.read_from === "saved" ? el("button", { class: "btn", onclick: () => makeBill(true) }, "Read again with the LLM") : null),
@@ -1313,6 +1313,9 @@
 	const BILL_STATUS = { new: ["warn", "Needs review"], open: ["plain", "Approved"], paid: ["good", "Paid"], ignored: ["plain", "Ignored"] };
 	/** Paid because its journal entry was tagged "paid" in Ledger (by a person or another module), not by a payment here. */
 	const billStatusText = (b, text) => (b.status === "paid" && b.paid_by_tag ? `${text} (tagged in Ledger)` : text);
+	/** An approved bill some of which is paid: "Partially paid", with what is paid and what is left (what Ledger's entry page says, where payments are linked there). */
+	const partlyPaid = (b) => b.status === "open" && b.payment_status === "partially_paid";
+	const paidLeft = (b) => (b.paid_cents == null ? "" : `${money(b.paid_cents)} paid${b.left_cents == null ? "" : `, ${money(b.left_cents)} left`}`);
 	let billsList = [];
 	let currentBill = null;
 
@@ -1359,7 +1362,7 @@
 					el("td", {}, b.invoice_number),
 					el("td", { class: "num" }, b.amount_cents == null ? "—" : `${money(b.amount_cents)} ${b.currency}`),
 					el("td", {}, b.account_code ? accountLabel(b.account_code) : el("span", { class: "muted" }, "—")),
-					el("td", {}, el("span", { class: `pill ${cls}` }, text), b.error ? el("div", { class: "err" }, "!") : null),
+					el("td", {}, partlyPaid(b) ? el("span", { class: "pill warn", title: b.payments_from === "ledger" ? "From the payments linked to its entry in Ledger" : "" }, "Partially paid") : el("span", { class: `pill ${cls}` }, text), partlyPaid(b) ? el("div", { class: "small muted" }, paidLeft(b)) : null, b.error ? el("div", { class: "err" }, "!") : null),
 					el("td", {}, payment),
 				);
 			}),
@@ -1717,7 +1720,8 @@
 		box.replaceChildren();
 		const after = () => openBill(b.id);
 		$("bd-autosort").classList.toggle("hidden", !["new", "open"].includes(b.status) || payments.length > 0 || b.amount_cents == null);
-		if (b.paid_entry_id && !payments.some((t) => t.status === "posted")) {
+		// Linked by hand to the entry that paid it (the rest of it, when statement rows paid a part before).
+		if (b.paid_entry_id && !payments.some((t) => t.status === "posted" && String(t.journal_entry_id) === String(b.paid_entry_id))) {
 			box.append(el("div", { class: "match" }, el("strong", {}, "Linked: "), `recorded in journal entry #${b.paid_entry_id}`,
 				el("button", { class: "btn", onclick: () => billAction("unlink-entry") }, "Unlink")));
 			return;
@@ -1914,22 +1918,39 @@
 		const sd = b.standin;
 		if (!sd || !b.journal_entry_id) return;
 		const acct = sd.statement_account ? accountLabel(sd.statement_account) : "the card or loan account";
+		const open = (t) => (t.missing ? "" : el("a", { href: "#", style: "margin-left:6px", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "Open statement"));
 		if (sd.linked) {
+			// Linked by 0.29.0, or on Ledger 0.32: the stand-in line was moved to the account.
 			const t = sd.linked;
 			box.append(el("div", { class: "match" },
 				el("strong", {}, "On the statement: "),
 				t.missing ? `transaction ${t.id} (no longer here)` : `${t.date} · ${t.description} · ${money(t.amount_cents)} on ${accountLabel(t.account_code)} (${t.filename})`,
 				el("span", { class: "muted" }, ` · entry #${b.journal_entry_id} debits that account; the row isn't posted again`),
-				t.missing ? "" : el("a", { href: "#", style: "margin-left:6px", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "Open statement"),
+				open(t),
 				role !== "viewer" ? el("button", { class: "btn", title: "The line goes back to accounts payable and the row waits to be posted again", onclick: () => confirm("Unlink it? The line of the bill's entry goes back to accounts payable, and the statement row waits to be posted again.") && billAction("unlink-statement-row") }, "Unlink") : ""));
 			return;
 		}
-		box.append(el("p", { class: "muted small" }, `Accounts payable (${accountLabel(sd.account_code)}) stands in for ${acct} in entry #${b.journal_entry_id}. Link the payment received on that account's statement and the line moves there; that row is then not posted again. Only a row for the whole ${b.amount_cents == null ? "amount" : money(b.amount_cents)} can be linked (a part payment is booked to accounts payable by hand).`));
+		if (sd.mode === "move") {
+			box.append(el("p", { class: "muted small" }, `Accounts payable (${accountLabel(sd.account_code)}) stands in for ${acct} in entry #${b.journal_entry_id}. Link the payment received on that account's statement and the line moves there; that row is then not posted again. Only a row for the whole ${b.amount_cents == null ? "amount" : money(b.amount_cents)} can be linked (a part payment is booked to accounts payable by hand).`));
+		} else {
+			// The rows posted as their own entries, each clearing the stand-in or a part of it.
+			for (const t of sd.rows ?? []) box.append(el("div", { class: "match" },
+				el("strong", {}, "On the statement: "),
+				`${t.date} · ${t.description} · ${money(t.amount_cents)} on ${accountLabel(t.account_code)} (${t.filename})`,
+				el("span", { class: "muted" }, ` · posted as entry #${t.journal_entry_id} to accounts payable, linked to this bill's entry #${b.journal_entry_id}`),
+				open(t),
+				role !== "viewer" ? el("button", { class: "btn", title: "Its entry is reversed and the row waits to be posted again; the bill's entry isn't touched", onclick: () => confirm(`Unlink it? Entry #${t.journal_entry_id} is reversed, and the statement row waits to be posted again. The bill's entry isn't touched.`) && billAction("unlink-statement-row", { transaction_id: t.id }) }, "Unlink") : ""));
+			const left = sd.left_cents == null ? null : BigInt(sd.left_cents);
+			box.append(el("p", { class: "muted small" }, left !== null && left <= 0n
+				? `The stand-in in accounts payable (${accountLabel(sd.account_code)}) is cleared: the payment received on ${acct} was posted against it. The bill's entry #${b.journal_entry_id} stays as it was posted.`
+				: `Accounts payable (${accountLabel(sd.account_code)}) stands in for ${acct} in entry #${b.journal_entry_id}${left !== null && (sd.rows ?? []).length ? `; ${money(left)} still stands in` : ""}. Link the payment received on that account's statement: the row is posted as its own entry, to accounts payable, which clears the stand-in, and the two entries show each other in Ledger. The bill's entry isn't changed, and a payment of part of the amount can be linked too.`));
+		}
 		if (!sd.can_link || role === "viewer") return;
-		if (sd.candidates.length === 0) return void box.append(el("p", { class: "muted small" }, `No unposted transaction of ${b.amount_cents == null ? "that amount" : money(b.amount_cents)} on ${acct} yet. It is offered here, and under its row on the statement, once that statement is uploaded.`));
+		const whole = sd.left_cents ?? b.amount_cents;
+		if (sd.candidates.length === 0) return void box.append(el("p", { class: "muted small" }, `No unposted transaction of ${whole == null ? "that amount" : sd.mode === "move" ? money(whole) : `up to ${money(whole)}`} on ${acct} yet. It is offered here, and under its row on the statement, once that statement is uploaded.`));
 		box.append(el("table", { class: "stack" }, el("tbody", {}, ...sd.candidates.map((t) => el("tr", {},
 			el("td", { class: "nowrap" }, t.date),
-			el("td", {}, t.description),
+			el("td", {}, t.description, t.partial ? el("span", { class: "pill plain", style: "margin-left:6px" }, "part of it") : ""),
 			el("td", { class: "num pos" }, `${money(t.amount_cents)} ${b.currency}`),
 			el("td", {}, `${accountLabel(t.account_code)} · ${t.filename}`),
 			el("td", {}, el("button", { class: "btn", onclick: () => billAction("link-statement-row", { transaction_id: t.id }) }, "This is its payment on the statement")),
@@ -1938,7 +1959,7 @@
 	function renderBill(b, payments) {
 		const [cls, text] = BILL_STATUS[b.status] || ["plain", b.status];
 		$("bd-title").textContent = `${b.vendor || "Bill"}${b.invoice_number ? ` #${b.invoice_number}` : ""}`;
-		$("bd-status").replaceChildren(el("span", { class: `pill ${cls}` }, billStatusText(b, text)), b.journal_entry_id ? el("span", { class: "pill plain", title: b.payable_account ? `Its payable line is in ${b.payable_account.code} · ${b.payable_account.name}${b.payable_account.own ? " (the vendor's own account under accounts payable)" : ""}` : "" }, ` In payables (entry #${b.journal_entry_id}${b.payable_account?.own ? `, ${b.payable_account.code}` : ""})`) : "", amendedPill(b));
+		$("bd-status").replaceChildren(partlyPaid(b) ? el("span", { class: "pill warn", title: b.payments_from === "ledger" ? "From the payments linked to its entry in Ledger" : "" }, `Partially paid · ${paidLeft(b)}`) : el("span", { class: `pill ${cls}` }, billStatusText(b, text)), b.journal_entry_id ? el("span", { class: "pill plain", title: b.payable_account ? `Its payable line is in ${b.payable_account.code} · ${b.payable_account.name}${b.payable_account.own ? " (the vendor's own account under accounts payable)" : ""}` : "" }, ` In payables (entry #${b.journal_entry_id}${b.payable_account?.own ? `, ${b.payable_account.code}` : ""})`) : "", amendedPill(b));
 		$("bd-error").textContent = b.error || "";
 		$("bd-kind").value = b.kind;
 		$("bd-vendor").value = b.vendor;
@@ -1978,11 +1999,15 @@
 		// What its transactions pay of it together (each one's amount, less what is split off elsewhere).
 		const part = (t) => -BigInt(t.amount_cents) - BigInt(t.split_cents ?? 0);
 		const paidSoFar = payments.reduce((sum, t) => sum + part(t), 0n);
-		billRemaining = b.amount_cents == null ? null : BigInt(b.amount_cents) - paidSoFar;
+		// What is still to pay after them: the server's answer (what Ledger says is left, less the rows still to post).
+		billRemaining = b.amount_cents == null ? null : b.remaining_cents != null ? BigInt(b.remaining_cents) : BigInt(b.amount_cents) - paidSoFar;
+		// Payments linked to its entry in Ledger that aren't statement rows of this bill (an entry linked by hand, or by someone in Ledger).
+		const others = (b.other_payments ?? []).filter((x) => String(x.entry_id) !== String(b.paid_entry_id ?? "") || payments.length > 0);
+		const othersNote = others.length === 0 ? "" : el("p", { class: "small muted" }, "Also linked in Ledger as its payment: ", others.map((x) => `entry #${x.entry_id} · ${x.entry_date} · ${money(x.amount_cents)}${x.counted ? "" : " (reversed, not counted)"}`).join("; "), ".");
 		const what = b.kind === "receipt" ? "receipt" : "bill";
 		if (payments.length > 0) pay.replaceChildren(
 			b.amount_cents == null ? "" : el("p", { class: "small" },
-				billRemaining > 0n ? `${payments.length === 1 ? "This transaction pays" : `These ${payments.length} transactions pay`} ${money(paidSoFar)} of the ${what}'s ${money(b.amount_cents)}: ${money(billRemaining)} still to pay. Link another transaction below for the rest.`
+				billRemaining > 0n ? `${payments.length === 1 ? "This transaction pays" : `These ${payments.length} transactions pay`} ${money(paidSoFar)} of the ${what}'s ${money(b.amount_cents)}: ${money(billRemaining)} still to pay. Link another transaction below for the rest.${b.payments_from === "ledger" && b.paid_cents != null ? ` Posted and linked in Ledger so far: ${paidLeft(b)}.` : ""}`
 				: payments.length > 1 ? `These ${payments.length} transactions together pay the ${what}'s ${money(b.amount_cents)}.` : ""),
 			el("table", { class: "stack" }, el("tbody", {}, ...payments.map((t) =>
 				el("tr", {},
@@ -1991,11 +2016,13 @@
 					el("td", { class: "num neg" }, `${money(t.amount_cents)} ${b.currency}`),
 					el("td", { class: "wide" }, accountLabel(t.account_code), " → ", accountLabel(t.code || ""),
 						t.split_cents ? el("div", { class: "small muted" }, `Split: ${money(-BigInt(t.amount_cents) - BigInt(t.split_cents))} pays this, ` + (t.split_lines?.length ? t.split_lines : [{ amount_cents: t.split_cents, account_code: t.split_account_code, memo: t.split_memo }]).map((l) => `${money(l.amount_cents)} → ${accountLabel(l.account_code)}${l.memo ? ` (${l.memo})` : ""}`).join(", ")) : null),
-					el("td", {}, t.status === "posted" ? el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`), amendedPill(t)) : el("span", { class: "pill plain" }, "Waiting to be posted")),
+					el("td", {}, t.status === "posted" ? el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`), amendedPill(t), t.counted === false ? el("span", { class: "pill warn", style: "margin-left:6px", title: "Ledger doesn't count this entry as a payment of the bill's entry: it was reversed, or its link was taken off there" }, "Not counted in Ledger") : "") : el("span", { class: "pill plain" }, "Waiting to be posted")),
 					el("td", {}, t.status !== "posted" ? el("button", { class: "btn", onclick: () => billAction("unmatch", { transaction_id: t.id }) }, "Not this one") : el("a", { href: "#", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "Open statement")),
 				),
 			))),
+			othersNote,
 		);
+		else if (othersNote) pay.append(othersNote);
 		renderStandin(b);
 		renderBillMatches(b, payments);
 		$("bd-candidates").replaceChildren();
@@ -2346,6 +2373,8 @@
 	let payablesNote = ".";
 	// How Create bill on a statement posts: "standin" (accounts payable stands in, Ledger 0.32.0) or "clearing".
 	let statementBills = "clearing";
+	// How the payment on the card's statement is linked to such a bill: "entry" (posted as its own entry, Ledger 0.33.0) or "move" (0.32).
+	let standinLinks = "entry";
 	const payablesText = (p) => (!p?.own_accounts ? "" : p.kept_in_chosen
 		? "Bills stay in the account chosen under Settings: it isn't the one tagged Accounts payable in Ledger, so they aren't put in each vendor's own account"
 		: "Each bill and its payment are posted to its vendor's own account under accounts payable, so Ledger shows what each vendor is owed");
@@ -2353,6 +2382,7 @@
 		moduleName = st.name || moduleName;
 		payablesNote = payablesText(st.payables) ? `. ${payablesText(st.payables)}.` : ".";
 		statementBills = st.payables?.statement_bills || statementBills;
+		standinLinks = st.payables?.statement_bill_links || standinLinks;
 		role = st.role || role;
 		document.title = moduleName;
 		document.querySelectorAll(".mod-name").forEach((n) => (n.textContent = moduleName));

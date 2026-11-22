@@ -44,7 +44,7 @@ function setup(bill) {
 	};
 	const ctx = { id: "categorizer", documents: documents.api, log: { warn() {}, info() {} } };
 	const dtags = documentTags(ctx, { q, T: (t) => t });
-	const after = { calls: [], unlink: async () => after.calls.push("unlink"), autoMatch: async () => after.calls.push("autoMatch"), syncBillTodos: async () => after.calls.push("todos"), complete: async (k) => after.calls.push(`complete ${k}`), entryUnpaid: async () => after.calls.push("entry unpaid") };
+	const after = { calls: [], unlink: async () => after.calls.push("unlink"), autoMatch: async () => after.calls.push("autoMatch"), syncBillTodos: async () => after.calls.push("todos"), complete: async (k) => after.calls.push(`complete ${k}`), entryPaid: async () => after.calls.push("entry paid"), entryUnpaid: async () => after.calls.push("entry unpaid") };
 	dtags.listen(after);
 	const tagsOf = () => (documents.tags.get(doc) ?? []).map((t) => t.tag).sort();
 	return { documents, doc, b, dtags, after, tagsOf, posted };
@@ -75,10 +75,11 @@ test("\"paid\" set on the bill's document by a person pays the bill here; taken 
 	await S.documents.outside(S.doc, "set", "paid", { set_by: "sam" });
 	assert.equal(S.b.status, "paid");
 	assert.equal(S.b.paid_tag_by, "sam");
-	assert.deepEqual(S.after.calls, ["unlink", "complete bill-3", "todos"]);
+	// Its entry is told too: where Ledger keeps unpaid / partially_paid / paid on it (0.33.0), "paid" is set there by hand.
+	assert.deepEqual(S.after.calls, ["entry paid", "unlink", "complete bill-3", "todos"]);
 	await S.documents.outside(S.doc, "removed", "paid");
 	assert.equal(S.b.status, "open");
-	assert.deepEqual(S.after.calls.slice(3), ["entry unpaid", "autoMatch"]);
+	assert.deepEqual(S.after.calls.slice(4), ["entry unpaid", "autoMatch"]);
 });
 
 test("\"paid\" taken off a bill whose payment is in the journal is put back; so is \"posted\"", async () => {

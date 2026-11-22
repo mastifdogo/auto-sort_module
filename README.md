@@ -472,6 +472,11 @@ statement line (*march.csv · SHELL #12*, opening the statement), the bill or re
 bill and its payment, both statement lines for a transfer, and the bank line merged into an entry you
 entered by hand (removed again on unmerge).
 
+Entries are also linked to each other, so Ledger shows them together (Ledger 0.28.0): a payment
+is linked to the bill's or invoice's entry it pays, as its payment and with its amount (Ledger
+0.33.0, see "Payments and tags" under "Bills"); the card's side of a bill made from a statement
+is linked to that bill's entry with a note; a reversed duplicate is linked to the entry kept.
+
 ## The AI only suggests
 
 Following Ledger's rule for modules, nothing the AI decides takes effect until a person approves it:
@@ -642,38 +647,46 @@ accounts payable account (tagged in Ledger, or chosen under Settings → Auto so
 one Create bill says so and makes nothing. Statements uploaded before 0.7.0 have no file kept; the
 LLM then only sees the transactions, so type the amount.
 
-*How it is posted (0.29.0, Ledger 0.32.0 and later):* Dr **accounts payable**, as a stand-in for
+*How it is posted (Ledger 0.32.0 and later):* Dr **accounts payable**, as a stand-in for
 the card or loan account, Cr **the card company's own vendor account** (the account Ledger keeps
 for that vendor under accounts payable). No clearing account is involved. "Accounts payable" is
 the account tagged so in Ledger in the bill's currency, or the one chosen under Settings: the
-account itself, not a vendor's.
+account itself, not a vendor's. **The bill's entry stays as it was posted**: linking a payment
+never moves one of its lines (0.30.0, Ledger 0.33.0 and later).
 
 - **The payment on the card's or loan's own statement** (the row "Payment - thank you" on a later
-  statement of that account) is linked to the bill instead of being posted: under that row the
-  Statements tab shows **Pays the statement's bill … Link** (and **Not the same**), and the
-  bill's page lists the rows that fit under **Payment**. Linking moves the stand-in line of the
-  bill's entry from accounts payable to the card or loan account (Ledger logs the move on the
-  entry), so the entry reads Dr card or loan / Cr the vendor's account, and the row is marked
-  posted in that entry: nothing else is posted for it, it can't be posted twice, and reconciling
-  the card account in Ledger finds the line. The entry keeps the bill's date, so the row shows
-  *Dated … in Ledger*. Nothing is linked by itself: a person clicks Link. If the row had been
-  paired with the bank's payment as a transfer, linking undoes that pairing, and the bank's row
-  is offered the bill.
-- **Only a row for the whole amount can be linked**, on the account the bill's statement is of:
-  Ledger moves a whole line, not part of one. A part payment (you paid less than the balance) is
-  booked by hand: choose accounts payable for that row on the card's statement and post it; the
-  bank's smaller payment is linked to the bill as a partial payment, as for any bill.
-- **Unlink** (on the row, or on the bill's page) moves the line back to accounts payable and the
-  row waits to be posted again. Ledger refuses to move a line that is ticked on a reconciliation;
-  Unlink then says so and changes nothing (undo or untick the reconciliation first).
+  statement of that account) is linked to the bill: under that row the Statements tab shows
+  **Pays the statement's bill … Link** (and **Not the same**), and the bill's page lists the rows
+  that fit under **Payment**. Linking posts the row the usual way, as an entry of its own on the
+  row's date, booked to accounts payable: Dr card or loan / Cr accounts payable. That clears the
+  stand-in, and the row's entry and the bill's entry are linked in Ledger, so opening either
+  shows the other (with a note that it is the card's side of the payment). It is a plain link,
+  not a payment of the bill: the vendor is paid once, by the bank's payment below, so nothing is
+  counted twice. Nothing is linked by itself: a person clicks Link. If the row had been paired
+  with the bank's payment as a transfer, linking undoes that pairing, and the bank's row is
+  offered the bill.
+- **A part of the amount is fine.** A row for less than what stands in clears that much of it;
+  the bill's page then says how much still stands in, and the next row (offered under its row
+  once it is for exactly the rest) clears more, until nothing is left. A row for more than what
+  still stands in is refused. Rows that aren't for the whole remaining amount are offered on the
+  bill's page, not under the row.
+- **Unlink** (on the row, or on the bill's page) reverses the row's own entry and takes the link
+  between the two entries off; the row waits to be posted again. The bill's entry isn't touched.
 - **The payment from the bank** is matched to the bill as always and books Dr the vendor's
-  account / Cr bank, which marks the bill paid.
-- **Undo approval** on the Bills tab moves a linked line back first (the row waits to be posted
-  again), then reverses the entry. A changed vendor moves the credit line to the new vendor's
-  account; the bill can't lose its vendor while it is posted.
+  account / Cr bank. It is linked to the bill's entry as its payment, and Ledger tags that entry
+  partially paid or paid (see **Payments and tags** below).
+- **Undo approval** on the Bills tab unlinks the linked rows first (their entries are reversed
+  and the rows wait to be posted again), then reverses the bill's entry. A changed vendor moves
+  the credit line to the new vendor's account; the bill can't lose its vendor while it is posted.
+- *On Ledger 0.32, and for a bill linked by Auto sort 0.29.0:* there the stand-in line of the
+  bill's entry was moved from accounts payable to the card or loan account and the row marked
+  posted in the bill's entry (only a row for the whole amount). Such a bill keeps working after
+  the update: its page shows the row, **Unlink** moves the line back to accounts payable as
+  before (Ledger refuses while the line is ticked on a reconciliation), and a row linked after
+  that is posted as its own entry. No posted entry is rewritten by the update.
 
 *Where the stand-in can't be used, the clearing account is kept, as in 0.27.0 and 0.28.0:* on a
-Ledger older than 0.32.0 (it can't move a posted line), when the vendor couldn't be put on Ledger's
+Ledger older than 0.32.0, when the vendor couldn't be put on Ledger's
 list of customers and vendors, or when no account is tagged "Accounts payable" in the bill's
 currency to keep the vendor's account under (debit and credit would be the same account). The
 bill is then posted Dr **Statement bills to clear**, a clearing account Auto sort makes for
@@ -722,21 +735,59 @@ lines with accounts. Edit them; they must add up to the total; **Save split**. W
 posted, the entry books each line to its account (a bill posted to payables books the lines on
 approval). A split can change until it's posted.
 
-**Tags** (Ledger 0.23.0): Ledger keeps tags on journal entries that every module reads the same
-way. Auto sort keeps them true on a bill's entry (the payables entry made on approval; without a
-payables account, the entry its payment is recorded in):
-- **vendor**: who the bill is from, set on approval.
-- **paid**: when its payment is posted, when it's linked to an entry that records it, or on
-  **Mark paid**; taken off on **Reopen**.
-- **overdue**: an approved, unpaid bill past its due date (checked hourly and whenever bills
-  change); taken off when it's paid or no longer due.
-- **Undo approval** takes paid and overdue off the reversed entry.
+**Payments and tags** (Ledger 0.23.0; linked payments Ledger 0.33.0): Ledger keeps tags on
+journal entries that every module reads the same way, and since 0.33.0 it shows, on an entry's
+page, the payments linked to it (*paid X of Y, Z left*). Auto sort uses both for a bill's entry
+(the payables entry made on approval; without a payables account, the entry its payment is
+recorded in):
+- **A payment is linked, never booked into the bill's entry.** Wherever Auto sort records that a
+  journal entry pays a bill or receipt, it links that entry to the bill's entry in Ledger as its
+  payment, with the amount that goes to this bill: a bank or card statement row posted as the
+  bill's payment (the whole amount or a part; several rows can pay one bill, and a row split
+  with other accounts counts for its share), and an entry the bill was linked to by hand (for
+  what was still to pay). Neither entry changes. The link comes off when the payment is
+  unlinked (**Unlink** of an entry linked by hand), when a posted row is marked not posted in
+  root mode, and when the approval is undone; a payment reversed in Ledger simply stops
+  counting there.
+- **unpaid / partially_paid / paid**: an approved bill's entry is tagged **unpaid** by Auto sort
+  (so is the entry of Create bill on a statement). From there **Ledger** keeps exactly one of
+  the three on the entry, from the payments linked to it: partially paid after a part payment,
+  paid once they cover it, back again when one is unlinked or reversed. Auto sort doesn't work
+  out "paid" from payments itself any more. It still sets **paid** itself where there is no
+  payment entry to link: **Mark paid**, and bills paid "by tag" (below); **Reopen** sets it back
+  to unpaid.
+- **The bill follows the tag.** Its status here is what the entry's tag says, also when the
+  change came from Ledger: reverse a payment's entry in Ledger, or take a payment off the bill's
+  entry there, and the bill is *Partially paid* or unpaid again here; link a payment there and
+  it is paid. The Bills tab and the bill's page show **Partially paid** with what is paid and
+  what is left, read from the same linked payments Ledger shows, so the two never disagree. A
+  payment row whose entry Ledger doesn't count (reversed, or its link taken off) is marked *Not
+  counted in Ledger*, and payments linked in Ledger that aren't rows of the bill are listed too.
+  **Reopen** is refused while the linked payments cover the bill (take one off instead).
+- **vendor**: who the bill is from, set on approval (read from the vendor's own account on
+  Ledger 0.31.0 and later).
+- **overdue**: an approved bill, unpaid or partially paid, past its due date (checked hourly and
+  whenever bills change); taken off when it's paid or no longer due.
+- **Undo approval** takes the linked payments and the status tags off the reversed entry.
 
 The tags belong to the entry, so anyone can change them in Ledger, and the bill follows: tag a
 bill's entry **paid** (a person, or another module that paid it) and the bill becomes
 *Paid (tagged in Ledger)* here, with nothing posted and its statement match dropped; take the tag
-off and it is unpaid again. If the bill's payment is in the journal, it stays paid and the tag is
-put back. A vendor tagged on the entry of a bill that has none fills in the bill's vendor.
+off and it is unpaid again (the entry gets the tag its linked payments say: unpaid, partially
+paid, or paid again when they cover it). Nothing is ever posted in reaction to a tag, and Auto
+sort never sets a tag against the one Ledger keeps. A vendor tagged on the entry of a bill that
+has none fills in the bill's vendor.
+
+*Bills from before 0.30.0:* when Ledger 0.33.0 or newer starts with this version, the payments
+already posted for each bill are linked to its entry once, with their amounts (statement rows
+booked as its payment, and an entry it was linked to by hand). Nothing is posted, reversed or
+moved by that; a bill that was partly paid shows as partially paid in Ledger from then on, and
+one whose payment had been reversed in Ledger is open again.
+
+*On a Ledger before 0.33.0* nothing is linked and no unpaid or partially_paid tag is set: Auto
+sort tags a bill's entry **paid** itself when its posted payments cover it (or on Mark paid, or
+when it is linked to an entry that records it), takes it off on Reopen, and shows *Partially
+paid* from its own payment rows, as before.
 
 **Paying what other modules posted:** entries another module tagged **billed** or **overdue**
 (e.g. a Sales invoice) or with a **vendor**, and not **paid**, are what a statement deposit or
@@ -745,9 +796,13 @@ customer's or vendor's name in the description raises the confidence; without th
 offered when nothing else has that amount) and gets the account the entry's receivable or payable
 line is really in: the customer's or vendor's own account on Ledger 0.31.0 and later (a customer's
 payment of a Sales invoice is booked to that customer's account), followed when Ledger moves the
-line after the offer.
-**Not this one** drops the offer. Posting the row, which only a person does, tags that entry
-**paid** and the new entry with the customer or vendor. No AI is involved.
+line after the offer. An entry tagged **partially_paid** is offered a row for exactly what is
+left of it.
+**Not this one** drops the offer. Posting the row, which only a person does, links the new entry
+to that entry as its payment (Ledger then tags it paid, and shows the payment on it; before
+Ledger 0.33.0 the entry is tagged **paid** and the two are linked plainly) and tags the new
+entry with the customer or vendor. Marking such a row not posted in root mode takes the link
+off. No AI is involved.
 
 **Review on the Bills and Receipts tabs:** fix anything that's wrong, then **Approve**.
 
@@ -761,7 +816,9 @@ line after the offer.
   that vendor's own account under it (e.g. `2000-7 Hydro One`): approval is Dr *its account* /
   Cr *the vendor's account*, **Create bill** on a statement Dr *accounts payable as a stand-in* /
   Cr *the vendor's account* (Dr *Statement bills to clear* before Ledger 0.32.0; see above), and the bank or card payment Dr *the vendor's account* / Cr *bank*.
-  The payment always goes to the account the bill's line sits in, read from the bill's entry.
+  The payment always goes to the account the bill's line sits in, read from the bill's entry,
+  and is linked to that entry in Ledger as its payment (Ledger 0.33.0); the bill's entry itself
+  never changes when it is paid.
   What the vendor is owed is that account's balance (Ledger's Customers and vendors page). The
   statement row still shows accounts payable as its account; the bill's page says which account
   its line is in. No "vendor" tag is set on these entries: the account says whose they are, and
@@ -791,7 +848,8 @@ line after the offer.
 transaction with **exactly** a bill's amount, dated from a week before the bill date to 45 days
 after the due date (receipts: a few days around the purchase), is linked to it. A matching vendor
 name raises the confidence. Matched rows show **Bill nn%**, use the payables (or bill) account,
-and aren't sent to the model. Posting a matched row marks the bill **paid**. On a bill, **Not this
+and aren't sent to the model. Posting a matched row links its entry to the bill's as a payment;
+the bill is **paid** once its payments cover it and **partially paid** until then. On a bill, **Not this
 one** unlinks a wrong match, **This is the payment** links one by hand, and **Auto sort** asks the
 LLM (see above).
 
@@ -806,7 +864,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/statements/:id/categorize` | `{all?: true}` asks the model again (only unposted rows) |
 | `POST` | `/statements/:id/post` | `{ids?: [...]}` posts rows that have an account |
 | `POST` | `/statements/:id/account` | `{account_code, flip_signs?}`: choose or change the statement's account while nothing is posted (remembered for the sending module) |
-| `GET` | `/statements/:id/journal-matches` | its unposted lines already in the journal (no AI); `bills`: lines that look like the payment a bill made from that account's statement waits for (`[{transaction_id, bill}]`) |
+| `GET` | `/statements/:id/journal-matches` | its unposted lines already in the journal (no AI); `bills`: lines that look like the payment a bill made from that account's statement waits for (`[{transaction_id, bill, mode}]`, `bill.left_cents`: what still stands in) |
 | `POST` | `/statements/:id/auto-sort` | Auto sort: the LLM looks for its unposted lines elsewhere; stores pending matches |
 | `DELETE` | `/statements/:id` | discards unposted rows |
 | `PATCH` | `/transactions/:id` | `{account_code?, status?: "new"\|"skipped"}` |
@@ -845,14 +903,14 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/documents/move` | file what is still in the module's old storage in Documents now |
 | `POST` | `/suggest` | `{account_code, transactions: [{date, description, amount, memo?}]}` returns suggestions without storing anything (for scripts or other modules) |
 | `GET`/`DELETE` | `/rules`, `/rules/:key` | learned payee rules |
-| `GET` | `/status` | Ledger's LLM API status for this module, the options in effect, `payables` (`own_accounts`: Ledger keeps each vendor's own account; `kept_in_chosen`: the account chosen under Settings isn't the tagged one and keeps the bills itself), the user's role, the organization |
+| `GET` | `/status` | Ledger's LLM API status for this module, the options in effect, `payables` (`own_accounts`: Ledger keeps each vendor's own account; `kept_in_chosen`: the account chosen under Settings isn't the tagged one and keeps the bills itself; `linked_payments`: payments are linked to bills' entries in Ledger, which keeps unpaid / partially_paid / paid; `statement_bills`: `standin` or `clearing`; `statement_bill_links`: `entry` (the card's row is posted as its own entry and linked) or `move` (Ledger 0.32: the stand-in line is moved)), the user's role, the organization |
 | `POST` | `/sort-now` | match bills and transfers, count bills already in the journal; returns `{bill_matches, transfer_links, journal_matches, tag_matches}` (rows matched to entries tagged as owed) |
 | `GET` | `/journal-matches?bill_id=` | open bills and receipts already in the journal (no AI) |
 | `GET` | `/match-suggestions?statement_id=\|bill_id=` | Auto sort's pending matches, with what they point to |
 | `POST` | `/match-suggestions/:id/approve`, `/reject` | carry a match out, or turn it down |
-| `GET`/`POST` | `/bills?status=unpaid\|new\|open\|paid\|ignored&kind=bill\|receipt`, `/bills` | list; add by hand `{vendor, amount, due_date, ...}` |
+| `GET`/`POST` | `/bills?status=unpaid\|new\|open\|paid\|ignored&kind=bill\|receipt`, `/bills` | list (each with `payment_status`: `unpaid`, `partially_paid` or `paid`, and for an unpaid or partly paid one `paid_cents`, `left_cents` and `payments_from`: `ledger` when read from the payments linked in Ledger, `module` from its own payment rows); add by hand `{vendor, amount, due_date, ...}` |
 | `POST` | `/bills/upload` | `{filename, content_base64}`: a PDF, a picture or an `.eml` (up to about 700 KB; larger files go through `/inbox`) |
-| `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payment and lines (`payable_account`: where its payable line sits now, `own: true` for the vendor's own account); edit fields (incl. `billable`, `customer_name`, `customer_ref`) or `status`; delete |
+| `GET`/`PATCH`/`DELETE` | `/bills/:id` | one bill with its payments and lines (`payable_account`: where its payable line sits now, `own: true` for the vendor's own account; `payment_status`, `paid_cents`, `left_cents`, `due_cents`, `payments_from` as in the list; `remaining_cents`: what is still to pay after the rows linked to it; each posted payment row has `linked_cents` and `counted`, what Ledger counts of it; `other_payments`: payments linked to its entry in Ledger that aren't its rows); edit fields (incl. `billable`, `customer_name`, `customer_ref`) or `status`; delete |
 | `GET` | `/bills/:id/document` | the bill's document, base64 (it also opens at `document_url`, in Ledger's Documents) |
 | `POST` | `/bills/:id/approve`, `/unapprove` | approve (posts to payables if configured); undo (reverses that entry) |
 | `GET`/`POST` | `/bills/:id/candidates`, `/match {transaction_id}`, `/unmatch` | manual matching |
@@ -865,7 +923,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `GET` | `/duplicates?period=week\|month\|year\|all` | recheck a period, posted rows included (`both_posted` pairs) |
 | `POST` | `/duplicates/reverse {merge_id, keep_id}` | reverse the entry of a posted copy |
 | `POST` | `/bills/:id/link-entry {entry_id}`, `/unlink-entry` | it's already in the journal: count it paid by that entry, or undo |
-| `POST` | `/bills/:id/link-statement-row {transaction_id}`, `/unlink-statement-row` | a bill made with Create bill on a statement (`bill.standin` in `GET /bills/:id`): the payment on the card's or loan's own statement is this bill's. The stand-in line of its entry moves from accounts payable to that account and the row is posted in that entry; unlinking moves it back. Only a row for the line's whole amount (422 otherwise); 409 when Ledger refuses the move |
+| `POST` | `/bills/:id/link-statement-row {transaction_id}`, `/unlink-statement-row {transaction_id?}` | a bill made with Create bill on a statement (`bill.standin` in `GET /bills/:id`: `mode`, `rows` linked with their entries, `left_cents` still standing in, `candidates`): the payment on the card's or loan's own statement is this bill's. The row is posted as its own entry, Dr that account / Cr accounts payable, and linked to the bill's entry, which isn't changed; a row for part of the amount is fine, one for more than what still stands in is 422. Unlinking reverses the row's entry (one row, or all without `transaction_id`). On Ledger 0.32, and for a bill linked by 0.29.0 (`standin.linked`), the stand-in line is moved to the account and back instead |
 | `POST` | `/bills/:id/auto-sort` | Auto sort for a bill or receipt |
 
 Options are Ledger's module settings (`GET`/`PUT /api/v1/modules/categorizer/settings`, admins
@@ -896,10 +954,13 @@ delete a statement with all its rows (posted ones too), delete a bill or receipt
 or paid, mark a posted row not posted, or take a bill out of its journal entry. Journal entries
 and documents are never touched by these. Every change goes through Ledger, so it's in Settings →
 Root log and can be put back. Before root mode can be left, Auto sort lists rows and bills that
-point at a journal entry that no longer exists, and bills that say a statement row took their
-stand-in line while that row isn't posted in the bill's entry. Deleting or un-posting such a row,
-or taking the bill out of its entry, also makes the bill forget the link; the entry's line stays
-where it is (root moves it in Ledger if it should go back).
+point at a journal entry that no longer exists, and bills (linked by 0.29.0) that say a statement
+row took their stand-in line while that row isn't posted in the bill's entry. Deleting or
+un-posting such a row, or taking the bill out of its entry, also makes the bill forget the link;
+the entry's line stays where it is (root moves it in Ledger if it should go back). Marking a
+posted payment row not posted also takes its entry off the bill's entry (or the entry it paid) as
+a linked payment in Ledger, so the bill is partially paid or unpaid again; the entry itself stays
+in the journal, as always in root mode.
 
 ## Backups and files
 
@@ -965,7 +1026,7 @@ server.mjs             statements: routes, background categorisation, posting; w
 lib/files.mjs          every file is a document in Ledger; moving what old versions kept in storage
 lib/extraction.mjs     what was read from a file, in the keys Ledger's modules share (read once)
 lib/doc-tags.mjs       Ledger's tags on files: posted, paid, overdue
-lib/tags.mjs           Ledger's tags on journal entries
+lib/tags.mjs           Ledger's tags on journal entries, and payments linked to the entries they pay
 lib/payables.mjs       payable and receivable lines: the tagged accounts and customers' and vendors' own accounts
 lib/inbox.mjs          the inbox: uploads, what a file becomes, Extract data, hand-offs, clean-up
 lib/uploads.mjs        an upload's pieces in temporary files until it is complete
@@ -1038,6 +1099,27 @@ app's updater reads it. `.github/workflows/app.yml` builds the app unsigned on e
 inside the module and is downloaded from the Inbox tab.
 
 ## Changes
+
+- **0.30.0:** **A payment is linked to the bill's entry, and shown, through Ledger; no line of a
+  bill's entry is moved any more** (Ledger 0.33.0 and later). The entry that pays a bill or
+  receipt (a statement row posted as its payment, in full or in part, or an entry it was linked
+  to by hand) is linked to the bill's entry in Ledger with the amount that pays this bill, so
+  Ledger's entry page shows the payments, what is paid and what is left, and Ledger keeps the
+  tag **unpaid**, **partially_paid** or **paid** on the bill's entry. Auto sort tags a new
+  bill's entry unpaid and no longer works out paid from payments; it sets paid itself only for
+  Mark paid and bills paid by tag. The bill follows Ledger's tag (a payment reversed or taken
+  off in Ledger makes it partially paid or unpaid here), and the Bills tab and the bill's page
+  show **Partially paid** with the amounts Ledger shows. A row that pays another module's entry
+  (a customer's deposit for a Sales invoice) is linked to it the same way. **Create bill on a
+  statement:** linking the payment on the card's or loan's own statement no longer moves the
+  stand-in line: the row is posted as its own entry (Dr card or loan / Cr accounts payable),
+  linked to the bill's entry, a part of the amount is fine, and Unlink reverses that entry.
+  Bills linked by 0.29.0 keep working and can still be unlinked (their line moves back); on
+  Ledger 0.32 the line is still moved, and before 0.33.0 payments and the paid tag work as in
+  0.29.0. The payments posted before are linked to their bills' entries once at startup;
+  nothing is posted, reversed or moved by that. A bill paid in part by statement rows and for
+  the rest by an entry linked by hand can now be unlinked from that entry. Migration 029. See
+  "A bill from a statement" and "Payments and tags" under "Bills".
 
 - **0.29.0:** **Create bill on a card or loan statement no longer uses a clearing account**
   (Ledger 0.32.0 and later). The bill is posted Dr accounts payable, as a stand-in, / Cr the card

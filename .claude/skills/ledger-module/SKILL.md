@@ -374,54 +374,117 @@ Extract data and hand-offs to other modules.
   - The stand-in for tests is `fakeBooks()` + `fakeTags(entries, books)` in
     test/tags.test.mjs (routing on post, tags read from accounts, set/remove moving lines);
     test both with and without it.
-- **Create bill on a statement: the stand-in** (0.29.0, Ledger 0.32.0, feature-detected:
-  `standinOn` = `ctx.ledger.moveLine` and `ctx.entities.account` are functions, so `"ledger"` stays
-  lower; all in lib/bill-routes.mjs, migration 028):
+- **Linked payments** (0.30.0, Ledger 0.33.0, feature-detected: `tags.paymentsOn` =
+  `ctx.ledger.linkPayment`, `unlinkPayment` and `payments` are functions, so `"ledger"` stays
+  lower; lib/tags.mjs and lib/bill-routes.mjs, migration 029). The owner's rule: **when a
+  transaction is linked as a payment, never move or change a line of the bill's entry; link it
+  and let Ledger show it and keep the tag.**
+  - Every place that records "this entry pays that bill" calls `tags.linkPayment(billEntry,
+    paymentEntry, shareCents, note, user)` (never throws; `{ strict: true }` for a person's
+    explicit link): `onPosted()` (a statement row posted as the bill's payment; `share` is the
+    row's amount less what is split off, passed by server.mjs), `linkBillEntry()` (by hand, for
+    what Ledger says is left), `tags.paidBy()` (a row that pays another module's entry:
+    `matchPayables` / `payableFor`). `tags.unlinkPayment()` when it is undone: `unlink-entry`,
+    root row unpost (lib/root-routes.mjs, then `bills.settle()`), Undo approval (every payment
+    comes off the entry about to be reversed). A reversed payment needs nothing.
+  - **Who sets which tag.** Ledger sets `partially_paid` / `paid` (and `unpaid` when the last
+    payment comes off) in the name of whoever linked. This module sets `unpaid` on a new bill's
+    entry (`followEntry()`: only when the entry carries none of the three), and `paid` only where
+    there is no payment entry: Mark paid (`PATCH` sets it explicitly) and paid-by-tag. Reopen
+    (`tags.unpaid()`) sets what the linked payments say. Never compute `paid` from payments for
+    such a bill, and never set a status tag when one is already there: that would fight Ledger.
+  - **The bill follows the tag** (`tags.managed(bill)`: `paymentsOn`, `journal_entry_id` and
+    `bills.payments_linked_at` set). `followEntry()` reads the entry's status tag and
+    `ctx.ledger.payments()`: tag `paid` → bill paid (`paidByPayments()` when the payments cover
+    it, else paid-by-tag); any other → a paid bill is open again (`unpaidAgain()`, clears
+    `paid_entry_id`). It runs from `syncBill()` (every sync, and `bills.settle()` after the
+    module's own link/unlink, because the listener skips changes made in the module's name) and
+    from the `ctx.tags.onChange` listener for `paid` / `partially_paid` / `unpaid` changed by
+    anyone else (a payment reversed, unlinked or linked in Ledger). The old "put paid back
+    because a payment row is posted" branch is only for bills that are not `managed()`.
+  - **Amounts.** For a `managed()` bill, what is paid and left is Ledger's
+    (`paymentState()`, `owedOf()` = Ledger's `left_cents` less the linked rows not posted yet;
+    `payments_from: "ledger"`); the module's own rows (`paidOf()`) are the source only for bills
+    without an entry of their own and on an older Ledger. `GET /bills` and `GET /bills/:id` return
+    `payment_status`, `paid_cents`, `left_cents`; the page shows "Partially paid". Don't add a
+    second computation next to these.
+  - `payments_linked_at` is set at approval (`linkBillPayments()` also links rows posted before
+    an Undo approval) and by `tags.backfillPayments()` at startup for bills from before (rows
+    whose entry debits payables, each with its share; the hand-linked entry for the rest; rows
+    with `pays_entry_id` once per organization, `module_state` key `payment_links`). The backfill
+    posts, reverses and moves nothing and is safe to run again.
+  - Older Ledger: without `linkPayment` everything above is skipped and 0.29.0's behaviour
+    stays (`paid` set by `syncBill()`, `relateEntries` for a row that pays another entry, no
+    `unpaid` tag). Test both: `ledger33()` (with `fakePayments()` from test/fake-ledger.mjs and
+    the three exclusive tags in `fakeTags()`) and the older stand-ins without it.
+- **Create bill on a statement: the stand-in** (0.29.0, Ledger 0.32.0; linking changed in 0.30.0;
+  all in lib/bill-routes.mjs, migrations 028 and 029). `standinMode` is `"entry"` (Ledger 0.33.0:
+  `tags.paymentsOn`), `"move"` (Ledger 0.32.x: only `ctx.ledger.moveLine`) or null; `standinOn` =
+  a mode and `ctx.entities.account`, so `"ledger"` stays lower:
   - Posted Dr accounts payable (`payableOf()`: the control account, the stand-in) / Cr the vendor's
     own account **by its code** (`standinOwnAccount()`), with `entity_id`: Ledger leaves an entry
     that already has a line in the vendor's account as written. `bills.standin_account_code` marks
     such a bill (kept through Undo approval; `account_code` is the same account), `standin_line` is
-    the debit line's number while posted, `standin_tx_id` the statement row linked.
-  - `linkStandin()` (`POST /bills/:id/link-statement-row`): a person says a row on the card's or
-    loan's own statement (the account of `bills.statement_id`'s statement, money received, exactly
-    the line's amount: Ledger moves whole lines, so no part payments) is the bill's payment there.
-    `ctx.ledger.moveLine` moves the stand-in line to the row's account and the row becomes `posted`
-    with the bill's `journal_entry_id` (no entry of its own; `bill_id` stays null so `paidOf()`
-    doesn't count it; `standin_bill_id` in `GET /statements/:id`). A transfer pairing of the row
-    is undone as in `merge()`. `unlinkStandin()` moves it back to `standin_account_code` and the
-    row is `new` again; Undo approval unlinks first. A move Ledger refuses (line ticked on a
-    reconciliation) is a 409 and changes nothing.
-  - Offered, never automatic: `standinMatches()` under the row (`bills` of
-    `GET /statements/:id/journal-matches`; "Not the same" uses `not_duplicates` with the bill's
-    entry) and `bill.standin.candidates` on the bill's page.
+    the debit line's number while posted.
+  - `linkStandin()` (`POST /bills/:id/link-statement-row`), mode `"entry"`: a person says a row on
+    the card's or loan's own statement (the account of `bills.statement_id`'s statement, money
+    received, at most what still stands in: `standinLeft()`) is the bill's payment there. **The
+    bill's entry is not touched.** The row is posted as its own entry, Dr the row's account / Cr
+    `standin_account_code`, **without `entity_id`** (with it Ledger would route the payable line
+    into the vendor's account) and never tagged `vendor`; `transactions.standin_bill_id` says which
+    bill (`bill_id` stays null so it isn't a payment of the bill), `chosen_code` is the stand-in
+    account. The two entries are linked with `tags.relate()` (plain `relateEntries` with a note,
+    **not** `linkPayment`: the vendor is paid once, by the bank's row). Several rows can clear one
+    bill's stand-in. A transfer pairing of the row is undone as in `merge()`.
+    `unlinkStandinRows()` (decided: Unlink undoes the link in full) reverses the row's entry,
+    takes the entry link off and sets the row back to `new`; Undo approval does that for every
+    linked row first.
+  - Mode `"move"` (`linkStandinByMove()` / `unlinkStandin()`, 0.29.0's way): `ctx.ledger.moveLine`
+    moves the stand-in line to the row's account and the row is `posted` in the bill's entry
+    (`bills.standin_tx_id`, whole amount only). Kept for Ledger 0.32.x and for **bills already
+    linked that way**: on a newer Ledger they show `standin.linked`, Unlink moves the line back,
+    and no migration or startup code rewrites their entries. Don't use `moveLine` for new links
+    where `linkPayment` exists.
+  - Offered, never automatic: `standinMatches()` under the row for exactly what still stands in
+    (`bills` of `GET /statements/:id/journal-matches`; "Not the same" uses `not_duplicates` with the
+    bill's entry) and `bill.standin.candidates` on the bill's page (smaller rows too, `partial`).
   - **Never set or remove the `vendor` tag on a stand-in bill's entry while the line is in accounts
     payable**: Ledger would take the stand-in line for the vendor's too (`claimLines`). A changed
     vendor is `standinVendorChanged()` (moveLine on the credit line); `tags.vendorChanged()` only
     gets the payments. `GET /bills/:id` compares the bill's amount with the credited account only.
   - Fallback, and every bill made before 0.29.0: the clearing account `statementBillsAccount()`
-    ("Statement bills to clear"): no moveLine, no vendor entity, or no tagged payable account.
-    Never rewrite those entries. `/status` says which in `payables.statement_bills`.
-  - Root: `removeTransaction`, row unpost and bill unpost clear `standin_tx_id` through
-    `ctx.root.update`; `onCheck` lists a bill whose linked row isn't posted in its entry.
-  - Tests: `fakeMoveLine()` in test/fake-ledger.mjs, `cardBooks()` / `statementBill()` in
-    test/tags.test.mjs (stand-in, link, unlink, undo, vendor change, the older-Ledger paths).
+    ("Statement bills to clear"): no way to link, no vendor entity, or no tagged payable account.
+    Never rewrite those entries. `/status` says which in `payables.statement_bills`, and how rows
+    are linked in `payables.statement_bill_links`.
+  - Root: `removeTransaction`, row unpost and bill unpost clear `standin_tx_id` /
+    `standin_bill_id` through `ctx.root.update`; `onCheck` lists a bill (linked by move) whose
+    linked row isn't posted in its entry; `/duplicates/reverse` refuses a row that clears a
+    stand-in.
+  - Tests: `fakeMoveLine()` and `fakePayments()` in test/fake-ledger.mjs; `cardBooks()` /
+    `statementBill()` (Ledger 0.32, the move) and `ledger33()` / `standinBooks()` (own entry, part
+    amounts, unlink, undo, a bill linked the 0.29.0 way) in test/tags.test.mjs.
 - Tags (`lib/tags.mjs`, Ledger 0.23.0, feature-detected: `if (ctx.tags)`, so
   `"ledger"` stays lower): a bill's entry (`journal_entry_id`, else
   `paid_entry_id`) carries `vendor` (unless its line is in the vendor's own account, above),
-  `paid`, `overdue`; `syncBill()` sets
+  `overdue` (an approved bill, unpaid or partially paid, past due) and one of `unpaid`,
+  `partially_paid`, `paid` (Ledger 0.33.0, kept by Ledger: see Linked payments above; before
+  that only `paid`, set by `syncBill()`). `syncBill()` sets
   what differs (called by the bill routes and by `syncBillTodos()`, which
   also runs hourly) and `backfill()` once at startup (`bills.tags_synced_at`).
-  `ctx.tags.onChange` (own changes skipped): `paid` set by someone else makes
-  the bill paid (`paid_by_tag`, `paid_tag_by`), removed makes it open again
-  unless its payment is in the journal; never post in reaction to a tag.
+  `ctx.tags.onChange` (own changes skipped): for a bill that isn't `managed()`, `paid` set by
+  someone else makes the bill paid (`paid_by_tag`, `paid_tag_by`), removed makes it open again
+  unless its payment is in the journal; a `managed()` bill follows whichever of the three tags
+  its entry carries; never post in reaction to a tag.
   `matchPayables()` offers rows the entries other modules tagged billed /
   overdue / vendor and not paid (`transactions.pays_entry_id`, source `tag`,
-  no AI); only posting the row (a person) sets `paid` on that entry.
+  no AI; a `partially_paid` entry only a row for exactly what is left, `withLeft()`); only
+  posting the row (a person) links the payment (or, before Ledger 0.33.0, sets `paid`) on that entry.
 - Transfers (`lib/transfer-sync.mjs`): the other side of a transfer already in the journal is
   a bank or card account, never payables, receivables or a customer's or vendor's own account.
 - Several rows can pay one bill (0.25.0): `matchBillTx()` adds a row beside the ones linked
-  (`paidOf()` = what they cover; a row for less is a partial payment, none once covered),
-  `onPosted()` marks the bill paid only when its posted payments reach its amount, and
+  (`owedOf()` = what is still to pay; a row for less is a partial payment, none once covered),
+  `onPosted()` marks the bill paid only when its payments cover it (what Ledger's linked payments
+  say for a `managed()` bill, else its posted rows reaching its amount, `paidOf()`), and
   `splitLinesFor()` books each payment's share of the bill's lines (`shareOfLines()`).
 - Paying a bill from a larger row (0.24.0): `matchBillTx()` takes `split.lines` ([{amount, account_code, memo}], adding up to the rest): kept in
   `transaction_splits`, with `transactions.split_cents` the rest's total (null: not split, any

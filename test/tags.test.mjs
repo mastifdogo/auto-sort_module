@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import register from "../server.mjs";
 import { assignPayables, payableCandidates } from "../lib/tags.mjs";
-import { fakeMoveLine } from "./fake-ledger.mjs";
+import { TAG_CLEARS, fakeMoveLine, fakePayments } from "./fake-ledger.mjs";
 
 class HttpError extends Error {
 	constructor(status, message) {
@@ -92,7 +92,8 @@ function fakeBooks(accounts, entries = new Map()) {
 
 /**
  * ctx.tags as Ledger has it: tags per entry, "paid" takes "overdue" off, listeners hear every
- * change. With books (Ledger 0.31.0): "customer" and "vendor" are read from the accounts, setting
+ * change (after it is done, as Ledger tells them). Of "unpaid", "partially_paid" and "paid" an entry
+ * carries one: setting one takes the other two off (Ledger 0.33.0). With books (Ledger 0.31.0): "customer" and "vendor" are read from the accounts, setting
  * one moves the entry's receivable or payable line and stores nothing, removing one moves it back.
  */
 function fakeTags(entries = new Map(), books = null) {
@@ -127,9 +128,10 @@ function fakeTags(entries = new Map(), books = null) {
 			}
 		}
 		if (stored(id).some((t) => t.tag === tag && (t.entity?.id ?? null) === entity_id)) return list(id);
-		byEntry.set(id, [...stored(id), { tag, entity: entity_id ? { id: entity_id, name: `Entity ${entity_id}` } : null, note: opts.note ?? "", module_id: by, set_by: user?.username ?? null }]);
+		const cleared = (TAG_CLEARS[tag] ?? []).filter((other) => stored(id).some((t) => t.tag === other));
+		byEntry.set(id, [...stored(id).filter((t) => !cleared.includes(t.tag)), { tag, entity: entity_id ? { id: entity_id, name: `Entity ${entity_id}` } : null, note: opts.note ?? "", module_id: by, set_by: user?.username ?? null }]);
 		await announce({ entry_id: id, action: "set", tag, entity_id, module_id: by });
-		if (tag === "paid") await removeAs(by, id, "overdue");
+		for (const other of cleared) await announce({ entry_id: id, action: "removed", tag: other, entity_id: null, module_id: by });
 		return list(id);
 	}
 	async function removeAs(by, entryId, tag, opts = {}) {
@@ -142,7 +144,7 @@ function fakeTags(entries = new Map(), books = null) {
 	}
 	return {
 		api: {
-			standard: ["paid", "billed", "overdue", "customer", "vendor"],
+			standard: ["paid", "partially_paid", "unpaid", "billed", "overdue", "customer", "vendor"],
 			set: (entryId, tag, opts, user) => setAs("categorizer", entryId, tag, opts, user),
 			remove: (entryId, tag, opts) => removeAs("categorizer", entryId, tag, opts),
 			of: async (entryId) => list(entryId),
@@ -217,7 +219,8 @@ const ACCOUNT_MAP = new Map(ACCOUNTS.map((a) => [a.code, a]));
 /** Registers the module on a fake ctx with tags (or without: tags null, an older Ledger). */
 /** books: Ledger 0.31.0's own accounts for customers and vendors (fakeBooks); without, an older Ledger. */
 /** moveLine: Ledger 0.32.0, which can move a posted line (ctx.ledger.moveLine); moves: every move asked for. */
-async function start({ answers = [], tags = fakeTags(), entries = new Map(), settings = {}, accounts = ACCOUNTS, books = null, entities = {}, moveLine = false, moves = [] } = {}) {
+/** payments: Ledger 0.33.0's linked payments (fakePayments over the same journal and tags): ctx.ledger.linkPayment, unlinkPayment, payments. */
+async function start({ answers = [], tags = fakeTags(), entries = new Map(), settings = {}, accounts = ACCOUNTS, books = null, entities = {}, moveLine = false, moves = [], payments = null, root = null } = {}) {
 	const routes = new Map();
 	const posted = [];
 	const related = [];
@@ -248,7 +251,7 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 		ledger: {
 			listAccounts: async () => accounts,
 			createJournalEntry: async (entry) => {
-				const e = { ...entry, lines: (books ? books.route(entry) : entry.lines).map((l, i) => ({ ...l, line_number: i + 1 })), id: 100 + posted.length, entity: entry.entity_id ? { id: entry.entity_id, name: "" } : null, reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }] };
+				const e = { ...entry, lines: (books ? books.route(entry) : entry.lines).map((l, i) => ({ ...l, line_number: i + 1 })), id: 100 + posted.length, entity: entry.entity_id ? { id: entry.entity_id, name: "" } : null, reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }], sent_links: entry.links ?? [] };
 				posted.push(e);
 				entries.set(e.id, e);
 				return e;
@@ -257,14 +260,22 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 				if (!entries.has(Number(id))) throw new HttpError(404, "not found");
 				return { ...entries.get(Number(id)), tags: tags ? tags.list(id) : undefined };
 			},
-			reverseJournalEntry: async (id) => {
-				reversed.push(Number(id));
-				return { id: Number(id) + 1000 };
-			},
+							reverseJournalEntry: async (id) => {
+					reversed.push(Number(id));
+					// With linked payments the journal is kept true: the entry is reversed, and stops counting as a payment.
+					if (payments) await payments.reversed(id);
+					return { id: Number(id) + 1000 };
+				},
 			linkJournalEntry: async () => ({}),
 			unlinkJournalEntry: async () => true,
 			clearingAccount: async ({ key, currency }) => ({ ...CLEARING, module_key: key, currency }),
-			relateEntries: async (a, b, opts) => { related.push([Number(a), Number(b), opts.note]); return []; },
+							relateEntries: async (a, b, opts) => { related.push([Number(a), Number(b), opts.note]); return []; },
+				unrelateEntries: async (a, b) => {
+					const i = related.findIndex((r) => (r[0] === Number(a) && r[1] === Number(b)) || (r[0] === Number(b) && r[1] === Number(a)));
+					if (i >= 0) related.splice(i, 1);
+					return i >= 0;
+				},
+				...(payments ? payments.api : {}),
 			...(moveLine ? { moveLine: fakeMoveLine(entries, () => accounts, moves) } : {}),
 		},
 		dashboard: Object.fromEntries(["notify", "todo", "complete", "remove"].map((call) => [call, async () => {}])),
@@ -272,15 +283,18 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 		files: { onReceive() {}, inbox: async () => [] },
 		search: { provide() {} },
 		...(tags ? { tags: tags.api } : {}),
+		// Root mode (Ledger 0.21.1): what the root routes change goes through ctx.root.
+		...(root ? { root } : {}),
 		// Ledger's list of customers and vendors, with their own accounts on Ledger 0.31.0.
 		...(books ? { entities: { find: async () => null, list: async () => [], ensure: async (name) => ({ id: entities[name] ?? 99, name }), account: async (id, role, currency) => books.own(id, role, currency) } } : {}),
 	};
 	await register(ctx);
-	// The startup backfill isn't awaited by register.
-	await new Promise((r) => setImmediate(r));
-	const call = (route, { params = {}, body, query = "" } = {}) =>
-		routes.get(route)({ params, body, query: new URLSearchParams(query), user: { username: "pat", role: "bookkeeper" } });
-	return { call, posted, tags, entries, related, reversed };
+			// The startup backfill isn't awaited by register.
+		await new Promise((r) => setImmediate(r));
+		if (payments) await new Promise((r) => setTimeout(r, 15));
+	const call = (route, { params = {}, body, query = "", user = { username: "pat", role: "bookkeeper" } } = {}) =>
+		routes.get(route)({ params, body, query: new URLSearchParams(query), user });
+			return { call, posted, tags, entries, related, reversed, payments };
 }
 
 const BILL = { id: 3n, kind: "bill", status: "new", vendor: "Hydro One", invoice_number: "H-1", bill_date: "2026-03-01", due_date: "2026-03-20", amount_cents: 8550n, currency: "CAD", account_code: "5100", ap_account: null, journal_entry_id: null, paid_entry_id: null, vendor_entity_id: 7, paid_by_tag: false, paid_tag_by: null, tags_synced_at: null };
@@ -957,4 +971,457 @@ test("Create bill on a statement keeps the clearing account where the stand-in c
 	assert.deepEqual(shape(c.entries.get(50)), [["2990", "85000", "0"], ["2000-7", "0", "85000"]]);
 	assert.equal(c.moves.length, 0, "no posted entry is rewritten");
 	assert.equal((await third.call("GET /bills/:id", { params: { id: "3" } })).bill.standin, null);
+});
+
+// ---------------------------------------------------------------------------
+// Linked payments (0.30.0, Ledger 0.33.0): a payment is linked to the bill's entry, no line is moved,
+// and Ledger keeps unpaid / partially_paid / paid on the bill's entry
+// ---------------------------------------------------------------------------
+
+/** Ledger 0.33.0: vendors' own accounts, a card account, moveLine (which must not be used for new links) and linked payments. */
+function ledger33(accounts = [...TAGGED(), VISA, CLEARING]) {
+	const o = ownBooks(accounts);
+	const payments = fakePayments(o.entries, { accounts: () => o.accounts, setTag: (by, id, tag) => o.tags.setAs(by, id, tag) });
+	return { ...o, payments, moveLine: true, moves: [] };
+}
+/** The tag changes on an entry, as "who:action tag". */
+const changes = (tags, entryId, from = 0) => tags.log.slice(from).filter((c) => c.entry_id === entryId && ["paid", "partially_paid", "unpaid"].includes(c.tag)).map((c) => `${c.module_id ?? "person"}:${c.action} ${c.tag}`);
+const linkCalls = (payments) => payments.calls.filter((c) => c[0] === "link").map(([, bill, payment, amount]) => [bill, payment, amount]);
+/** The same statement row object stands for the next row to post. */
+const nextRow = (row, change) => Object.assign(row, { status: "new", journal_entry_id: null, pays_entry_id: null }, change);
+
+test("linked payments: an approved bill's entry is tagged unpaid; a part payment is linked with its amount (partially paid), the rest makes it paid, and no line of the bill's entry moves", async () => {
+	const bill = { ...BILL, due_date: "2999-01-01" };
+	const row = { ...ROW, description: "HYDRO ONE", amount_cents: -3000n, suggested_code: "2000" };
+	const o = ledger33();
+	const { call, posted, related } = await start({ answers: billPayment(row, bill), ...o });
+	await call("POST /bills/:id/approve", { params: { id: "3" } });
+	assert.deepEqual(shape(posted[0]), [["5100", "8550", "0"], ["2000-7", "0", "8550"]]);
+	assert.deepEqual(o.tags.kept(100), ["unpaid"], "a new bill's entry is unpaid");
+	assert.ok(bill.payments_linked_at, "from approval on, Ledger's linked payments say what is paid");
+	assert.equal((await call("GET /status")).payables.linked_payments, true);
+	let page = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual([page.bill.payment_status, page.bill.paid_cents, page.bill.left_cents, page.bill.payments_from], ["unpaid", 0n, 8550n, "ledger"]);
+
+	// A part payment: posted to the vendor's account and linked to the bill's entry for what it pays.
+	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.deepEqual(shape(posted[1]), [["1000", "0", "3000"], ["2000-7", "3000", "0"]]);
+	assert.deepEqual(linkCalls(o.payments), [[100, 101, 3000n]]);
+	assert.match(o.payments.links[0].note, /payment of bill Hydro One H-1/);
+	assert.deepEqual(o.tags.kept(100), ["partially_paid"], "Ledger's tag, set through the link: the module sets none itself");
+	assert.equal(bill.status, "open");
+	page = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual([page.bill.payment_status, page.bill.paid_cents, page.bill.left_cents, page.bill.due_cents], ["partially_paid", 3000n, 5550n, 8550n]);
+
+	// The rest: Ledger says paid, and so does the bill.
+	nextRow(row, { id: 8n, amount_cents: -5550n });
+	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.deepEqual(linkCalls(o.payments), [[100, 101, 3000n], [100, 102, 5550n]]);
+	assert.deepEqual(o.tags.kept(100), ["paid"]);
+	assert.deepEqual([bill.status, bill.paid_entry_id, bill.paid_by_tag], ["paid", 102, false]);
+	assert.equal((await call("GET /bills/:id", { params: { id: "3" } })).bill.payment_status, "paid");
+	// Neither entry changed, nothing was moved, and the payment link replaces the plain link of before.
+	assert.deepEqual(shape(o.entries.get(100)), [["5100", "8550", "0"], ["2000-7", "0", "8550"]]);
+	assert.equal(o.moves.length, 0);
+	assert.deepEqual(related, []);
+	assert.equal(o.books.owed(7), 0n);
+	// Every status tag on the bill's entry came from the module's "unpaid" and from Ledger's own (made in the module's name through the link).
+	assert.deepEqual(changes(o.tags, 100), ["categorizer:set unpaid", "categorizer:set partially_paid", "categorizer:removed unpaid", "categorizer:set paid", "categorizer:removed partially_paid"]);
+});
+
+test("linked payments: the bill follows Ledger's tag when a payment is reversed, taken off or linked there, and nothing loops", async () => {
+	const bill = { ...BILL, status: "paid", due_date: "2999-01-01", journal_entry_id: 50, paid_entry_id: 61, ap_account: "2000", tags_synced_at: new Date(), payments_linked_at: new Date() };
+	const o = ledger33();
+	const own = o.books.own(7, "vendor").code;
+	o.entries.set(50, payableEntry(50, own));
+	const pay = (id, cents) => ({ id, entry_date: "2026-03-15", description: "HYDRO ONE", reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }], lines: [{ account_code: "1000", debit_cents: 0n, credit_cents: cents }, { account_code: own, debit_cents: cents, credit_cents: 0n }] });
+	o.entries.set(60, pay(60, 3000n));
+	o.entries.set(61, pay(61, 5550n));
+	o.entries.set(62, pay(62, 5550n));
+	await o.payments.api.linkPayment(50, 60, { amount_cents: 3000n });
+	await o.payments.api.linkPayment(50, 61, { amount_cents: 5550n });
+	assert.deepEqual(o.tags.kept(50), ["paid"]);
+	const { call, posted } = await start({ answers: [...refreshed(bill), ...billTable(bill)], ...o });
+	let at = o.tags.log.length;
+
+	// A person reverses one payment in Ledger: Ledger tags the entry partially paid, and the bill is open again.
+	await o.payments.reversed(61);
+	assert.deepEqual([bill.status, bill.paid_entry_id], ["open", null]);
+	assert.deepEqual(changes(o.tags, 50, at), ["person:set partially_paid", "person:removed paid"], "only Ledger's own changes: the module set nothing against them");
+	let page = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual([page.bill.payment_status, page.bill.paid_cents, page.bill.left_cents], ["partially_paid", 3000n, 5550n]);
+	assert.deepEqual(page.bill.other_payments.map((x) => [x.entry_id, x.counted]), [[60, true], [61, false]]);
+	// Syncing again and again (Sort now, the hourly refresh) changes nothing.
+	at = o.tags.log.length;
+	await call("POST /sort-now");
+	await call("POST /sort-now");
+	assert.equal(o.tags.log.length, at);
+	assert.equal(bill.status, "open");
+
+	// Another payment is linked in Ledger (a person, or another module): paid again, by its payments.
+	await o.payments.linked(50, 62, 5550n, "payments");
+	assert.deepEqual([bill.status, String(bill.paid_entry_id), bill.paid_by_tag], ["paid", "62", false]);
+	assert.deepEqual(changes(o.tags, 50, at), ["payments:set paid", "payments:removed partially_paid"]);
+	// Reopen is refused while the linked payments cover it: the tag would not hold.
+	await assert.rejects(call("PATCH /bills/:id", { params: { id: "3" }, body: { status: "open" } }), (e) => e.status === 409 && /linked/.test(e.message));
+
+	// Someone takes "paid" off although the payments cover it: it goes back once, and that is all.
+	at = o.tags.log.length;
+	await o.tags.removeAs(null, 50, "paid");
+	assert.deepEqual(changes(o.tags, 50, at), ["person:removed paid", "categorizer:set paid"]);
+	assert.equal(bill.status, "paid");
+
+	// A person takes a payment off the entry on its page in Ledger: partially paid, open.
+	at = o.tags.log.length;
+	await o.payments.unlinked(50, 62);
+	assert.equal(bill.status, "open");
+	assert.deepEqual(changes(o.tags, 50, at), ["person:set partially_paid", "person:removed paid"]);
+	// And the last counted one: unpaid.
+	await o.payments.unlinked(50, 60);
+	assert.deepEqual(o.tags.kept(50), ["unpaid"]);
+	assert.equal(bill.status, "open");
+	assert.equal(posted.length, 0, "nothing is ever posted in reaction to a tag");
+	assert.equal(o.moves.length, 0);
+});
+
+test("linked payments: Mark paid and paid by tag still set and follow paid themselves, where there is no payment entry to link", async () => {
+	const bill = { ...BILL, status: "open", due_date: "2999-01-01", journal_entry_id: 50, ap_account: "2000", tags_synced_at: new Date(), payments_linked_at: new Date() };
+	const o = ledger33();
+	o.entries.set(50, payableEntry(50, o.books.own(7, "vendor").code));
+	const { call } = await start({ answers: [...refreshed(bill), ...billTable(bill)], ...o });
+	await call("POST /sort-now");
+	assert.deepEqual(o.tags.kept(50), ["unpaid"], "an approved bill from before gets its unpaid tag at the next sync");
+	// Mark paid: the module's own "paid" (no payment to link); Ledger takes "unpaid" off.
+	await call("PATCH /bills/:id", { params: { id: "3" }, body: { status: "paid" } });
+	assert.deepEqual(o.tags.kept(50), ["paid"]);
+	assert.equal(o.payments.links.length, 0);
+	assert.equal((await call("GET /bills/:id", { params: { id: "3" } })).bill.payment_status, "paid");
+	// Reopen: unpaid again.
+	await call("PATCH /bills/:id", { params: { id: "3" }, body: { status: "open" } });
+	assert.deepEqual([o.tags.kept(50), bill.status], [["unpaid"], "open"]);
+	// Paid by tag: a person tags the entry paid in Ledger, then takes it off.
+	await o.tags.setAs(null, 50, "paid", {}, { username: "sam" });
+	assert.deepEqual([bill.status, bill.paid_by_tag, bill.paid_tag_by], ["paid", true, "sam"]);
+	const at = o.tags.log.length;
+	await o.tags.removeAs(null, 50, "paid");
+	assert.deepEqual([bill.status, bill.paid_by_tag], ["open", false]);
+	assert.deepEqual(changes(o.tags, 50, at), ["person:removed paid", "categorizer:set unpaid"], "one of the three is back, set once");
+	// Tagged unpaid by hand while marked paid: the bill follows.
+	await call("PATCH /bills/:id", { params: { id: "3" }, body: { status: "paid" } });
+	await o.tags.setAs(null, 50, "unpaid");
+	assert.equal(bill.status, "open");
+	// Overdue as before: an unpaid bill past its due date.
+	bill.due_date = "2026-01-01";
+	await call("POST /sort-now");
+	assert.deepEqual(o.tags.kept(50), ["overdue", "unpaid"]);
+});
+
+test("linked payments: a bill linked by hand to the entry that paid it is linked there as its payment; unlinking takes the link off", async () => {
+	const bill = { ...BILL, status: "open", due_date: "2999-01-01", journal_entry_id: 50, ap_account: "2000", tags_synced_at: new Date(), payments_linked_at: new Date() };
+	const o = ledger33();
+	const own = o.books.own(7, "vendor").code;
+	o.entries.set(50, payableEntry(50, own));
+	// Entered by hand in Ledger: one cheque that paid this bill and something else.
+	o.entries.set(70, { id: 70, entry_date: "2026-03-20", description: "Cheque 114", reversed_by_id: null, reverses_id: null, links: [], lines: [{ account_code: "1000", debit_cents: 0n, credit_cents: 20000n }, { account_code: own, debit_cents: 8550n, credit_cents: 0n }, { account_code: "5100", debit_cents: 11450n, credit_cents: 0n }] });
+	await o.tags.setAs("categorizer", 50, "unpaid");
+	const { call } = await start({ answers: [[/SELECT vendor, vendor_entity_id FROM mod_categorizer\.bills/, () => [{ vendor: bill.vendor, vendor_entity_id: 7 }]], ...billTable(bill)], ...o });
+	await call("POST /bills/:id/link-entry", { params: { id: "3" }, body: { entry_id: 70 } });
+	assert.deepEqual(linkCalls(o.payments), [[50, 70, 8550n]], "linked for what was still to pay of the bill, not the whole cheque");
+	assert.deepEqual([bill.status, bill.paid_entry_id, o.tags.kept(50)], ["paid", 70, ["paid"]]);
+	const page = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual(page.bill.other_payments.map((x) => [x.entry_id, x.amount_cents]), [[70, 8550n]]);
+	await assert.rejects(call("POST /bills/:id/link-entry", { params: { id: "3" }, body: { entry_id: 50 } }), (e) => e.status === 409);
+	await call("POST /bills/:id/unlink-entry", { params: { id: "3" } });
+	assert.deepEqual(o.payments.calls.at(-1), ["unlink", 50, 70]);
+	assert.deepEqual([bill.status, bill.paid_entry_id, o.tags.kept(50)], ["open", null, ["unpaid"]]);
+	assert.deepEqual(shape(o.entries.get(50)), [["5100", "8550", "0"], [own, "0", "8550"]]);
+});
+
+test("linked payments: a posted payment marked not posted (root mode) is unlinked in Ledger, and the bill is partially paid again", async () => {
+	const bill = { ...BILL, status: "paid", due_date: "2999-01-01", journal_entry_id: 50, paid_entry_id: 61, ap_account: "2000", tags_synced_at: new Date(), payments_linked_at: new Date() };
+	const o = ledger33();
+	const own = o.books.own(7, "vendor").code;
+	o.entries.set(50, payableEntry(50, own));
+	for (const [id, cents] of [[60, 3000n], [61, 5550n]]) o.entries.set(id, { id, entry_date: "2026-03-15", description: "HYDRO ONE", reversed_by_id: null, reverses_id: null, links: [], lines: [{ account_code: "1000", debit_cents: 0n, credit_cents: cents }, { account_code: own, debit_cents: cents, credit_cents: 0n }] });
+	await o.payments.api.linkPayment(50, 60, { amount_cents: 3000n });
+	await o.payments.api.linkPayment(50, 61, { amount_cents: 5550n });
+	const row = { id: 8n, status: "posted", journal_entry_id: 61n, statement_id: 1n, bill_id: 3n, pays_entry_id: null, standin_bill_id: null };
+	const rooted = [];
+	const answers = [
+		[/SELECT id, status, journal_entry_id, statement_id, bill_id, pays_entry_id, standin_bill_id FROM mod_categorizer\.transactions WHERE id = \$1/, () => [{ ...row }]],
+		[/SELECT journal_entry_id FROM mod_categorizer\.bills WHERE id = \$1/, () => [{ journal_entry_id: bill.journal_entry_id }]],
+		...billTable(bill),
+	];
+	const { call, reversed } = await start({ answers, ...o, root: { update: async (_req, table, id, set) => { rooted.push([table, String(id)]); if (table === "transactions") Object.assign(row, set); }, remove: async () => {}, onCheck() {} } });
+	await call("POST /root/transactions/:id/unpost", { params: { id: "8" }, user: { username: "ada", role: "admin", root: true } });
+	assert.deepEqual([row.status, row.journal_entry_id], ["new", null]);
+	assert.deepEqual(o.payments.calls.at(-1), ["unlink", 50, 61]);
+	assert.deepEqual([o.tags.kept(50), bill.status, bill.paid_entry_id], [["partially_paid"], "open", null]);
+	assert.deepEqual(reversed, [], "its entry isn't touched");
+});
+
+test("linked payments: a deposit that pays another module's invoice is linked to it as its payment, and Ledger tags the invoice paid", async () => {
+	const o = ledger33();
+	const own = o.books.own(4, "customer").code;
+	o.entries.set(10, { ...invoice(10, 50000n, []), lines: [{ account_code: own, debit_cents: 50000n, credit_cents: 0n }, { account_code: "4000", debit_cents: 0n, credit_cents: 50000n }] });
+	await o.tags.setAs("sales", 10, "billed");
+	await o.tags.setAs("sales", 10, "unpaid");
+	const row = { ...ROW, description: "E-TRANSFER ENTITY 4" };
+	const { call, posted, related } = await start({ answers: rowTable(row), ...o });
+	assert.equal((await call("POST /sort-now")).tag_matches, 1);
+	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.deepEqual(shape(posted[0]), [["1000", "50000", "0"], [own, "0", "50000"]]);
+	assert.deepEqual(linkCalls(o.payments), [[10, posted[0].id, 50000n]]);
+	assert.deepEqual(o.tags.kept(10), ["billed", "paid"]);
+	assert.deepEqual(related, [], "the payment link is the link");
+	assert.deepEqual(shape(o.entries.get(10)), [[own, "50000", "0"], ["4000", "0", "50000"]], "the invoice's entry isn't changed");
+	// A partially paid entry is paid by a row for exactly what is left of it.
+	const accounts = new Map(o.accounts.map((a) => [a.code, a]));
+	const part = { ...o.entries.get(10), id: 11, tags: [{ tag: "billed" }, { tag: "partially_paid" }] };
+	const dep = (cents) => ({ id: 1n, account_code: "1000", date: "2026-03-15", description: "E-TRANSFER", amount_cents: cents });
+	assert.deepEqual(payableCandidates(dep(50000n), [part], accounts, "categorizer"), [], "what is left isn't known: not offered");
+	assert.deepEqual(payableCandidates(dep(50000n), [{ ...part, left_cents: 20000n }], accounts, "categorizer"), [], "the whole amount no longer pays it");
+	assert.deepEqual(payableCandidates(dep(20000n), [{ ...part, left_cents: 20000n }], accounts, "categorizer").map((c) => [c.entry_id, c.account_code]), [[11, own]]);
+});
+
+/**
+ * Create bill on a statement with rows of the card's own statement, kept in memory: the bill's
+ * queries, and the rows' (by id, claimed, posted, released, the ones that clear the bill's stand-in).
+ */
+function standinBooks(bill, cards, rest = billTable(bill)) {
+	const next = (sql, params) => {
+		for (const [p, a] of rest) if (p.test(sql)) return a(sql, params);
+		return [];
+	};
+	const byId = (params) => cards.find((c) => String(c.id) === String(params[0])) ?? null;
+	const cleared = () => cards.filter((c) => c.status === "posted" && String(c.standin_bill_id ?? "") === String(bill.id));
+	return [
+		[/SELECT id FROM mod_categorizer\.statements WHERE id = \$1/, () => [{ id: 9n }]],
+		[/SELECT id FROM mod_categorizer\.bills WHERE statement_id = \$1/, () => []],
+		[/INSERT INTO mod_categorizer\.bills \(source, vendor, updated_by, statement_id\)/, (_, [source, vendor]) => { Object.assign(bill, { source, vendor }); return [{ id: 3n }]; }],
+		[/SELECT account_code FROM mod_categorizer\.statements WHERE id = \$1/, () => [{ account_code: "2100" }]],
+		[/WHERE t\.standin_bill_id = \$1 AND t\.status = 'posted'/, (_, [, only]) => cleared().filter((c) => only == null || String(c.id) === String(only)).map((c) => ({ ...c }))],
+		[/t\.amount_cents > 0 AND t\.amount_cents <= \$2/, (_, [home, left]) => cards.filter((c) => c.status === "new" && c.account_code === home && c.amount_cents > 0n && c.amount_cents <= BigInt(left)).map((c) => ({ ...c }))],
+		[/FROM mod_categorizer\.transactions t JOIN mod_categorizer\.statements s ON s\.id = t\.statement_id WHERE t\.id = \$1/, (_, params) => (byId(params) ? [{ ...byId(params) }] : [])],
+		[/SET status = 'posting' WHERE id = \$1 AND status = 'new'/, (sql, params) => {
+			const c = byId(params);
+			if (!c) return next(sql, params);
+			if (c.status !== "new") return { rows: [], rowCount: 0 };
+			c.status = "posting";
+			return { rows: [], rowCount: 1 };
+		}],
+		[/SET status = 'new' WHERE id = \$1 AND status = 'posting'/, (sql, params) => {
+			const c = byId(params);
+			if (!c) return next(sql, params);
+			if (c.status === "posting") c.status = "new";
+			return { rows: [], rowCount: 1 };
+		}],
+		[/SET status = 'posted', journal_entry_id = \$2/, (sql, params) => {
+			const c = byId(params);
+			if (!c) return next(sql, params);
+			Object.assign(c, { status: "posted", journal_entry_id: params[1], reason: params[3], standin_bill_id: /standin_bill_id = \$5/.test(sql) ? params[4] : null, chosen_code: /chosen_code = \$6/.test(sql) ? params[5] : null });
+			return { rows: [], rowCount: 1 };
+		}],
+		[/SET status = 'new', journal_entry_id = NULL/, (_, [id, entry]) => {
+			const c = byId([id]);
+			if (c && c.status === "posted" && String(c.journal_entry_id) === String(entry)) Object.assign(c, { status: "new", journal_entry_id: null, standin_bill_id: null, chosen_code: null });
+			return { rows: [], rowCount: 1 };
+		}],
+		[/b\.standin_account_code IS NOT NULL AND b\.standin_line IS NOT NULL AND b\.standin_tx_id IS NULL/, () =>
+			bill.standin_account_code && bill.standin_line != null && bill.standin_tx_id == null && bill.journal_entry_id ? [{ ...bill, home: "2100", left_cents: BigInt(bill.amount_cents) - cleared().reduce((s, c) => s + c.amount_cents, 0n) }] : []],
+		[/WHERE t\.statement_id = \$1 AND t\.status = 'new' AND t\.amount_cents > 0/, (_, [sid]) => cards.filter((c) => c.status === "new" && String(c.statement_id) === String(sid)).map((c) => ({ ...c }))],
+		...rest,
+	];
+}
+
+test("Create bill on a statement, Ledger 0.33: the card's payment row is posted as its own entry against the stand-in and linked to the bill's entry; no line is moved, a part amount is fine, and Unlink reverses it", async () => {
+	const bill = { ...STATEMENT_BILL };
+	const part = { ...CARD_ROW, amount_cents: 30000n, memo: "", fitid: "" };
+	const rest = { ...CARD_ROW, id: 22n, date: "2026-03-25", amount_cents: 55000n, memo: "", fitid: "F22" };
+	const bank = { ...ROW, description: "VISA PAYMENT", amount_cents: -85000n, suggested_code: "2000" };
+	const o = ledger33();
+	const payment = billPayment(bank, bill).map(([p, a]) => (/SELECT b\.id, b\.amount_cents FROM/.test(p.source) ? [p, () => [{ id: 3n, amount_cents: 85000n }]] : [p, a]));
+	const { call, posted, related, reversed } = await start({ answers: standinBooks(bill, [part, rest], payment), ...o });
+	const BILL_ENTRY = [["2000", "85000", "0"], ["2000-7", "0", "85000"]];
+
+	// Create bill: Dr accounts payable (the stand-in) / Cr the card company's own account; its entry is unpaid.
+	await call("POST /bills", { body: CREATE });
+	assert.deepEqual(shape(posted[0]), BILL_ENTRY);
+	assert.deepEqual(o.tags.kept(100), ["unpaid"]);
+	const status = await call("GET /status");
+	assert.deepEqual([status.payables.statement_bills, status.payables.statement_bill_links], ["standin", "entry"]);
+
+	// A row for the whole amount is offered under the row; a smaller one on the bill's page.
+	const jm = await call("GET /statements/:id/journal-matches", { params: { id: "12" } });
+	assert.deepEqual(jm.bills.map((m) => [String(m.transaction_id), String(m.bill.id)]), [], "30000 and 55000: neither is the whole 85000");
+	let page = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual([page.bill.standin.mode, page.bill.standin.can_link, page.bill.standin.left_cents], ["entry", true, 85000n]);
+	assert.deepEqual(page.bill.standin.candidates.map((t) => [String(t.id), t.partial]), [["21", true], ["22", true]]);
+
+	// A person links the part payment: the row is posted as its own entry, Dr the card / Cr accounts payable.
+	await call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } });
+	assert.deepEqual(shape(posted[1]), [["2100", "30000", "0"], ["2000", "0", "30000"]]);
+	assert.equal(posted[1].entity_id, undefined, "without the vendor: the accounts payable line is the stand-in, it must stay there");
+	assert.equal(posted[1].entry_date, "2026-03-18", "on the row's own date");
+	assert.deepEqual(posted[1].sent_links.map((l) => l.ref), ["tx:21", "bill:3"], "the entry opens the row and the bill from Ledger");
+	assert.deepEqual([part.status, part.journal_entry_id, String(part.standin_bill_id), part.chosen_code], ["posted", 101, "3", "2000"]);
+	assert.deepEqual(shape(o.entries.get(100)), BILL_ENTRY, "the bill's entry stays as posted");
+	assert.equal(o.moves.length, 0, "no line is moved");
+	assert.equal(bill.standin_tx_id, null);
+	// The two entries show each other in Ledger: a plain link with a note, not a payment (the vendor isn't paid twice).
+	assert.equal(related.length, 1);
+	assert.deepEqual(related[0].slice(0, 2), [100, 101]);
+	assert.match(related[0][2], /clears the stand-in.*not counted as money paid/);
+	assert.equal(o.payments.links.length, 0);
+	assert.deepEqual(o.tags.kept(100), ["unpaid"]);
+	assert.equal(o.books.owed(7), 85000n);
+	page = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual([page.bill.standin.rows.map((t) => [String(t.id), t.journal_entry_id]), page.bill.standin.left_cents], [[["21", 101]], 55000n]);
+	// The rest is now offered under its row, and no more than what still stands in can be linked.
+	assert.deepEqual((await call("GET /statements/:id/journal-matches", { params: { id: "12" } })).bills.map((m) => [String(m.transaction_id), m.bill.left_cents]), [["22", 55000n]]);
+	rest.amount_cents = 60000n;
+	await assert.rejects(call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "22" } }), (e) => e.status === 422 && /more than the 550\.00/.test(e.message));
+	rest.amount_cents = 55000n;
+	await call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "22" } });
+	assert.deepEqual(shape(posted[2]), [["2100", "55000", "0"], ["2000", "0", "55000"]]);
+	assert.equal(posted[2].reference, "F22");
+	page = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual([page.bill.standin.left_cents, page.bill.standin.can_link], [0n, false]);
+	await assert.rejects(call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } }), (e) => e.status === 409);
+
+	// Unlink one row: its own entry is reversed, the link goes, the row waits to be posted again; the bill's entry isn't touched.
+	await call("POST /bills/:id/unlink-statement-row", { params: { id: "3" }, body: { transaction_id: "22" } });
+	assert.deepEqual(reversed, [102]);
+	assert.deepEqual([rest.status, rest.journal_entry_id, rest.standin_bill_id], ["new", null, null]);
+	assert.deepEqual(related.map((r) => r.slice(0, 2)), [[100, 101]]);
+	assert.deepEqual(shape(o.entries.get(100)), BILL_ENTRY);
+	assert.equal(o.moves.length, 0);
+	await assert.rejects(call("POST /bills/:id/unlink-statement-row", { params: { id: "3" }, body: { transaction_id: "22" } }), (e) => e.status === 409);
+
+	// The payment from the bank pays the vendor: linked to the bill's entry as its payment, which Ledger tags paid.
+	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.deepEqual(shape(posted[3]), [["1000", "0", "85000"], ["2000-7", "85000", "0"]]);
+	assert.deepEqual(linkCalls(o.payments), [[100, posted[3].id, 85000n]]);
+	assert.deepEqual([bill.status, o.tags.kept(100), o.books.owed(7)], ["paid", ["paid"], 0n]);
+	assert.deepEqual(shape(o.entries.get(100)), BILL_ENTRY);
+});
+
+test("stand-in bill, Ledger 0.33: undoing the approval reverses the rows' entries and the bill's; a bill linked the 0.29.0 way keeps working and its line can still be moved back", async () => {
+	const bill = { ...STATEMENT_BILL };
+	const card = { ...CARD_ROW, memo: "", fitid: "" };
+	const o = ledger33();
+	const { call, posted, reversed, related } = await start({ answers: standinBooks(bill, [card]), ...o });
+	await call("POST /bills", { body: CREATE });
+	// The whole amount is offered under the row, and linked there.
+	assert.deepEqual((await call("GET /statements/:id/journal-matches", { params: { id: "12" } })).bills.map((m) => String(m.transaction_id)), ["21"]);
+	await call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } });
+	assert.deepEqual(shape(posted[1]), [["2100", "85000", "0"], ["2000", "0", "85000"]]);
+	await call("POST /bills/:id/unapprove", { params: { id: "3" } });
+	assert.deepEqual(reversed, [101, 100], "the row's entry, then the bill's");
+	assert.deepEqual([card.status, card.journal_entry_id], ["new", null]);
+	assert.deepEqual([bill.status, bill.journal_entry_id, bill.payments_linked_at], ["new", null, null]);
+	assert.deepEqual([related, o.tags.kept(100), o.moves.length], [[], [], 0]);
+
+	// Linked by 0.29.0: the stand-in line sits in the card account and the row is settled by the bill's entry.
+	const old = { ...STATEMENT_BILL, status: "open", vendor: "Visa", amount_cents: 85000n, account_code: "2000", standin_account_code: "2000", standin_line: 1, standin_tx_id: 21n, ap_account: "2000", journal_entry_id: 50, source: "statement", tags_synced_at: new Date(), payments_linked_at: new Date() };
+	const row = { ...CARD_ROW, status: "posted", journal_entry_id: 50, memo: "", fitid: "" };
+	const p = ledger33();
+	p.entries.set(50, { id: 50, entry_date: "2026-03-01", description: "Visa bill", reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }], lines: [{ line_number: 1, account_code: "2100", debit_cents: 85000n, credit_cents: 0n }, { line_number: 2, account_code: p.books.own(7, "vendor").code, debit_cents: 0n, credit_cents: 85000n }], moves: [{ line: 1, from: "2000", to: "2100" }] });
+	const b = await start({ answers: [...refreshed(old), ...standinBooks(old, [row])], ...p });
+	await b.call("POST /sort-now");
+	assert.deepEqual(shape(p.entries.get(50)), [["2100", "85000", "0"], ["2000-7", "0", "85000"]], "nothing is rewritten at startup or by a sync");
+	assert.equal(p.moves.length, 0);
+	const page = await b.call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual([page.bill.standin.mode, String(page.bill.standin.linked.id)], ["move", "21"]);
+	await assert.rejects(b.call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } }), (e) => e.status === 409 && /earlier way/.test(e.message));
+	// Unlink moves the line back, as it did.
+	await b.call("POST /bills/:id/unlink-statement-row", { params: { id: "3" } });
+	assert.deepEqual(shape(p.entries.get(50)), [["2000", "85000", "0"], ["2000-7", "0", "85000"]]);
+	assert.deepEqual([row.status, row.journal_entry_id, old.standin_tx_id, p.moves.length, b.reversed.length], ["new", null, null, 1, 0]);
+	// Linked again, it is the new way: its own entry, no move.
+	await b.call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } });
+	assert.deepEqual(shape(b.posted[0]), [["2100", "85000", "0"], ["2000", "0", "85000"]]);
+	assert.deepEqual([p.moves.length, old.standin_tx_id, shape(p.entries.get(50))[0][0]], [1, null, "2000"]);
+});
+
+test("the backfill links the payments posted before 0.30.0 to their bills' entries with their amounts, once; it posts, reverses and moves nothing", async () => {
+	// Paid by two statement rows in 0.29.0: tagged paid by the module, nothing linked in Ledger.
+	const bill = { ...BILL, status: "paid", due_date: "2999-01-01", journal_entry_id: 50, paid_entry_id: 61, ap_account: "2000", tags_synced_at: new Date(), payments_linked_at: null };
+	const o = ledger33();
+	const own = o.books.own(7, "vendor").code;
+	const cust = o.books.own(4, "customer").code;
+	o.entries.set(50, payableEntry(50, own));
+	const pay = (id, cents, to = own) => ({ id, entry_date: "2026-03-15", description: "HYDRO ONE", reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }], lines: [{ account_code: "1000", debit_cents: 0n, credit_cents: cents }, { account_code: to, debit_cents: cents, credit_cents: 0n }] });
+	o.entries.set(60, pay(60, 3000n));
+	o.entries.set(61, pay(61, 7000n)); // 5550 of it paid the bill, 1450 was split off elsewhere
+	o.entries.set(62, pay(62, 999n, "5100")); // a row matched to the bill but booked to another account: not its payment
+	// A deposit that paid a Sales invoice in 0.29.0.
+	o.entries.set(10, { ...invoice(10, 50000n, []), lines: [{ account_code: cust, debit_cents: 50000n, credit_cents: 0n }, { account_code: "4000", debit_cents: 0n, credit_cents: 50000n }] });
+	o.entries.set(70, { id: 70, entry_date: "2026-03-16", description: "E-TRANSFER", reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }], lines: [{ account_code: "1000", debit_cents: 50000n, credit_cents: 0n }, { account_code: cust, debit_cents: 0n, credit_cents: 50000n }] });
+	await o.tags.setAs("categorizer", 50, "paid", { note: "payment in entry #61" });
+	await o.tags.setAs("categorizer", 10, "paid", { note: "paid by entry #70" });
+	const state = new Set();
+	const answers = [
+		[/FROM mod_categorizer\.bills WHERE journal_entry_id IS NOT NULL AND payments_linked_at IS NULL/, () => (bill.payments_linked_at ? [] : [{ ...bill }])],
+		[/AS share_cents FROM mod_categorizer\.transactions/, () => [{ id: 7n, journal_entry_id: 60n, share_cents: 3000n }, { id: 8n, journal_entry_id: 61n, share_cents: 5550n }, { id: 9n, journal_entry_id: 62n, share_cents: 999n }]],
+		[/SELECT 1 FROM mod_categorizer\.module_state WHERE key = 'payment_links'/, () => (state.has("payment_links") ? [{}] : [])],
+		[/INSERT INTO mod_categorizer\.module_state \(key, value\) VALUES \('payment_links'/, () => void state.add("payment_links")],
+		[/SELECT DISTINCT pays_entry_id, journal_entry_id, abs\(amount_cents\)/, () => [{ pays_entry_id: 10n, journal_entry_id: 70n, amount_cents: 50000n }]],
+		...billTable(bill),
+	];
+	const before = [...o.entries.values()].map(shape);
+	const a = await start({ answers, ...o });
+	assert.deepEqual(linkCalls(o.payments), [[50, 60, 3000n], [50, 61, 5550n], [10, 70, 50000n]]);
+	assert.ok(bill.payments_linked_at);
+	assert.deepEqual([bill.status, o.tags.kept(50), o.tags.kept(10)], ["paid", ["paid"], ["paid"]]);
+	assert.deepEqual([a.posted.length, a.reversed.length, o.moves.length], [0, 0, 0]);
+	assert.deepEqual([...o.entries.values()].map(shape), before, "no entry changed");
+	const page = await a.call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual([page.bill.payment_status, page.bill.payments_from, page.bill.due_cents], ["paid", "ledger", 8550n]);
+	// Run again (the next start): nothing more is linked.
+	const calls = o.payments.calls.length;
+	const log = o.tags.log.length;
+	await start({ answers, ...o });
+	assert.equal(o.payments.calls.length, calls);
+	assert.equal(o.tags.log.length, log);
+
+	// An approved bill paid in part before: Ledger tags it partially paid, and the Bills tab says the same.
+	const open = { ...BILL, status: "open", due_date: "2999-01-01", journal_entry_id: 50, ap_account: "2000", tags_synced_at: new Date(), payments_linked_at: null };
+	const p = ledger33();
+	const own2 = p.books.own(7, "vendor").code;
+	p.entries.set(50, payableEntry(50, own2));
+	p.entries.set(60, { ...pay(60, 3000n), lines: [{ account_code: "1000", debit_cents: 0n, credit_cents: 3000n }, { account_code: own2, debit_cents: 3000n, credit_cents: 0n }] });
+	const b = await start({
+		answers: [
+			[/FROM mod_categorizer\.bills WHERE journal_entry_id IS NOT NULL AND payments_linked_at IS NULL/, () => (open.payments_linked_at ? [] : [{ ...open }])],
+			[/AS share_cents FROM mod_categorizer\.transactions/, () => [{ id: 7n, journal_entry_id: 60n, share_cents: 3000n }]],
+			[/AS posted_cents\s+FROM mod_categorizer\.bills b LEFT JOIN/, () => [{ ...open, posted_cents: 3000n }]],
+			...billTable(open),
+		],
+		...p,
+	});
+	assert.deepEqual([p.tags.kept(50), open.status], [["partially_paid"], "open"]);
+	const list = await b.call("GET /bills", { query: "status=unpaid" });
+	assert.deepEqual(list.data.map((x) => [x.payment_status, x.paid_cents, x.left_cents, x.payments_from, "posted_cents" in x]), [["partially_paid", 3000n, 5550n, "ledger", false]]);
+});
+
+test("without ctx.ledger.linkPayment (Ledger before 0.33.0) payments and tags are kept as 0.29.0 did, and partly paid bills show what the module's rows say", async () => {
+	const bill = { ...BILL, status: "open", due_date: "2999-01-01", journal_entry_id: 50, ap_account: "2000", tags_synced_at: new Date() };
+	const o = { ...ownBooks(), moveLine: true, moves: [] };
+	o.entries.set(50, payableEntry(50, o.books.own(7, "vendor").code));
+	const row = { ...ROW, description: "HYDRO ONE", amount_cents: -3000n, suggested_code: "2000" };
+	const answers = [[/AS posted_cents\s+FROM mod_categorizer\.bills b LEFT JOIN/, () => [{ ...bill, posted_cents: 3000n }]], ...billPayment(row, bill)].map(([p, a]) => (/AS linked,/.test(p.source) ? [p, () => [{ linked: "3000", posted: "3000" }]] : [p, a]));
+	const { call, posted, related } = await start({ answers: [...refreshed(bill), ...answers], ...o });
+	const status = await call("GET /status");
+	assert.deepEqual([status.payables.linked_payments, status.payables.statement_bill_links], [false, "move"]);
+	await call("POST /sort-now");
+	assert.deepEqual(o.tags.kept(50), [], "no unpaid tag on an older Ledger");
+	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.equal(posted.length, 1);
+	assert.deepEqual([bill.status, o.tags.kept(50), related], ["open", [], []], "a part payment: the bill stays open, as before");
+	assert.equal(bill.payments_linked_at, undefined);
+	const list = await call("GET /bills", { query: "status=unpaid" });
+	assert.deepEqual(list.data.map((x) => [x.payment_status, x.paid_cents, x.left_cents, x.payments_from]), [["partially_paid", 3000n, 5550n, "module"]]);
+	const page = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.deepEqual([page.bill.payment_status, page.bill.paid_cents, page.bill.left_cents, page.bill.payments_from], ["partially_paid", 3000n, 5550n, "module"]);
 });

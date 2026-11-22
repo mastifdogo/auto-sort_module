@@ -44,6 +44,101 @@ export function fakeMoveLine(entries, accounts, calls = []) {
 	};
 }
 
+/**
+ * The three tags Ledger keeps on an entry that is paid by linked payments (0.33.0): setting one
+ * takes the other two off, and "paid" takes "overdue" off too.
+ */
+export const TAG_CLEARS = { paid: ["overdue", "partially_paid", "unpaid"], partially_paid: ["paid", "unpaid"], unpaid: ["paid", "partially_paid"] };
+
+/**
+ * ctx.ledger.linkPayment / unlinkPayment / payments as Ledger 0.33.0 has them. A link says entry
+ * `payment` pays entry `bill`, amount_cents of it (left out: the payment's whole total). Neither
+ * entry changes. What an entry is owed (due_cents) is its lines in a customer's or vendor's own
+ * account, else in accounts receivable or payable, else its total; a reversed payment is listed
+ * with counted false. After every change Ledger sets exactly one of unpaid / partially_paid / paid
+ * on the entry paid, in the name of whoever made the change (setTag(by, entryId, tag)); "unpaid"
+ * when its last payment is taken off. entries: Map id -> entry; accounts: () => the chart.
+ * → { api: { linkPayment, unlinkPayment, payments }, links, calls, reversed(paymentId), unlinked(bill, payment) }
+ */
+export function fakePayments(entries, { accounts = () => [], setTag = async () => {}, self = "categorizer" } = {}) {
+	const links = []; // { bill, payment, amount, note, by }
+	const calls = [];
+	const big = (v) => BigInt(String(v ?? 0));
+	const debits = (e) => (e?.lines ?? []).reduce((s, l) => s + big(l.debit_cents), 0n);
+	const due = (e) => {
+		const chart = new Map(accounts().map((a) => [a.code, a]));
+		const lines = e?.lines ?? [];
+		const own = lines.filter((l) => chart.get(l.account_code)?.entity);
+		const control = lines.filter((l) => ["receivable", "payable"].includes(chart.get(l.account_code)?.kind));
+		const pick = own.length ? own : control;
+		const net = pick.reduce((s, l) => s + big(l.debit_cents) - big(l.credit_cents), 0n);
+		return net !== 0n ? (net < 0n ? -net : net) : debits(e);
+	};
+	const of = (billId) => {
+		const mine = links.filter((l) => l.bill === Number(billId));
+		if (mine.length === 0) return null;
+		const payments = mine
+			.map((l) => {
+				const p = entries.get(l.payment);
+				return { entry_id: l.payment, entry_date: p?.entry_date ?? "", description: p?.description ?? "", amount_cents: l.amount ?? debits(p), counted: p?.reversed_by_id == null && p?.reverses_id == null, note: l.note };
+			})
+			.sort((a, b) => (a.entry_date < b.entry_date ? -1 : a.entry_date > b.entry_date ? 1 : a.entry_id - b.entry_id));
+		const owed = due(entries.get(Number(billId)));
+		const paid = payments.filter((p) => p.counted).reduce((s, p) => s + p.amount_cents, 0n);
+		return { currency: "CAD", due_cents: owed, paid_cents: paid, left_cents: paid >= owed ? 0n : owed - paid, status: paid <= 0n ? "unpaid" : paid >= owed ? "paid" : "partially_paid", payments };
+	};
+	const sync = async (billId, by, left = false) => {
+		const p = of(billId);
+		if (!p && !left) return;
+		await setTag(by, billId, p?.status ?? "unpaid");
+	};
+	const unlink = async (billId, paymentId, by) => {
+		const i = links.findIndex((l) => l.bill === Number(billId) && l.payment === Number(paymentId));
+		if (i < 0) return false;
+		links.splice(i, 1);
+		await sync(Number(billId), by, true);
+		return true;
+	};
+	return {
+		links,
+		calls,
+		api: {
+			linkPayment: async (billId, paymentId, opts = {}, user) => {
+				calls.push(["link", Number(billId), Number(paymentId), opts.amount_cents === undefined || opts.amount_cents === null ? null : big(opts.amount_cents), opts.note ?? "", user?.username ?? null]);
+				if (Number(billId) === Number(paymentId)) throw new HttpError(422, "an entry can't be linked to itself");
+				if (!entries.has(Number(billId))) throw new HttpError(404, "not found");
+				if (!entries.has(Number(paymentId))) throw new HttpError(422, `there is no entry ${paymentId}`);
+				const amount = opts.amount_cents === undefined || opts.amount_cents === null ? null : big(opts.amount_cents);
+				if (amount !== null && amount <= 0n) throw new HttpError(422, "amount_cents must be more than zero");
+				const had = links.find((l) => l.bill === Number(billId) && l.payment === Number(paymentId));
+				if (had) Object.assign(had, { amount, note: opts.note ?? "" });
+				else links.push({ bill: Number(billId), payment: Number(paymentId), amount, note: opts.note ?? "", by: self });
+				await sync(Number(billId), self);
+				return of(billId);
+			},
+			unlinkPayment: async (billId, paymentId) => {
+				calls.push(["unlink", Number(billId), Number(paymentId)]);
+				return unlink(billId, paymentId, self);
+			},
+			payments: async (entryId) => of(entryId),
+		},
+		of,
+		/** A person reversed a payment's entry in Ledger: it stops counting for the entries it pays. */
+		async reversed(paymentId, reversalId = Number(paymentId) + 1000) {
+			const p = entries.get(Number(paymentId));
+			if (p) p.reversed_by_id = reversalId;
+			for (const l of links.filter((x) => x.payment === Number(paymentId))) await sync(l.bill, null);
+		},
+		/** A person took a payment off an entry on its page in Ledger. */
+		unlinked: (billId, paymentId) => unlink(billId, paymentId, null),
+		/** A person (or another module) linked a payment in Ledger. */
+		async linked(billId, paymentId, amount = null, by = null) {
+			links.push({ bill: Number(billId), payment: Number(paymentId), amount: amount === null ? null : big(amount), note: "", by });
+			await sync(Number(billId), by);
+		},
+	};
+}
+
 /** Ledger's Documents: add / ensure / get / read / update / remove / url, tags, extracted data. */
 export function fakeDocuments(self = "categorizer") {
 	const docs = new Map(); // id -> { id, kind, filename, data, source, ... }

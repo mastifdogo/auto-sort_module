@@ -13,6 +13,9 @@
 // LLM; transactions that pay them are matched before the LLM is asked.
 // Journal matches (lib/journal-matches.mjs): staged rows, bills and receipts
 // found in the journal, and the Auto sort button that asks the LLM.
+// Linked payments (Ledger 0.33.0): the entry that pays a bill's entry is linked to it in Ledger
+// (ctx.ledger.linkPayment), which shows the payments there and keeps the tag unpaid, partially_paid
+// or paid on the bill's entry; the bill's status follows that tag. No line of an entry is moved.
 // Tags (lib/tags.mjs, Ledger 0.23.0): a bill's entry carries vendor, paid and overdue; "paid" set by
 // another module or a person makes the bill paid; rows are offered the tagged entries they could pay.
 // Transfers (lib/transfer-sync.mjs): the two rows of a transfer between your
@@ -70,7 +73,9 @@ export default async function register(ctx) {
 		const entrySync = tags.syncBill;
 		tags.syncBill = async (b, user) => {
 			const became = await entrySync(b, user);
-			const also = await dtags.syncBill(became === "paid" ? { ...b, status: "paid" } : b, user).catch((err) => void ctx.log.warn("document tags not synced", { bill: String(b.id), err: String(err?.message || err) }));
+			const also = await dtags.syncBill(became ? { ...b, status: became } : b, user).catch((err) => void ctx.log.warn("document tags not synced", { bill: String(b.id), err: String(err?.message || err) }));
+			// Its document was tagged "paid" by someone else meanwhile: the bill is paid by tag, and so is its entry.
+			if (also === "paid" && !became) await tags.paidByTag(b, user);
 			return became ?? also ?? null;
 		};
 	}
@@ -535,7 +540,7 @@ export default async function register(ctx) {
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
 	const journal = registerJournalMatches(ctx, { q, T, bad, ai, bills, duplicates, transfers, syncStatementNotice });
-	registerRoot(ctx, { q, T, dash, syncStatementNotice, syncTodo: () => journal.syncTodo(), dtags });
+	registerRoot(ctx, { q, T, dash, syncStatementNotice, syncTodo: () => journal.syncTodo(), dtags, tags, bills });
 	// A statement row was settled by a bill's entry, or released from it (the stand-in, lib/bill-routes.mjs):
 	// the statement's notice, its document's "posted" tag and the matches still to review follow.
 	billHelpers.rowsChanged = async (statementIds, user) => {
@@ -591,6 +596,13 @@ export default async function register(ctx) {
 				if (n) ctx.log.info("bill entries tagged", { organization: org.id, bills: n });
 				const p = await tags.backfillPaymentVendors();
 				if (p) ctx.log.info("bill payments tagged with their vendor", { organization: org.id, entries: p });
+				// Payments recorded before 0.30.0 (or on a Ledger before 0.33.0) are linked to their bills'
+				// entries in Ledger, once; nothing is posted, reversed or moved. The bills then follow Ledger's tag.
+				const linked = await tags.backfillPayments();
+				if (linked.bills || linked.payments) {
+					ctx.log.info("earlier payments linked to their bills' entries in Ledger", { organization: org.id, ...linked });
+					await bills.syncBillTodos();
+				}
 			})
 			.catch((err) => ctx.log.warn("tagging bill entries failed", { err: String(err?.message || err) }));
 	}
@@ -643,7 +655,10 @@ export default async function register(ctx) {
 		const chosen = String(ap_account ?? "").trim();
 		// statement_bills: how Create bill on a statement posts: "standin" (Dr accounts payable as a stand-in / Cr
 		// the vendor's own account; needs Ledger 0.32.0), else "clearing" (the module's clearing account).
-		const payables = { own_accounts: tags.ownAccounts, kept_in_chosen: tags.ownAccounts && chosen !== "" && chart.find((a) => a.code === chosen)?.kind !== "payable", statement_bills: bills.standinOn ? "standin" : "clearing" };
+		// statement_bill_links: how the payment on that account's statement is linked to such a bill: "entry" (the
+		// row is posted as its own entry and linked; Ledger 0.33.0) or "move" (the stand-in line is moved; 0.32.x).
+		// linked_payments: payments are linked to bills' entries in Ledger, which keeps unpaid / partially_paid / paid.
+		const payables = { own_accounts: tags.ownAccounts, kept_in_chosen: tags.ownAccounts && chosen !== "" && chart.find((a) => a.code === chosen)?.kind !== "payable", statement_bills: bills.standinOn ? "standin" : "clearing", statement_bill_links: bills.standinOn ? bills.standinMode : null, linked_payments: tags.paymentsOn };
 		// None chosen: the accounts Ledger has tagged "Accounts payable" are used (Ledger 0.30.0).
 		if (!chosen) ap_account = chart.filter((a) => a.kind === "payable").map((a) => a.code).join(", ");
 		// Organizations (separate books): which one this request works in; the full list only for admins.
@@ -859,7 +874,7 @@ export default async function register(ctx) {
 			        t.chosen_code, COALESCE(t.chosen_code, t.suggested_code) AS account_code, t.status, t.journal_entry_id, t.error, t.posted_by, t.posted_at,
 			        t.new_account, t.duplicate_of, t.duplicate_entry_id, t.pays_entry_id,
 			        t.bill_id, b.vendor AS bill_vendor, b.status AS bill_status,
-			        (SELECT sb.id FROM ${T("bills")} sb WHERE sb.standin_tx_id = t.id LIMIT 1) AS standin_bill_id,
+			        COALESCE(t.standin_bill_id, (SELECT sb.id FROM ${T("bills")} sb WHERE sb.standin_tx_id = t.id LIMIT 1)) AS standin_bill_id, (t.standin_bill_id IS NOT NULL) AS standin_own_entry,
 			        t.transfer_tx_id, t.transfer_entry_id, o.account_code AS transfer_account, o.tx_date::text AS transfer_date,
 			        o.description AS transfer_description, o.status AS transfer_status, o.statement_id AS transfer_statement_id
 			   FROM ${T("transactions")} t LEFT JOIN ${T("bills")} b ON b.id = t.bill_id
@@ -1147,13 +1162,14 @@ export default async function register(ctx) {
 					}
 				}
 				// A bill payment marks the bill paid; it isn't a payee rule (it books to payables).
-				const paidBill = t.bill_id !== null && (await bills.onPosted(id, t.code, entry.id, req.user, { payable: payable !== null }));
+				const paidBill = t.bill_id !== null && (await bills.onPosted(id, t.code, entry.id, req.user, { payable: payable !== null, share: billAbs }));
 				if (paidBill) await linkEntry(entry.id, await bills.linkFor(t.bill_id), req.user);
 				// The payment's entry is with the bill's vendor: tagged, unless its line in the vendor's own
 				// account already says so (Ledger 0.31.0).
 				if (vendorEntity) await tags.tagWho(entry, "vendor", vendorEntity, req.user);
-				// A person posted the money for what another module tagged as owed: that entry is "paid" now.
-				if (pays) await tags.paidBy(pays, entry, req.user);
+				// A person posted the money for what another module tagged as owed: the new entry is linked to
+				// it as its payment (Ledger 0.33.0, which tags it paid); before, it is tagged "paid" here.
+				if (pays) await tags.paidBy(pays, entry, req.user, abs);
 				else if (t.pays_entry_id != null) await q(`UPDATE ${T("transactions")} SET pays_entry_id = NULL WHERE id = $1`, [id]);
 				if (!paidBill && !split && !pays) await learn(t.description, t.code, req.user.username);
 				results.posted++;

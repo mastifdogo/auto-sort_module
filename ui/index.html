@@ -446,6 +446,7 @@
 		</div>
 		<p class="muted small" id="bd-ap-note"></p>
 		<h2>Payment</h2>
+		<div id="bd-standin"></div>
 		<div id="bd-payments"></div>
 		<div id="bd-candidates"></div>
 		<div id="bd-splitpay"></div>
@@ -722,11 +723,20 @@
 	const indent = (depth) => "\u2003".repeat(depth);
 	const KIND_LABEL = { chequing: "chequing", savings: "savings", credit_card: "credit card" };
 
+	// Bank and credit card accounts (tagged chequing, savings or credit card in Ledger 0.16.0) come
+	// first in every account list, as a group of their own; the rest follows as the usual tree.
+	const isBank = (a) => a.kind in KIND_LABEL;
+	const byCode = (x, y) => x.code.localeCompare(y.code, undefined, { numeric: true });
+	const BANK_GROUP = "Bank and card accounts";
+
 	function accountOptions(select, list, { selected = null, placeholder = null } = {}) {
 		select.replaceChildren();
 		if (placeholder !== null) select.append(el("option", { value: "" }, placeholder));
+		const banks = list.filter(isBank).sort(byCode);
+		if (banks.length) select.append(el("optgroup", { label: BANK_GROUP }, ...banks.map((a) => el("option", { value: a.code, selected: a.code === selected }, `${a.code} · ${a.name} (${KIND_LABEL[a.kind]})`))));
+		const rest = list.filter((a) => !isBank(a));
 		for (const type of TYPE_ORDER) {
-			const group = list.filter((a) => a.type === type);
+			const group = rest.filter((a) => a.type === type);
 			if (group.length === 0) continue;
 			const og = el("optgroup", { label: type[0].toUpperCase() + type.slice(1) });
 			for (const { a, depth } of accountTree(group)) og.append(el("option", { value: a.code, selected: a.code === selected }, `${indent(depth)}${a.code} · ${a.name}`));
@@ -738,11 +748,11 @@
 	/** Bank and card accounts for a statement: the ones tagged chequing, savings or credit card first (Ledger 0.16.0). */
 	function bankAccountOptions(select, placeholder = "Choose…") {
 		const bankish = accounts.filter((a) => a.type === "asset" || a.type === "liability");
-		const tagged = bankish.filter((a) => a.kind);
-		const rest = bankish.filter((a) => !a.kind);
-		const opt = (a, depth = 0) => el("option", { value: a.code }, `${indent(depth)}${a.code} · ${a.name} (${a.kind ? KIND_LABEL[a.kind] ?? a.kind : a.type}, ${a.currency})`);
+		const tagged = bankish.filter(isBank);
+		const rest = bankish.filter((a) => !isBank(a));
+		const opt = (a, depth = 0) => el("option", { value: a.code }, `${indent(depth)}${a.code} · ${a.name} (${isBank(a) ? KIND_LABEL[a.kind] : a.type}, ${a.currency})`);
 		select.replaceChildren(el("option", { value: "" }, placeholder));
-		if (tagged.length) select.append(el("optgroup", { label: "Bank and card accounts" }, ...tagged.sort((x, y) => x.code.localeCompare(y.code, undefined, { numeric: true })).map((a) => opt(a))));
+		if (tagged.length) select.append(el("optgroup", { label: BANK_GROUP }, ...tagged.sort(byCode).map((a) => opt(a))));
 		if (rest.length) select.append(el("optgroup", { label: tagged.length ? "Other assets and liabilities" : "Assets and liabilities" }, ...accountTree(rest).map(({ a, depth }) => opt(a, depth))));
 		return bankish;
 	}
@@ -852,19 +862,22 @@
 		if (accounts.length === 0) await loadAccounts();
 		[current] = await Promise.all([api(`/statements/${id}`), loadRoot()]);
 		current.journal = new Map();
+		current.billMatches = new Map();
 		current.suggestions = new Map();
 		renderDetail();
 		// Lines already in the journal (no AI) and Auto sort's pending matches, shown under the rows.
 		Promise.all([api(`/statements/${id}/journal-matches`), api(`/match-suggestions?statement_id=${id}`)]).then(([jm, sg]) => {
 			if (current?.statement.id !== id) return;
 			current.journal = new Map(jm.data.map((m) => [String(m.transaction_id), m]));
+			// Rows that look like the payment a bill made from this account's statement waits for.
+			current.billMatches = new Map((jm.bills ?? []).map((m) => [String(m.transaction_id), m.bill]));
 			current.suggestions = new Map();
 			for (const x of sg.data) {
 				const k = String(x.subject_id);
 				if (!current.suggestions.has(k)) current.suggestions.set(k, []);
 				current.suggestions.get(k).push(x);
 			}
-			if (current.journal.size || current.suggestions.size) renderDetail();
+			if (current.journal.size || current.suggestions.size || current.billMatches.size) renderDetail();
 		}).catch(() => {});
 		if (["queued", "categorizing"].includes(current.statement.status)) pollTimer = setTimeout(() => refresh(id).catch(fail), 2000);
 	}
@@ -997,7 +1010,8 @@
 				cb.checked = selected.has(t.id);
 				cb.onchange = () => { cb.checked ? selected.add(t.id) : selected.delete(t.id); updateButtons(); };
 				let conf;
-				if (t.status === "posted") conf = el("span", {}, el("span", { class: "pill good" }, `Posted #${t.journal_entry_id}`, t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : t.pays_entry_id ? ` · paid entry #${t.pays_entry_id}` : ""), amendedPill(t),
+				if (t.status === "posted") conf = el("span", {}, el("span", { class: "pill good", title: t.standin_bill_id ? `Recorded by bill ${t.standin_bill_id}'s journal entry: its line moved from accounts payable to this account. Nothing else was posted for this row.` : "" }, `Posted #${t.journal_entry_id}`, t.standin_bill_id ? ` · bill ${t.standin_bill_id}'s entry` : t.bill_id ? " · bill" : t.transfer_tx_id || t.transfer_entry_id ? " · transfer" : t.pays_entry_id ? ` · paid entry #${t.pays_entry_id}` : ""), amendedPill(t),
+					t.standin_bill_id && role !== "viewer" ? el("button", { class: "btn small", title: "This row isn't that bill's payment: the line goes back to accounts payable and the row waits to be posted again", onclick: () => unlinkBillRow(t.standin_bill_id) }, "Unlink") : "",
 					rootMode ? el("button", { class: "btn small root", title: "Root mode: mark this row not posted (its entry isn't touched)", onclick: async () => { if (await rootAction(`/root/transactions/${t.id}/unpost`, `Mark row ${t.id} not posted? Entry #${t.journal_entry_id} isn't touched.`, "Marked not posted.")) refresh().catch(fail); } }, "Root: unpost") : "");
 				else if (t.status === "skipped") conf = el("span", { class: "pill plain" }, "Skipped");
 				else if (t.status === "merged") conf = el("span", {},
@@ -1032,7 +1046,7 @@
 					el("td", { class: "wide" }, conf, t.reason && t.status === "new" ? el("div", { class: t.source === "error" ? "err" : "reason" }, t.reason) : null, t.error ? el("div", { class: "err" }, t.error) : null,
 						open && (t.transfer_tx_id || t.transfer_entry_id) ? el("button", { class: "btn", style: "margin-top:4px", onclick: () => notTransfer(t.id) }, "Not a transfer") : null,
 						open && t.pays_entry_id && t.status === "new" ? el("button", { class: "btn", style: "margin-top:4px", title: "This row doesn't pay that entry; it gets a fresh suggestion", onclick: () => notPaying(t.id) }, "Not this one") : null,
-						t.status === "posted" && t.reason.startsWith("recorded with the transfer") ? el("div", { class: "reason" }, t.reason) : null,
+						t.status === "posted" && /^recorded with (the transfer|bill) /.test(t.reason) ? el("div", { class: "reason" }, t.reason) : null,
 						...(open ? matchNotes(t) : [])),
 				);
 			}),
@@ -1103,8 +1117,35 @@
 					} catch (e) { fail(e); }
 				} }, "Not the same")));
 		}
+		// The payment received on this card or loan account that a bill made from its statement waits for.
+		const sb = current.billMatches?.get(String(t.id));
+		if (sb && role !== "viewer") {
+			out.push(el("div", { class: "match" },
+				el("strong", {}, "Pays the statement's bill: "), `bill ${sb.id} · ${sb.vendor || "bill"}${sb.invoice_number ? ` ${sb.invoice_number}` : ""} · ${money(sb.amount_cents)}${sb.due_date ? ` · due ${sb.due_date}` : ""} (entry #${sb.entry_id})`,
+				el("button", { class: "btn", title: "This row is that bill's payment on this account: the bill's entry then debits this account instead of accounts payable, and this row isn't posted again", onclick: async () => {
+					try {
+						await api(`/bills/${sb.id}/link-statement-row`, { method: "POST", body: JSON.stringify({ transaction_id: t.id }) });
+						toast(`Linked: entry #${sb.entry_id} of bill ${sb.id} now debits ${accountLabel(current.statement.account_code)}; this row won't be posted again.`);
+						await refresh();
+					} catch (e) { fail(e); }
+				} }, "Link"),
+				el("button", { class: "btn", onclick: async () => {
+					try {
+						await api("/duplicates/dismiss", { method: "POST", body: JSON.stringify({ tx_id: t.id, entry_id: sb.entry_id }) });
+						await refresh();
+					} catch (e) { fail(e); }
+				} }, "Not the same")));
+		}
 		for (const x of current.suggestions?.get(String(t.id)) ?? []) out.push(suggestionNote(x, () => refresh()));
 		return out;
+	}
+	async function unlinkBillRow(billId) {
+		if (!confirm(`Unlink this row from bill ${billId}? The line of the bill's entry goes back to accounts payable, and the row waits to be posted again.`)) return;
+		try {
+			await api(`/bills/${billId}/unlink-statement-row`, { method: "POST" });
+			toast("Unlinked: the row is back to be reviewed and posted.");
+			await refresh();
+		} catch (e) { fail(e); }
 	}
 	// Create bill: what the statement says is owed, from what was already read (no LLM), or read by the
 	// LLM when nothing was; you edit, then create.
@@ -1145,7 +1186,9 @@
 				el("strong", {}, "New bill from this statement"),
 				el("p", { class: "muted small" }, `${d.read_from === "saved" ? `From ${SAVED_FROM[d.saved_from] ?? "what was already read"} (the LLM wasn't asked again)` : `Read from the ${d.read_from === "pdf" ? "PDF" : d.read_from === "file" ? "statement file" : "transactions (no file kept for this statement; check the amount)"}`}${d.confidence == null ? "" : ` with ${Math.round(d.confidence * 100)}% confidence`}.${d.minimum_cents ? ` Minimum payment: ${money(d.minimum_cents)}.` : ""}${d.summary ? ` ${d.summary.replace(/[.!?]?$/, ".")}` : ""} Paying it books to the account below (for a card, the card itself).`),
 				el("div", { class: "grid" }, lab("Vendor", f.vendor), lab("Reference", f.invoice_number), lab("Statement date", f.bill_date), lab("Due date", f.due_date), lab(`Amount owed (${d.currency})`, f.amount)),
-				el("p", { class: "muted small" }, `Creates an unpaid bill and posts it: “Statement bills to clear” (${moduleName}'s clearing account) is debited and accounts payable credited. Its payment from the bank clears payables.`),
+				el("p", { class: "muted small" }, statementBills === "standin"
+					? "Creates an unpaid bill and posts it: accounts payable is debited as a stand-in and the vendor's own account credited. When the payment shows on this account's statement, link that row to the bill (it is offered under the row): the stand-in line then moves to this account. The payment from the bank clears the vendor's account."
+					: `Creates an unpaid bill and posts it: “Statement bills to clear” (${moduleName}'s clearing account) is debited and accounts payable credited. Its payment from the bank clears payables.`),
 				el("div", { class: "row", style: "margin-top:0.5rem" }, create, el("button", { class: "btn", onclick: () => box.classList.add("hidden") }, "Cancel"),
 					d.read_from === "saved" ? el("button", { class: "btn", onclick: () => makeBill(true) }, "Read again with the LLM") : null),
 			);
@@ -1860,6 +1903,38 @@
 
 	$("bd-close").onclick = () => { currentBill = null; $("bill-detail").classList.add("hidden"); loadBills().catch(fail); };
 
+	/**
+	 * A bill made from a card or loan statement: accounts payable stands in for the card or loan
+	 * account in its entry until the payment on that account's statement is linked; then the line
+	 * moves there. Shows the row linked (Unlink), or the rows that could be (Link).
+	 */
+	function renderStandin(b) {
+		const box = $("bd-standin");
+		box.replaceChildren();
+		const sd = b.standin;
+		if (!sd || !b.journal_entry_id) return;
+		const acct = sd.statement_account ? accountLabel(sd.statement_account) : "the card or loan account";
+		if (sd.linked) {
+			const t = sd.linked;
+			box.append(el("div", { class: "match" },
+				el("strong", {}, "On the statement: "),
+				t.missing ? `transaction ${t.id} (no longer here)` : `${t.date} · ${t.description} · ${money(t.amount_cents)} on ${accountLabel(t.account_code)} (${t.filename})`,
+				el("span", { class: "muted" }, ` · entry #${b.journal_entry_id} debits that account; the row isn't posted again`),
+				t.missing ? "" : el("a", { href: "#", style: "margin-left:6px", onclick: (e) => { e.preventDefault(); showTab("review"); openStatement(t.statement_id); } }, "Open statement"),
+				role !== "viewer" ? el("button", { class: "btn", title: "The line goes back to accounts payable and the row waits to be posted again", onclick: () => confirm("Unlink it? The line of the bill's entry goes back to accounts payable, and the statement row waits to be posted again.") && billAction("unlink-statement-row") }, "Unlink") : ""));
+			return;
+		}
+		box.append(el("p", { class: "muted small" }, `Accounts payable (${accountLabel(sd.account_code)}) stands in for ${acct} in entry #${b.journal_entry_id}. Link the payment received on that account's statement and the line moves there; that row is then not posted again. Only a row for the whole ${b.amount_cents == null ? "amount" : money(b.amount_cents)} can be linked (a part payment is booked to accounts payable by hand).`));
+		if (!sd.can_link || role === "viewer") return;
+		if (sd.candidates.length === 0) return void box.append(el("p", { class: "muted small" }, `No unposted transaction of ${b.amount_cents == null ? "that amount" : money(b.amount_cents)} on ${acct} yet. It is offered here, and under its row on the statement, once that statement is uploaded.`));
+		box.append(el("table", { class: "stack" }, el("tbody", {}, ...sd.candidates.map((t) => el("tr", {},
+			el("td", { class: "nowrap" }, t.date),
+			el("td", {}, t.description),
+			el("td", { class: "num pos" }, `${money(t.amount_cents)} ${b.currency}`),
+			el("td", {}, `${accountLabel(t.account_code)} · ${t.filename}`),
+			el("td", {}, el("button", { class: "btn", onclick: () => billAction("link-statement-row", { transaction_id: t.id }) }, "This is its payment on the statement")),
+		)))));
+	}
 	function renderBill(b, payments) {
 		const [cls, text] = BILL_STATUS[b.status] || ["plain", b.status];
 		$("bd-title").textContent = `${b.vendor || "Bill"}${b.invoice_number ? ` #${b.invoice_number}` : ""}`;
@@ -1921,6 +1996,7 @@
 				),
 			))),
 		);
+		renderStandin(b);
 		renderBillMatches(b, payments);
 		$("bd-candidates").replaceChildren();
 		$("bd-splitpay").replaceChildren();
@@ -2268,12 +2344,15 @@
 	let moduleName = "Auto sort";
 	// How bills sit in payables (Ledger 0.31.0: in each vendor's own account), said where a bill is approved.
 	let payablesNote = ".";
+	// How Create bill on a statement posts: "standin" (accounts payable stands in, Ledger 0.32.0) or "clearing".
+	let statementBills = "clearing";
 	const payablesText = (p) => (!p?.own_accounts ? "" : p.kept_in_chosen
 		? "Bills stay in the account chosen under Settings: it isn't the one tagged Accounts payable in Ledger, so they aren't put in each vendor's own account"
 		: "Each bill and its payment are posted to its vendor's own account under accounts payable, so Ledger shows what each vendor is owed");
 	api("/status").then((st) => {
 		moduleName = st.name || moduleName;
 		payablesNote = payablesText(st.payables) ? `. ${payablesText(st.payables)}.` : ".";
+		statementBills = st.payables?.statement_bills || statementBills;
 		role = st.role || role;
 		document.title = moduleName;
 		document.querySelectorAll(".mod-name").forEach((n) => (n.textContent = moduleName));

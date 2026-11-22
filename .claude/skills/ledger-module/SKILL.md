@@ -235,7 +235,8 @@ Extract data and hand-offs to other modules.
   name. Needs Ledger ≥ 0.27.0.
 - Layout: `server.mjs` (statements, categorizing, `/status`, search, posting
   with entry links), `lib/bill-routes.mjs` (bill routes, reading uploads and
-  module files, `matchBillTx`, `linkBillEntry`), `lib/mime.mjs` (uploaded
+  module files, `matchBillTx`, `linkBillEntry`, the stand-in of a statement's
+  bill), `lib/mime.mjs` (uploaded
   `.eml`), `lib/parse.mjs` (statement formats), `lib/categorize.mjs` and
   `lib/bills.mjs` (prompts and schemas for `ctx.llm.json()`, matching),
   `lib/transfers.mjs` + `lib/transfer-sync.mjs`, `lib/payables.mjs`, `lib/duplicates.mjs` +
@@ -322,9 +323,14 @@ Extract data and hand-offs to other modules.
   person's action (save, approve, import, add by hand); AI-read vendors only
   `find()` an existing one. Entries for a bill pass `entity_id` (vendor).
   `customer_ref` ("sales:<id>") is legacy; don't read other modules' APIs.
-- Account pickers: `accountOptions()` shows the tree (`parent_code`,
-  Ledger 0.15.0); `bankAccountOptions()` puts `kind`-tagged accounts
-  (chequing, savings, credit_card; Ledger 0.16.0) first.
+- Account pickers (0.29.0): bank and card accounts (`kind` chequing, savings,
+  credit_card; Ledger 0.16.0) come first everywhere. In the UI `accountOptions()`
+  puts them in a "Bank and card accounts" group, then the tree of the rest
+  (`parent_code`, Ledger 0.15.0); `bankAccountOptions()` does the same for a
+  statement's account (other kinds such as payable are not "bank"). On the
+  server every list goes through `bankFirst()` (lib/categorize.mjs): `GET
+  /accounts`, `candidateAccounts()` (the AI's list), `billAccounts()`, the
+  PDF statement's list. Use both for any new picker or list.
 - Restores (Ledger 0.14.0) can leave rows whose document's file is gone:
   `files.readBillFile()` / `readStatementFile()` return null, `billFileUrl()`
   null, and the inbox marks the row `missing` (its routes answer 410).
@@ -368,6 +374,37 @@ Extract data and hand-offs to other modules.
   - The stand-in for tests is `fakeBooks()` + `fakeTags(entries, books)` in
     test/tags.test.mjs (routing on post, tags read from accounts, set/remove moving lines);
     test both with and without it.
+- **Create bill on a statement: the stand-in** (0.29.0, Ledger 0.32.0, feature-detected:
+  `standinOn` = `ctx.ledger.moveLine` and `ctx.entities.account` are functions, so `"ledger"` stays
+  lower; all in lib/bill-routes.mjs, migration 028):
+  - Posted Dr accounts payable (`payableOf()`: the control account, the stand-in) / Cr the vendor's
+    own account **by its code** (`standinOwnAccount()`), with `entity_id`: Ledger leaves an entry
+    that already has a line in the vendor's account as written. `bills.standin_account_code` marks
+    such a bill (kept through Undo approval; `account_code` is the same account), `standin_line` is
+    the debit line's number while posted, `standin_tx_id` the statement row linked.
+  - `linkStandin()` (`POST /bills/:id/link-statement-row`): a person says a row on the card's or
+    loan's own statement (the account of `bills.statement_id`'s statement, money received, exactly
+    the line's amount: Ledger moves whole lines, so no part payments) is the bill's payment there.
+    `ctx.ledger.moveLine` moves the stand-in line to the row's account and the row becomes `posted`
+    with the bill's `journal_entry_id` (no entry of its own; `bill_id` stays null so `paidOf()`
+    doesn't count it; `standin_bill_id` in `GET /statements/:id`). A transfer pairing of the row
+    is undone as in `merge()`. `unlinkStandin()` moves it back to `standin_account_code` and the
+    row is `new` again; Undo approval unlinks first. A move Ledger refuses (line ticked on a
+    reconciliation) is a 409 and changes nothing.
+  - Offered, never automatic: `standinMatches()` under the row (`bills` of
+    `GET /statements/:id/journal-matches`; "Not the same" uses `not_duplicates` with the bill's
+    entry) and `bill.standin.candidates` on the bill's page.
+  - **Never set or remove the `vendor` tag on a stand-in bill's entry while the line is in accounts
+    payable**: Ledger would take the stand-in line for the vendor's too (`claimLines`). A changed
+    vendor is `standinVendorChanged()` (moveLine on the credit line); `tags.vendorChanged()` only
+    gets the payments. `GET /bills/:id` compares the bill's amount with the credited account only.
+  - Fallback, and every bill made before 0.29.0: the clearing account `statementBillsAccount()`
+    ("Statement bills to clear"): no moveLine, no vendor entity, or no tagged payable account.
+    Never rewrite those entries. `/status` says which in `payables.statement_bills`.
+  - Root: `removeTransaction`, row unpost and bill unpost clear `standin_tx_id` through
+    `ctx.root.update`; `onCheck` lists a bill whose linked row isn't posted in its entry.
+  - Tests: `fakeMoveLine()` in test/fake-ledger.mjs, `cardBooks()` / `statementBill()` in
+    test/tags.test.mjs (stand-in, link, unlink, undo, vendor change, the older-Ledger paths).
 - Tags (`lib/tags.mjs`, Ledger 0.23.0, feature-detected: `if (ctx.tags)`, so
   `"ledger"` stays lower): a bill's entry (`journal_entry_id`, else
   `paid_entry_id`) carries `vendor` (unless its line is in the vendor's own account, above),

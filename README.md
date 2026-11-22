@@ -110,6 +110,10 @@ The module creates no accounts. It works with your chart of accounts:
   later; one per currency), or choose one under Settings → Auto sort → Bills. A chosen account is
   in one currency: bills in the other currency can't be approved into it. With neither, bills
   and receipts are only tracked.
+- **Bank and card accounts first:** every account list on the page (statement account, the
+  account of a row, a bill, a split line, an item, a tax, the search) starts with the accounts
+  tagged chequing, savings or credit card in Ledger, as a group of their own; the rest follows
+  as the usual tree. The lists the AI is given are in the same order.
 - **Each vendor's own account** (Ledger 0.31.0 and later): Ledger keeps an account for every
   vendor under accounts payable (and one for every customer under accounts receivable), made the
   first time something is posted for them. A bill or receipt approved into the account tagged
@@ -632,17 +636,55 @@ module that sends a statement can say it in the file's meta (`amount_due`, `due_
 `statement_date`, `minimum_payment`, `reference`, `vendor`, `currency`), and an earlier Create bill
 reading is kept. Otherwise Ledger's LLM API reads the statement file (a PDF needs a connection that
 reads PDFs); **Read again with the LLM** asks it anyway. It never adds up the transactions itself.
-You check the form, then **Create bill**; one bill per statement. Since 0.27.0 the bill is unpaid
-and posted straight away, and shows on the **Bills** tab (no Approve step, no account to choose):
-Dr **Statement bills to clear**, a clearing account Auto sort makes for itself (one per currency,
-hidden in Ledger like every clearing account), Cr accounts payable. Its payment from the bank
-then books Dr payables / Cr bank and marks it paid. The clearing account is cleared by the other
-side of that payment: book the payment line on the card's or loan's own statement to **Statement
-bills to clear** (show the account under Ledger's Settings → Clearing accounts to pick it).
-It needs an accounts payable account (tagged in Ledger, or chosen under Settings → Auto sort →
-Bills); without one Create bill says so and makes nothing. Undo approval on the Bills tab
-reverses the entry. Statements uploaded before 0.7.0 have no file kept; the LLM then only sees
-the transactions, so type the amount.
+You check the form, then **Create bill**; one bill per statement. The bill is unpaid and posted
+straight away, and shows on the **Bills** tab (no Approve step, no account to choose). It needs an
+accounts payable account (tagged in Ledger, or chosen under Settings → Auto sort → Bills); without
+one Create bill says so and makes nothing. Statements uploaded before 0.7.0 have no file kept; the
+LLM then only sees the transactions, so type the amount.
+
+*How it is posted (0.29.0, Ledger 0.32.0 and later):* Dr **accounts payable**, as a stand-in for
+the card or loan account, Cr **the card company's own vendor account** (the account Ledger keeps
+for that vendor under accounts payable). No clearing account is involved. "Accounts payable" is
+the account tagged so in Ledger in the bill's currency, or the one chosen under Settings: the
+account itself, not a vendor's.
+
+- **The payment on the card's or loan's own statement** (the row "Payment - thank you" on a later
+  statement of that account) is linked to the bill instead of being posted: under that row the
+  Statements tab shows **Pays the statement's bill … Link** (and **Not the same**), and the
+  bill's page lists the rows that fit under **Payment**. Linking moves the stand-in line of the
+  bill's entry from accounts payable to the card or loan account (Ledger logs the move on the
+  entry), so the entry reads Dr card or loan / Cr the vendor's account, and the row is marked
+  posted in that entry: nothing else is posted for it, it can't be posted twice, and reconciling
+  the card account in Ledger finds the line. The entry keeps the bill's date, so the row shows
+  *Dated … in Ledger*. Nothing is linked by itself: a person clicks Link. If the row had been
+  paired with the bank's payment as a transfer, linking undoes that pairing, and the bank's row
+  is offered the bill.
+- **Only a row for the whole amount can be linked**, on the account the bill's statement is of:
+  Ledger moves a whole line, not part of one. A part payment (you paid less than the balance) is
+  booked by hand: choose accounts payable for that row on the card's statement and post it; the
+  bank's smaller payment is linked to the bill as a partial payment, as for any bill.
+- **Unlink** (on the row, or on the bill's page) moves the line back to accounts payable and the
+  row waits to be posted again. Ledger refuses to move a line that is ticked on a reconciliation;
+  Unlink then says so and changes nothing (undo or untick the reconciliation first).
+- **The payment from the bank** is matched to the bill as always and books Dr the vendor's
+  account / Cr bank, which marks the bill paid.
+- **Undo approval** on the Bills tab moves a linked line back first (the row waits to be posted
+  again), then reverses the entry. A changed vendor moves the credit line to the new vendor's
+  account; the bill can't lose its vendor while it is posted.
+
+*Where the stand-in can't be used, the clearing account is kept, as in 0.27.0 and 0.28.0:* on a
+Ledger older than 0.32.0 (it can't move a posted line), when the vendor couldn't be put on Ledger's
+list of customers and vendors, or when no account is tagged "Accounts payable" in the bill's
+currency to keep the vendor's account under (debit and credit would be the same account). The
+bill is then posted Dr **Statement bills to clear**, a clearing account Auto sort makes for
+itself (one per currency, hidden in Ledger like every clearing account), Cr accounts payable; its
+payment from the bank books Dr payables / Cr bank, and the clearing account is cleared by booking
+the payment line on the card's or loan's own statement to **Statement bills to clear** (show the
+account under Ledger's Settings → Clearing accounts to pick it).
+
+*Bills created before 0.29.0* were posted to **Statement bills to clear** and stay exactly as they
+are: their entries aren't rewritten, the clearing account stays, and they are cleared and paid as
+described just above. Only bills created from 0.29.0 on use the stand-in.
 
 **Customers and vendors** (Ledger 0.16.0): a bill's vendor and customer are linked to Ledger's own
 list of customers and vendors (**Entities** in Ledger's sidebar), shared with every module, and the
@@ -717,8 +759,8 @@ line after the offer.
 - *Each vendor's own account (Ledger 0.31.0 and later):* when the payables account is the one
   tagged "Accounts payable" in Ledger and the bill has a vendor, Ledger posts the payable side to
   that vendor's own account under it (e.g. `2000-7 Hydro One`): approval is Dr *its account* /
-  Cr *the vendor's account*, **Create bill** on a statement Dr *Statement bills to clear* /
-  Cr *the vendor's account*, and the bank or card payment Dr *the vendor's account* / Cr *bank*.
+  Cr *the vendor's account*, **Create bill** on a statement Dr *accounts payable as a stand-in* /
+  Cr *the vendor's account* (Dr *Statement bills to clear* before Ledger 0.32.0; see above), and the bank or card payment Dr *the vendor's account* / Cr *bank*.
   The payment always goes to the account the bill's line sits in, read from the bill's entry.
   What the vendor is owed is that account's balance (Ledger's Customers and vendors page). The
   statement row still shows accounts payable as its account; the bill's page says which account
@@ -764,7 +806,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `POST` | `/statements/:id/categorize` | `{all?: true}` asks the model again (only unposted rows) |
 | `POST` | `/statements/:id/post` | `{ids?: [...]}` posts rows that have an account |
 | `POST` | `/statements/:id/account` | `{account_code, flip_signs?}`: choose or change the statement's account while nothing is posted (remembered for the sending module) |
-| `GET` | `/statements/:id/journal-matches` | its unposted lines already in the journal (no AI) |
+| `GET` | `/statements/:id/journal-matches` | its unposted lines already in the journal (no AI); `bills`: lines that look like the payment a bill made from that account's statement waits for (`[{transaction_id, bill}]`) |
 | `POST` | `/statements/:id/auto-sort` | Auto sort: the LLM looks for its unposted lines elsewhere; stores pending matches |
 | `DELETE` | `/statements/:id` | discards unposted rows |
 | `PATCH` | `/transactions/:id` | `{account_code?, status?: "new"\|"skipped"}` |
@@ -823,6 +865,7 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `GET` | `/duplicates?period=week\|month\|year\|all` | recheck a period, posted rows included (`both_posted` pairs) |
 | `POST` | `/duplicates/reverse {merge_id, keep_id}` | reverse the entry of a posted copy |
 | `POST` | `/bills/:id/link-entry {entry_id}`, `/unlink-entry` | it's already in the journal: count it paid by that entry, or undo |
+| `POST` | `/bills/:id/link-statement-row {transaction_id}`, `/unlink-statement-row` | a bill made with Create bill on a statement (`bill.standin` in `GET /bills/:id`): the payment on the card's or loan's own statement is this bill's. The stand-in line of its entry moves from accounts payable to that account and the row is posted in that entry; unlinking moves it back. Only a row for the line's whole amount (422 otherwise); 409 when Ledger refuses the move |
 | `POST` | `/bills/:id/auto-sort` | Auto sort for a bill or receipt |
 
 Options are Ledger's module settings (`GET`/`PUT /api/v1/modules/categorizer/settings`, admins
@@ -853,7 +896,10 @@ delete a statement with all its rows (posted ones too), delete a bill or receipt
 or paid, mark a posted row not posted, or take a bill out of its journal entry. Journal entries
 and documents are never touched by these. Every change goes through Ledger, so it's in Settings →
 Root log and can be put back. Before root mode can be left, Auto sort lists rows and bills that
-point at a journal entry that no longer exists.
+point at a journal entry that no longer exists, and bills that say a statement row took their
+stand-in line while that row isn't posted in the bill's entry. Deleting or un-posting such a row,
+or taking the bill out of its entry, also makes the bill forget the link; the entry's line stays
+where it is (root moves it in Ledger if it should go back).
 
 ## Backups and files
 
@@ -992,6 +1038,18 @@ app's updater reads it. `.github/workflows/app.yml` builds the app unsigned on e
 inside the module and is downloaded from the Inbox tab.
 
 ## Changes
+
+- **0.29.0:** **Create bill on a card or loan statement no longer uses a clearing account**
+  (Ledger 0.32.0 and later). The bill is posted Dr accounts payable, as a stand-in, / Cr the card
+  company's own vendor account. When the payment on the card's or loan's own statement is linked
+  to the bill (**Link** under that row, or on the bill's page; only a row for the whole amount),
+  the stand-in line moves to the card or loan account and the row is settled by the bill's entry
+  instead of posting one of its own; **Unlink** moves it back, and Undo approval does so before
+  reversing. The payment from the bank still books Dr the vendor's account / Cr bank. On an older
+  Ledger, or for a bill without a vendor on Ledger's list, "Statement bills to clear" is used as
+  before, and bills already posted to it stay as they are (nothing is rewritten). **Bank and
+  credit card accounts come first in every account list** (the pickers on the page, `/accounts`,
+  and the lists the AI is given). Migration 028. See "A bill from a statement" under "Bills".
 
 - **0.28.0:** **Bills, receipts and their payments are kept in each vendor's own account**
   (Ledger 0.31.0 and later, where every vendor has an account under accounts payable and every

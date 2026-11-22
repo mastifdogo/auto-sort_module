@@ -150,3 +150,12 @@ test("pickable leaves out hidden accounts and Ledger's Unreconciled account", as
 	const got = candidateAccounts([{ code: "5900", currency: "CAD", is_active: true }, { code: "1900", currency: "CAD", is_active: true, hidden: true }], bank);
 	assert.deepEqual(got.map((a) => a.code), ["5900"]);
 });
+
+test("bank and credit card accounts come first in the account lists, the rest keeps its order", async () => {
+	const { bankFirst, candidateAccounts } = await import("../lib/categorize.mjs");
+	const a = (code, extra = {}) => ({ code, name: code, type: "expense", currency: "CAD", is_active: true, kind: null, ...extra });
+	const chart = [a("1000", { type: "asset", kind: "chequing" }), a("1200", { type: "asset", kind: "receivable" }), a("2000", { type: "liability", kind: "payable" }), a("2100", { type: "liability", kind: "credit_card" }), a("5000"), a("1010", { type: "asset", kind: "savings" }), a("5100")];
+	assert.deepEqual(bankFirst(chart).map((x) => x.code), ["1000", "2100", "1010", "1200", "2000", "5000", "5100"]);
+	// The list the AI is given for a statement of the chequing account: the card and savings first.
+	assert.deepEqual(candidateAccounts(chart, chart[0]).map((x) => x.code), ["2100", "1010", "1200", "2000", "5000", "5100"]);
+});

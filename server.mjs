@@ -46,7 +46,7 @@ import { registerScanner } from "./lib/scanner-routes.mjs";
 import { registerAdoption } from "./lib/adopt.mjs";
 import { registerTaxes } from "./lib/taxes.mjs";
 import { shareOfLines } from "./lib/bills.mjs";
-import { candidateAccounts, examplesFromEntries, pickable, proposeCode, suggest } from "./lib/categorize.mjs";
+import { bankFirst, candidateAccounts, examplesFromEntries, pickable, proposeCode, suggest } from "./lib/categorize.mjs";
 import { ParseError, parseAmount, parseDate, parseStatement, payeeKey } from "./lib/parse.mjs";
 
 const MAX_CONTENT_CHARS = 1_000_000;
@@ -530,12 +530,23 @@ export default async function register(ctx) {
 		}
 	};
 	const taxes = registerTaxes(ctx, { q, T, bad });
-	const billHelpers = { q, T, bad, ai, requeue, stageStatement, readStatement, settleFile: null, files, tags, dtags, taxes };
+	const billHelpers = { q, T, bad, ai, requeue, stageStatement, readStatement, settleFile: null, rowsChanged: null, txLink, files, tags, dtags, taxes };
 	const bills = registerBills(ctx, billHelpers);
 	const transfers = registerTransfers(ctx, { q, T, bad, requeue });
 	const duplicates = registerDuplicates(ctx, { q, T, bad, bills, transfers, syncStatementNotice, requeue, txLink, linkEntry });
 	const journal = registerJournalMatches(ctx, { q, T, bad, ai, bills, duplicates, transfers, syncStatementNotice });
 	registerRoot(ctx, { q, T, dash, syncStatementNotice, syncTodo: () => journal.syncTodo(), dtags });
+	// A statement row was settled by a bill's entry, or released from it (the stand-in, lib/bill-routes.mjs):
+	// the statement's notice, its document's "posted" tag and the matches still to review follow.
+	billHelpers.rowsChanged = async (statementIds, user) => {
+		for (const sid of new Set(statementIds.map(String))) {
+			await syncStatementNotice(sid);
+			await dtags.syncStatement(sid, user).catch((err) => ctx.log.warn("document tags not synced", { statement: sid, err: String(err?.message || err) }));
+		}
+		// The row's other side of a transfer was freed, or the row is back: transfers are looked at again.
+		await transfers.matchTransfers().catch((err) => ctx.log.warn("transfers not matched", { err: String(err?.message || err) }));
+		await journal.syncTodo().catch(() => {});
+	};
 
 	// A person renumbered an account (Ledger 0.19.3): Ledger has rewritten the columns it recognises; these follow.
 	// It runs in that person's organization.
@@ -630,7 +641,9 @@ export default async function register(ctx) {
 		// Vendors' own accounts (Ledger 0.31.0): a bill posted to the account tagged "Accounts payable" sits in its
 		// vendor's account under it. An account chosen under Settings that isn't tagged keeps the bills itself.
 		const chosen = String(ap_account ?? "").trim();
-		const payables = { own_accounts: tags.ownAccounts, kept_in_chosen: tags.ownAccounts && chosen !== "" && chart.find((a) => a.code === chosen)?.kind !== "payable" };
+		// statement_bills: how Create bill on a statement posts: "standin" (Dr accounts payable as a stand-in / Cr
+		// the vendor's own account; needs Ledger 0.32.0), else "clearing" (the module's clearing account).
+		const payables = { own_accounts: tags.ownAccounts, kept_in_chosen: tags.ownAccounts && chosen !== "" && chart.find((a) => a.code === chosen)?.kind !== "payable", statement_bills: bills.standinOn ? "standin" : "clearing" };
 		// None chosen: the accounts Ledger has tagged "Accounts payable" are used (Ledger 0.30.0).
 		if (!chosen) ap_account = chart.filter((a) => a.kind === "payable").map((a) => a.code).join(", ");
 		// Organizations (separate books): which one this request works in; the full list only for admins.
@@ -697,7 +710,8 @@ export default async function register(ctx) {
 	// -----------------------------------------------------------------------
 
 	ctx.route("GET", "/accounts", async () => {
-		const accounts = (await ctx.ledger.listAccounts()).filter(pickable);
+		// Bank and credit card accounts first, then the rest in Ledger's order.
+		const accounts = bankFirst((await ctx.ledger.listAccounts()).filter(pickable));
 		return { data: accounts.map((a) => ({ code: a.code, name: a.name, type: a.type, currency: a.currency, kind: a.kind ?? null, parent_code: a.parent_code ?? null })) };
 	});
 
@@ -845,6 +859,7 @@ export default async function register(ctx) {
 			        t.chosen_code, COALESCE(t.chosen_code, t.suggested_code) AS account_code, t.status, t.journal_entry_id, t.error, t.posted_by, t.posted_at,
 			        t.new_account, t.duplicate_of, t.duplicate_entry_id, t.pays_entry_id,
 			        t.bill_id, b.vendor AS bill_vendor, b.status AS bill_status,
+			        (SELECT sb.id FROM ${T("bills")} sb WHERE sb.standin_tx_id = t.id LIMIT 1) AS standin_bill_id,
 			        t.transfer_tx_id, t.transfer_entry_id, o.account_code AS transfer_account, o.tx_date::text AS transfer_date,
 			        o.description AS transfer_description, o.status AS transfer_status, o.statement_id AS transfer_statement_id
 			   FROM ${T("transactions")} t LEFT JOIN ${T("bills")} b ON b.id = t.bill_id

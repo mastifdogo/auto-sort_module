@@ -13,6 +13,37 @@ export class HttpError extends Error {
 	}
 }
 
+/**
+ * ctx.ledger.moveLine as Ledger 0.32.0 has it: moves one line of a posted entry to another account
+ * of the same currency and returns the entry; the move is logged on it (entry.moves). Refused for a
+ * line ticked on a reconciliation (a line with `reconciled: true` here) and for an entry that was
+ * reversed or is a reversal (409); for no such line or account, another currency, or the account
+ * the line is already in (422). entries: Map id -> entry (lines numbered from 1, or by
+ * line_number); accounts: () => the chart. calls: every move asked for.
+ */
+export function fakeMoveLine(entries, accounts, calls = []) {
+	return async (entryId, lineNumber, accountCode, opts = {}, user) => {
+		calls.push([Number(entryId), Number(lineNumber), String(accountCode), opts?.reason ?? ""]);
+		const e = entries.get(Number(entryId));
+		if (!e) throw new HttpError(404, "not found");
+		const line = (e.lines ?? []).find((l, i) => Number(l.line_number ?? i + 1) === Number(lineNumber));
+		if (!line) throw new HttpError(422, `entry ${entryId} has no line ${lineNumber}`);
+		if (line.account_code === accountCode) throw new HttpError(422, "nothing was changed");
+		if (e.reverses_id != null) throw new HttpError(409, `entry ${entryId} is a reversal; its accounts follow the entry it reverses`);
+		if (e.reversed_by_id != null) throw new HttpError(409, `entry ${entryId} was reversed by entry ${e.reversed_by_id}; its accounts can't change any more`);
+		const chart = accounts();
+		const to = chart.find((a) => a.code === accountCode);
+		const from = chart.find((a) => a.code === line.account_code);
+		if (!to) throw new HttpError(422, `account ${JSON.stringify(accountCode)} does not exist`);
+		if (from && to.currency !== from.currency) throw new HttpError(422, `must be a ${from.currency} account, like the line`);
+		if (to.is_active === false) throw new HttpError(422, "that account is inactive");
+		if (line.reconciled) throw new HttpError(409, `line ${lineNumber} is ticked on the reconciliation to 2026-03-31; undo that reconciliation before changing its account`);
+		e.moves = [...(e.moves ?? []), { line: Number(lineNumber), from: line.account_code, to: accountCode, reason: opts?.reason ?? "", by: user?.username ?? null }];
+		line.account_code = accountCode;
+		return e;
+	};
+}
+
 /** Ledger's Documents: add / ensure / get / read / update / remove / url, tags, extracted data. */
 export function fakeDocuments(self = "categorizer") {
 	const docs = new Map(); // id -> { id, kind, filename, data, source, ... }

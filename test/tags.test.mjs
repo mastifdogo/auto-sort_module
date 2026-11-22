@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import register from "../server.mjs";
 import { assignPayables, payableCandidates } from "../lib/tags.mjs";
+import { fakeMoveLine } from "./fake-ledger.mjs";
 
 class HttpError extends Error {
 	constructor(status, message) {
@@ -37,12 +38,17 @@ function fakeBooks(accounts, entries = new Map()) {
 		entries,
 		own,
 		account,
-		/** What Ledger does to an entry posted with a customer or vendor: its receivable or payable lines go to their own account. */
+		/**
+		 * What Ledger does to an entry posted with a customer or vendor: its receivable or payable lines go
+		 * to their own account. An entry that already has a line in that account is one between it and
+		 * accounts receivable or payable: it is posted as written.
+		 */
 		route: (entry) =>
 			!entry.entity_id ? entry.lines : entry.lines.map((l) => {
 				const a = account(l.account_code);
 				const role = a && !a.entity ? Object.keys(KIND).find((r) => KIND[r] === a.kind) : null;
-				return role ? { ...l, account_code: own(entry.entity_id, role, a.currency, a.code).code } : l;
+				const written = role && entry.lines.some((x) => account(x.account_code)?.entity?.id === Number(entry.entity_id) && account(x.account_code).entity.role === role);
+				return role && !written ? { ...l, account_code: own(entry.entity_id, role, a.currency, a.code).code } : l;
 			}),
 		/** The tags read from the accounts: a line in a customer's or vendor's own account says whose the entry is. */
 		derived: (entryId) => {
@@ -210,7 +216,8 @@ const ACCOUNT_MAP = new Map(ACCOUNTS.map((a) => [a.code, a]));
 
 /** Registers the module on a fake ctx with tags (or without: tags null, an older Ledger). */
 /** books: Ledger 0.31.0's own accounts for customers and vendors (fakeBooks); without, an older Ledger. */
-async function start({ answers = [], tags = fakeTags(), entries = new Map(), settings = {}, accounts = ACCOUNTS, books = null, entities = {} } = {}) {
+/** moveLine: Ledger 0.32.0, which can move a posted line (ctx.ledger.moveLine); moves: every move asked for. */
+async function start({ answers = [], tags = fakeTags(), entries = new Map(), settings = {}, accounts = ACCOUNTS, books = null, entities = {}, moveLine = false, moves = [] } = {}) {
 	const routes = new Map();
 	const posted = [];
 	const related = [];
@@ -241,7 +248,7 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 		ledger: {
 			listAccounts: async () => accounts,
 			createJournalEntry: async (entry) => {
-				const e = { ...entry, lines: (books ? books.route(entry) : entry.lines).map((l) => ({ ...l })), id: 100 + posted.length, entity: entry.entity_id ? { id: entry.entity_id, name: "" } : null, reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }] };
+				const e = { ...entry, lines: (books ? books.route(entry) : entry.lines).map((l, i) => ({ ...l, line_number: i + 1 })), id: 100 + posted.length, entity: entry.entity_id ? { id: entry.entity_id, name: "" } : null, reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }] };
 				posted.push(e);
 				entries.set(e.id, e);
 				return e;
@@ -258,6 +265,7 @@ async function start({ answers = [], tags = fakeTags(), entries = new Map(), set
 			unlinkJournalEntry: async () => true,
 			clearingAccount: async ({ key, currency }) => ({ ...CLEARING, module_key: key, currency }),
 			relateEntries: async (a, b, opts) => { related.push([Number(a), Number(b), opts.note]); return []; },
+			...(moveLine ? { moveLine: fakeMoveLine(entries, () => accounts, moves) } : {}),
 		},
 		dashboard: Object.fromEntries(["notify", "todo", "complete", "remove"].map((call) => [call, async () => {}])),
 		orgs: { forEach: async (fn) => fn({ id: 1 }), current: async () => ({ id: 1, name: "Main", kind: "business" }), list: async () => [] },
@@ -313,7 +321,7 @@ test("bills and receipts go to accounts payable: the account set, else the one L
 	assert.equal(lone.status, "open");
 });
 
-test("Create bill on a statement: an unpaid bill at once, Dr Auto sort's clearing account / Cr accounts payable", async () => {
+test("Create bill on a statement, on a Ledger that can't move a line (before 0.32.0): Dr Auto sort's clearing account / Cr accounts payable, as before", async () => {
 	const bill = { ...BILL, status: "new", vendor: "", invoice_number: null, bill_date: null, due_date: null, amount_cents: null, account_code: null, vendor_entity_id: 7, statement_id: 9n };
 	const statementAnswers = [
 		[/SELECT id FROM mod_categorizer\.statements WHERE id = \$1/, () => [{ id: 9n }]],
@@ -760,4 +768,193 @@ test("vendor accounts: a payment that pays another module's bill is booked to th
 	// Tagged by Ledger from the account: { id: 0, tag: "vendor", account_code }.
 	const owed = { ...invoice(20, 50000n, [{ id: 0, tag: "vendor", entity: { id: 7, name: "Hydro One" }, account_code: "2000-7" }]), lines: [{ account_code: "5100", debit_cents: 50000n, credit_cents: 0n }, { account_code: "2000-7", debit_cents: 0n, credit_cents: 50000n }] };
 	assert.deepEqual(payableCandidates(out, [owed], accounts, "categorizer").map((c) => [c.entry_id, c.account_code, c.role, c.named, c.who.id]), [[20, "2000-7", "vendor", true, 7]]);
+});
+
+// ---------------------------------------------------------------------------
+// Create bill on a card or loan statement: accounts payable stands in (0.29.0, Ledger 0.32.0)
+// ---------------------------------------------------------------------------
+
+const VISA = { code: "2100", name: "Visa", type: "liability", currency: "CAD", is_active: true, kind: "credit_card", parent_code: null, entity: null };
+const STATEMENT_BILL = { ...BILL, status: "new", vendor: "", invoice_number: null, bill_date: null, due_date: null, amount_cents: null, account_code: null, vendor_entity_id: 7, statement_id: 9n, standin_account_code: null, standin_line: null, standin_tx_id: null };
+const CREATE = { kind: "bill", statement_id: "9", currency: "CAD", vendor: "Visa", bill_date: "2026-03-01", due_date: "2999-01-01", amount: "850.00" };
+/** The payment received on the card's own statement (a later one than the bill's). */
+const CARD_ROW = { id: 21n, statement_id: 12n, account_code: "2100", date: "2026-03-18", description: "PAYMENT - THANK YOU", amount_cents: 85000n, status: "new", journal_entry_id: null, transfer_tx_id: null, filename: "visa-april.csv" };
+
+/** Create bill's own queries, the card's row, and the bill; `rest` answers what isn't about the card's row. */
+function statementBill(bill, card, rest = billTable(bill)) {
+	const next = (sql, params) => {
+		for (const [p, a] of rest) if (p.test(sql)) return a(sql, params);
+		return [];
+	};
+	const mine = (params) => String(params[0]) === String(card.id);
+	return [
+		[/SELECT id FROM mod_categorizer\.statements WHERE id = \$1/, () => [{ id: 9n }]],
+		[/SELECT id FROM mod_categorizer\.bills WHERE statement_id = \$1/, () => []],
+		[/INSERT INTO mod_categorizer\.bills \(source, vendor, updated_by, statement_id\)/, (_, [source, vendor]) => { Object.assign(bill, { source, vendor }); return [{ id: 3n }]; }],
+		[/SELECT account_code FROM mod_categorizer\.statements WHERE id = \$1/, () => [{ account_code: "2100" }]],
+		[/FROM mod_categorizer\.transactions t JOIN mod_categorizer\.statements s ON s\.id = t\.statement_id WHERE t\.id = \$1/, (_, params) => (mine(params) ? [{ ...card }] : [])],
+		[/SET status = 'posting' WHERE id = \$1 AND status = 'new'/, (sql, params) => {
+			if (!mine(params)) return next(sql, params);
+			if (card.status !== "new") return { rows: [], rowCount: 0 };
+			card.status = "posting";
+			return { rows: [], rowCount: 1 };
+		}],
+		[/SET status = 'new' WHERE id = \$1 AND status = 'posting'/, (sql, params) => {
+			if (!mine(params)) return next(sql, params);
+			if (card.status === "posting") card.status = "new";
+			return { rows: [], rowCount: 1 };
+		}],
+		[/SET status = 'posted', journal_entry_id = \$2/, (sql, params) => {
+			if (!mine(params)) return next(sql, params);
+			Object.assign(card, { status: "posted", journal_entry_id: params[1], reason: params[3] });
+			return { rows: [], rowCount: 1 };
+		}],
+		[/SET status = 'new', journal_entry_id = NULL/, (_, [, entry]) => {
+			if (card.status === "posted" && String(card.journal_entry_id) === String(entry)) Object.assign(card, { status: "new", journal_entry_id: null });
+			return { rows: [], rowCount: 1 };
+		}],
+		[/b\.standin_account_code IS NOT NULL AND b\.standin_line IS NOT NULL AND b\.standin_tx_id IS NULL/, () =>
+			bill.standin_account_code && bill.standin_line != null && bill.standin_tx_id == null && bill.journal_entry_id ? [{ ...bill, home: "2100" }] : []],
+		[/WHERE t\.statement_id = \$1 AND t\.status = 'new' AND t\.amount_cents > 0/, () => (card.status === "new" ? [{ ...card }] : [])],
+		...rest,
+	];
+}
+/** Ledger 0.32.0: vendors' own accounts, a card account, and ctx.ledger.moveLine. */
+const cardBooks = () => ({ ...ownBooks([...TAGGED(), VISA, CLEARING]), moveLine: true, moves: [] });
+
+test("Create bill on a statement: accounts payable stands in for the card, the vendor's own account is credited; linking the card's payment row moves the line to the card", async () => {
+	const bill = { ...STATEMENT_BILL };
+	const card = { ...CARD_ROW };
+	const bank = { ...ROW, description: "VISA PAYMENT", amount_cents: -85000n, suggested_code: "2000" };
+	const o = cardBooks();
+	const payment = billPayment(bank, bill).map(([p, a]) => (/SELECT b\.id, b\.amount_cents FROM/.test(p.source) ? [p, () => [{ id: 3n, amount_cents: 85000n }]] : /AS linked,/.test(p.source) ? [p, () => [{ linked: "85000", posted: "85000" }]] : [p, a]));
+	const { call, posted, reversed } = await start({ answers: statementBill(bill, card, payment), ...o });
+
+	// Create bill: Dr accounts payable (the stand-in) / Cr the card company's own account, posted as written.
+	const r = await call("POST /bills", { body: CREATE });
+	assert.equal(r.status, 201);
+	assert.deepEqual(shape(posted[0]), [["2000", "85000", "0"], ["2000-7", "0", "85000"]]);
+	assert.equal(posted[0].entity_id, 7);
+	assert.deepEqual([bill.status, bill.source, bill.account_code, bill.standin_account_code, bill.standin_line, bill.ap_account, bill.journal_entry_id], ["open", "statement", "2000", "2000", 1, "2000", 100]);
+	assert.equal(o.books.owed(7), 85000n, "the vendor is owed the statement's balance");
+	assert.deepEqual(vendorChanges(o.tags), [], "no vendor tag is set: that would move the stand-in line into the vendor's account");
+	assert.equal((await call("GET /status")).payables.statement_bills, "standin");
+
+	// The payment received on the card's own statement is offered the bill, under its row.
+	const jm = await call("GET /statements/:id/journal-matches", { params: { id: "12" } });
+	assert.deepEqual(jm.bills.map((m) => [String(m.transaction_id), String(m.bill.id), m.bill.entry_id]), [["21", "3", 100]]);
+	const page = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.equal(page.bill.standin.can_link, true);
+	assert.equal(page.bill.standin.linked, null);
+	assert.equal(page.bill.payable_account.code, "2000-7");
+
+	// Only a row for the whole line: a part payment isn't linked.
+	card.amount_cents = 30000n;
+	await assert.rejects(call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } }), (e) => e.status === 422 && /exactly 850\.00/.test(e.message));
+	assert.deepEqual([card.status, o.moves.length], ["new", 0]);
+	card.amount_cents = 85000n;
+
+	// A person links it: the stand-in line moves to the card, and the row is settled by the bill's entry.
+	await call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } });
+	assert.deepEqual(shape(o.entries.get(100)), [["2100", "85000", "0"], ["2000-7", "0", "85000"]]);
+	assert.deepEqual([card.status, card.journal_entry_id, String(bill.standin_tx_id)], ["posted", 100, "21"]);
+	assert.match(card.reason, /^recorded with bill 3/);
+	assert.equal(posted.length, 1, "nothing is posted for the row itself");
+	assert.equal(o.books.owed(7), 85000n);
+	assert.deepEqual((await call("GET /statements/:id/journal-matches", { params: { id: "12" } })).bills, [], "it isn't offered again");
+	const linked = await call("GET /bills/:id", { params: { id: "3" } });
+	assert.equal(String(linked.bill.standin.linked.id), "21");
+	assert.equal(linked.bill.entry_amended, undefined, "the moved line isn't a changed amount of the bill");
+	await assert.rejects(call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } }), (e) => e.status === 409);
+
+	// Unlink: the line is back in accounts payable and the row waits to be posted again.
+	await call("POST /bills/:id/unlink-statement-row", { params: { id: "3" } });
+	assert.deepEqual(shape(o.entries.get(100)), [["2000", "85000", "0"], ["2000-7", "0", "85000"]]);
+	assert.deepEqual([card.status, card.journal_entry_id, bill.standin_tx_id], ["new", null, null]);
+	assert.equal((await call("GET /bills/:id", { params: { id: "3" } })).bill.entry_amended, undefined);
+	await assert.rejects(call("POST /bills/:id/unlink-statement-row", { params: { id: "3" } }), (e) => e.status === 409);
+
+	// Linked again; a line ticked on a reconciliation can't go back, so Unlink and Undo approval say so and change nothing.
+	await call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } });
+	o.entries.get(100).lines[0].reconciled = true;
+	await assert.rejects(call("POST /bills/:id/unlink-statement-row", { params: { id: "3" } }), (e) => e.status === 409 && /reconciliation/.test(e.message));
+	await assert.rejects(call("POST /bills/:id/unapprove", { params: { id: "3" } }), (e) => e.status === 409 && /reconciliation/.test(e.message));
+	assert.deepEqual([card.status, String(bill.standin_tx_id), bill.journal_entry_id, reversed.length], ["posted", "21", 100, 0]);
+	o.entries.get(100).lines[0].reconciled = false;
+
+	// The payment from the bank still pays the bill: Dr the vendor's own account / Cr the bank.
+	await call("POST /statements/:id/post", { params: { id: "1" }, body: {} });
+	assert.deepEqual(shape(posted[1]), [["1000", "0", "85000"], ["2000-7", "85000", "0"]]);
+	assert.equal(bill.status, "paid");
+	assert.equal(o.books.owed(7), 0n);
+	assert.deepEqual(shape(o.entries.get(100)), [["2100", "85000", "0"], ["2000-7", "0", "85000"]], "the bill's entry: Dr the card / Cr the vendor");
+});
+
+test("stand-in bill: undoing the approval moves a linked line back first, frees the row and reverses the entry; approving again posts the stand-in anew", async () => {
+	const bill = { ...STATEMENT_BILL };
+	const card = { ...CARD_ROW };
+	const o = cardBooks();
+	const { call, posted, reversed } = await start({ answers: statementBill(bill, card), ...o });
+	await call("POST /bills", { body: CREATE });
+	await call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } });
+	assert.equal(o.entries.get(100).lines[0].account_code, "2100");
+	await call("POST /bills/:id/unapprove", { params: { id: "3" } });
+	assert.deepEqual(shape(o.entries.get(100)), [["2000", "85000", "0"], ["2000-7", "0", "85000"]], "reversed as it was posted");
+	assert.deepEqual(reversed, [100]);
+	assert.deepEqual([card.status, card.journal_entry_id], ["new", null]);
+	assert.deepEqual([bill.status, bill.journal_entry_id, bill.ap_account, bill.standin_line, bill.standin_tx_id, bill.standin_account_code], ["new", null, null, null, null, "2000"]);
+	// Approved again: the same posting, with the line's number kept for the next link.
+	await call("POST /bills/:id/approve", { params: { id: "3" } });
+	assert.deepEqual(shape(posted[1]), [["2000", "85000", "0"], ["2000-7", "0", "85000"]]);
+	assert.deepEqual([bill.status, bill.journal_entry_id, bill.standin_line], ["open", 101, 1]);
+	// Given an account of its own by a person while it isn't posted, it is an ordinary bill again.
+	await call("POST /bills/:id/unapprove", { params: { id: "3" } });
+	await call("PATCH /bills/:id", { params: { id: "3" }, body: { account_code: "5100" } });
+	assert.deepEqual([bill.account_code, bill.standin_account_code], ["5100", null]);
+});
+
+test("stand-in bill: a changed vendor moves the credit to the new vendor's account and leaves the stand-in line in accounts payable", async () => {
+	const bill = { ...STATEMENT_BILL };
+	const o = cardBooks();
+	const answers = [[/SELECT vendor, customer_name FROM mod_categorizer\.bills/, () => [{ vendor: bill.vendor, customer_name: "" }]], ...statementBill(bill, { ...CARD_ROW })];
+	const { call } = await start({ answers, entities: { Visa: 7, "Visa Canada": 9 }, ...o });
+	await call("POST /bills", { body: CREATE });
+	assert.equal(o.books.owed(7), 85000n);
+	await call("PATCH /bills/:id", { params: { id: "3" }, body: { vendor: "Visa Canada" } });
+	assert.equal(String(bill.vendor_entity_id), "9");
+	assert.deepEqual(shape(o.entries.get(100)), [["2000", "85000", "0"], ["2000-9", "0", "85000"]]);
+	assert.deepEqual([o.books.owed(7), o.books.owed(9)], [0n, 85000n]);
+	assert.deepEqual(vendorChanges(o.tags), [], "not through the vendor tag: that would take the stand-in line along");
+	// A posted stand-in bill keeps a vendor.
+	await assert.rejects(call("PATCH /bills/:id", { params: { id: "3" }, body: { vendor: "" } }), (e) => e.status === 409);
+});
+
+test("Create bill on a statement keeps the clearing account where the stand-in can't be used: Ledger 0.31 (no moveLine), or a bill whose vendor isn't on Ledger's list", async () => {
+	// Ledger 0.31: vendors' own accounts, but no way to move a line.
+	const old = { ...STATEMENT_BILL };
+	const a = ownBooks([...TAGGED(), VISA, CLEARING]);
+	const first = await start({ answers: statementBill(old, { ...CARD_ROW }), ...a });
+	await first.call("POST /bills", { body: CREATE });
+	assert.deepEqual(shape(first.posted[0]), [["2990", "85000", "0"], ["2000-7", "0", "85000"]], "Dr the clearing account / Cr payables, which Ledger keeps in the vendor's account");
+	assert.deepEqual([old.account_code, old.standin_account_code, old.standin_line], ["2990", null, null]);
+	assert.equal((await first.call("GET /status")).payables.statement_bills, "clearing");
+	assert.equal((await first.call("GET /bills/:id", { params: { id: "3" } })).bill.standin, null);
+	assert.deepEqual((await first.call("GET /statements/:id/journal-matches", { params: { id: "12" } })).bills, []);
+	await assert.rejects(first.call("POST /bills/:id/link-statement-row", { params: { id: "3" }, body: { transaction_id: "21" } }), (e) => e.status === 409 && /stand-in/.test(e.message));
+	// Ledger 0.32, but the vendor couldn't be put on Ledger's list: debit and credit would be one account.
+	const lone = { ...STATEMENT_BILL, vendor_entity_id: null };
+	const b = cardBooks();
+	const second = await start({ answers: statementBill(lone, { ...CARD_ROW }), ...b });
+	await second.call("POST /bills", { body: CREATE });
+	assert.deepEqual(shape(second.posted[0]), [["2990", "85000", "0"], ["2000", "0", "85000"]]);
+	assert.deepEqual([lone.account_code, lone.standin_account_code], ["2990", null]);
+	// A bill posted to the clearing account before 0.29.0 stays as it is on a newer Ledger.
+	const before = { ...STATEMENT_BILL, status: "open", vendor: "Visa", amount_cents: 85000n, account_code: "2990", ap_account: "2000", journal_entry_id: 50, source: "statement" };
+	const c = cardBooks();
+	c.entries.set(50, { id: 50, entry_date: "2026-03-01", description: "Visa bill", reversed_by_id: null, reverses_id: null, links: [{ module_id: "categorizer" }], lines: [{ account_code: "2990", debit_cents: 85000n, credit_cents: 0n }, { account_code: c.books.own(7, "vendor").code, debit_cents: 0n, credit_cents: 85000n }] });
+	const third = await start({ answers: [...refreshed(before), ...statementBill(before, { ...CARD_ROW })], ...c });
+	await third.call("POST /sort-now");
+	assert.deepEqual(shape(c.entries.get(50)), [["2990", "85000", "0"], ["2000-7", "0", "85000"]]);
+	assert.equal(c.moves.length, 0, "no posted entry is rewritten");
+	assert.equal((await third.call("GET /bills/:id", { params: { id: "3" } })).bill.standin, null);
 });

@@ -7,7 +7,7 @@
 // that reconciliation is in progress or finished is read from Ledger each time.
 //
 // Loaded before the page's own script; it uses that script's helpers when it runs (api, $, el,
-// toast, fail, money, role, showTab, closeDetail, loadStatements, openBill, shrinkImage, Inbox).
+// toast, fail, money, role, showTab, noteHash, closeDetail, loadStatements, openBill, shrinkImage, Inbox).
 // Everything goes into the page with textContent.
 "use strict";
 const VendorStatements = (() => {
@@ -89,7 +89,8 @@ const VendorStatements = (() => {
 
 	// ---------------------------------------------------------------- one statement, opened
 
-	async function open(id) {
+	async function open(id, { quiet = false } = {}) {
+		if (!quiet) noteHash(`#/vendor/${id}`); // a step for Ledger's Back button
 		const r = await api(`/vendor-statements/${id}`);
 		if (activeTab !== "review") showTab("review");
 		closeDetail(); // a bank statement that was open, and its polling
@@ -333,11 +334,6 @@ const VendorStatements = (() => {
 	}
 
 	function init() {
-		$("vs-back").onclick = () => {
-			if (unsaved() && !confirm("Leave without saving your changes to this vendor statement?")) return;
-			closeDetail();
-			loadStatements().catch(fail);
-		};
 		$("vs-save").onclick = () => save();
 		$("vs-add-line").onclick = () => { rows.push({ date: rows.at(-1)?.date || $("vs-date").value || "", description: "", amount: "" }); dirtyLines = true; renderLines(); };
 		$("vs-flip").onclick = () => {
@@ -351,7 +347,7 @@ const VendorStatements = (() => {
 		$("vs-receipt").onclick = () => toBill("receipt");
 		$("vs-delete").onclick = async () => {
 			if (!confirm("Delete this vendor statement? Its lines here go with it. A reconciliation in Ledger stays as it is.")) return;
-			try { await api(`/vendor-statements/${current.statement.id}`, { method: "DELETE" }); closeDetail(); await loadStatements(); toast("Deleted."); } catch (e) { fail(e); }
+			try { await api(`/vendor-statements/${current.statement.id}`, { method: "DELETE" }); closeDetail(); noteHash("#/review"); await loadStatements(); toast("Deleted."); } catch (e) { fail(e); }
 		};
 		for (const id of ["vs-opening", "vs-closing"]) $(id).oninput = totals;
 		$("vs-file").onchange = async () => {
@@ -361,5 +357,5 @@ const VendorStatements = (() => {
 		};
 	}
 
-	return { init, listed, listRow, open, hide, fromBill, fromStatement };
+	return { init, listed, listRow, open, hide, fromBill, fromStatement, unsaved, openId: () => current?.statement.id ?? null };
 })();

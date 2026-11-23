@@ -269,7 +269,7 @@ const Scan = (() => {
 				name.value = "";
 				toast(`Scanned: ${job.file_name}${job.pages > 1 ? ` (${job.pages} pages)` : ""}.`);
 				if (job.file_id) Inbox.show(job.file_id); // its Send panel: a bill, a receipt, Extract data, another module
-				else showTab("inbox");
+				else goTab("inbox");
 			} catch (e) { msg.textContent = ""; fail(e); } finally { go.disabled = false; }
 		} }, "Scan");
 		box.replaceChildren(...[
@@ -344,7 +344,7 @@ const Scan = (() => {
 			}
 			$("upload-msg").textContent = last ? `Uploaded ${list.length === 1 ? last.name : `${list.length} files`} to the inbox.` : "";
 			if (last && list.length === 1) Inbox.show(last.id);
-			else if (last) showTab("inbox");
+			else if (last) goTab("inbox");
 		};
 	}
 

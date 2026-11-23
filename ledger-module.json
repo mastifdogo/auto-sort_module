@@ -1,9 +1,9 @@
 {
   "id": "categorizer",
   "name": "Auto sort",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "description": "Bank and card statements, bills and receipts, from wherever they arrive: uploads, the Send to Ledger browser extension, email, a scanner, a phone's camera or the Android app. Files wait in an inbox and are kept in Ledger's Documents; the AI suggests an account for each statement line and reads bills, and you approve everything before it is posted. Transfers are posted once, bills are tracked until paid. Needs an admin to allow it under Settings → LLM API.",
-  "ledger": ">=0.27.0",
+  "ledger": ">=0.35.4",
   "server": "server.mjs",
   "ui": "ui",
   "nav": {

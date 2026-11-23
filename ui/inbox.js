@@ -786,6 +786,7 @@ const Inbox = (() => {
 	async function show(id, { filter = "new" } = {}) {
 		$("in-filter").value = filter;
 		openId = Number(id);
+		noteHash("#/inbox");
 		showTab("inbox");
 		setTimeout(() => document.getElementById(`file-${openId}`)?.scrollIntoView({ block: "start" }), 400);
 	}

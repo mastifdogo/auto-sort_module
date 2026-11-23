@@ -327,7 +327,6 @@
 
 	<div id="detail-view" class="hidden">
 		<div class="row">
-			<button class="btn" id="back">← All statements</button>
 			<strong id="d-title"></strong>
 			<span id="d-status"></span>
 			<span class="spacer"></span>
@@ -390,7 +389,6 @@
 	<!-- A vendor's statement of account, opened from the list: its details and lines to check, and Reconcile (ui/vendor-statements.js) -->
 	<div id="vs-view" class="hidden">
 		<div class="row">
-			<button class="btn" id="vs-back">← All statements</button>
 			<strong id="vs-title"></strong>
 			<span id="vs-status"></span>
 			<span class="spacer"></span>
@@ -663,7 +661,55 @@
 		if (name === "inbox") Inbox.load().catch(fail);
 		if (name === "scan") Scan.load();
 	}
-	document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => { closeDetail(); showTab(b.dataset.tab); }));
+	document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => goTab(b.dataset.tab)));
+
+	// ---------------------------------------------------------------- the view in the address
+	// The tab, or the statement or bill that is open, is in the address after "#"
+	// (#/bills, #/bill/31, #/statement/12, #/vendor/5), so Ledger's Back button
+	// steps through the views (Ledger ≥ 0.35.4) and the page has no back buttons.
+	const TAB_NAMES = ["inbox", "review", "bills", "receipts", "duplicates", "rules", "scan", "settings"];
+	let routing = false; // showing what the address names: nothing to note
+	let home = null; // the view shown with nothing after "#" (what the link asked for)
+	const ownHashes = [];
+	/** The page moved to another view by itself: a new step for Ledger's Back button. */
+	function noteHash(hash) {
+		const first = location.hash.length < 2;
+		if (routing) { if (first) home = hash; return; }
+		if (location.hash === hash || (first && hash === home)) return;
+		ownHashes.push(hash);
+		location.hash = hash;
+	}
+	const closeBill = () => { currentBill = null; $("bill-detail").classList.add("hidden"); };
+	function goTab(name) {
+		noteHash(`#/${name}`);
+		closeDetail();
+		closeBill();
+		showTab(name);
+	}
+	/** Shows the view the address names (Back in Ledger, a reload). Never changes the address in answer, or Back would get stuck. */
+	function route(oldHash) {
+		const [, a, b] = location.hash.split("/");
+		const id = /^\d+$/.test(b ?? "") ? Number(b) : null;
+		const vs = VendorStatements.openId();
+		if (vs && oldHash !== undefined && !(["vendor", "bill"].includes(a) && id === vs) && VendorStatements.unsaved() && !confirm("Leave without saving your changes to this vendor statement?")) return noteHash(oldHash);
+		routing = true;
+		try {
+			if (a === "statement" && id) { closeBill(); if (activeTab !== "review") showTab("review"); openStatement(id); }
+			else if (a === "vendor" && id) { closeBill(); VendorStatements.open(id).catch(fail); }
+			else if (a === "bill" && id) openBill(id);
+			else {
+				closeDetail();
+				closeBill();
+				if (TAB_NAMES.includes(a)) showTab(a);
+				else if (!openFromLink()) { home = "#/review"; showTab("review"); }
+			}
+		} finally { routing = false; }
+	}
+	addEventListener("hashchange", (e) => {
+		const i = ownHashes.indexOf(new URL(e.newURL).hash);
+		if (i >= 0) return void ownHashes.splice(i, 1);
+		route(new URL(e.oldURL).hash);
+	});
 
 	// ---------------------------------------------------------------- accounts
 	let accounts = [];
@@ -898,20 +944,21 @@
 		VendorStatements.hide();
 		$("list-view").classList.remove("hidden");
 	}
-	$("back").onclick = () => { closeDetail(); loadStatements().catch(fail); };
 	$("d-vstatement").onclick = () => current && VendorStatements.fromStatement(current.statement);
 	$("d-root-delete").onclick = async () => {
 		const s = current?.statement;
 		if (!s) return;
-		if (await rootAction(`/root/statements/${s.id}/delete`, `Root mode: delete ${s.filename} with all ${s.total} rows, posted ones too? Their journal entries stay; Ledger's root log can put it back.`, "Statement deleted (root).")) $("back").click();
+		if (await rootAction(`/root/statements/${s.id}/delete`, `Root mode: delete ${s.filename} with all ${s.total} rows, posted ones too? Their journal entries stay; Ledger's root log can put it back.`, "Statement deleted (root).")) { closeDetail(); noteHash("#/review"); loadStatements().catch(fail); }
 	};
 
 	async function openStatement(id) {
+		noteHash(`#/statement/${id}`);
 		selected = new Set();
 		VendorStatements.hide();
 		$("list-view").classList.add("hidden");
 		$("detail-view").classList.remove("hidden");
-		await refresh(id).catch(fail);
+		// One that is gone (Back to a deleted statement): the list again.
+		await refresh(id).catch((e) => { closeDetail(); fail(e); });
 	}
 
 	async function refresh(id = current?.statement.id) {
@@ -1005,7 +1052,7 @@
 		try {
 			const r = await api(`/statements/${current.statement.id}/account`, { method: "POST", body: JSON.stringify({ account_code: code, flip_signs: $("d-account-flip").checked }) });
 			changingAccount = false;
-			if (r.removed) { toast(`All its transactions were already uploaded for ${code}; the statement was removed.`); closeDetail(); return loadStatements(); }
+			if (r.removed) { toast(`All its transactions were already uploaded for ${code}; the statement was removed.`); closeDetail(); noteHash("#/review"); return loadStatements(); }
 			toast(`Statement set to ${accountLabel(code)}${r.duplicates ? `; ${r.duplicates} already-uploaded transactions dropped` : ""}. Suggestions are on their way.`);
 			await refresh();
 		} catch (e) { fail(e); }
@@ -1343,6 +1390,7 @@
 		try {
 			await api(`/statements/${current.statement.id}`, { method: "DELETE" });
 			closeDetail();
+			noteHash("#/review");
 			await loadStatements();
 		} catch (e) { fail(e); }
 	};
@@ -1495,13 +1543,14 @@
 	};
 
 	async function openBill(id) {
+		noteHash(`#/bill/${id}`);
 		const [r] = await Promise.all([api(`/bills/${id}`).catch(fail), loadRoot(), loadTaxes()]);
 		if (!r) return;
 		// It is a vendor's statement of account (read as one, or a person said so): it opens on the Statements tab.
 		if (r.bill.kind === "vendor_statement") {
 			currentBill = null;
 			$("bill-detail").classList.add("hidden");
-			return VendorStatements.open(r.bill.id).catch(fail);
+			return VendorStatements.open(r.bill.id, { quiet: true }).catch(fail);
 		}
 		// A receipt opens on the Receipts tab, a bill on Bills (also after its type was changed).
 		const tab = r.bill.kind === "receipt" ? "receipts" : "bills";
@@ -1976,7 +2025,7 @@
 		try { await runBillSearch(currentBill); } catch (e) { fail(e); } finally { btn.disabled = false; }
 	};
 
-	$("bd-close").onclick = () => { currentBill = null; $("bill-detail").classList.add("hidden"); loadBills().catch(fail); };
+	$("bd-close").onclick = () => { closeBill(); noteHash(`#/${activeTab}`); loadBills().catch(fail); };
 
 	/**
 	 * A bill made from a card or loan statement: accounts payable stands in for the card or loan
@@ -2187,7 +2236,7 @@
 				if ("customer_name" in body || "vendor" in body) customersLoaded = false;
 			} else if (action === "delete") r = await api(`/bills/${currentBill.id}`, { method: "DELETE" });
 			else r = await api(`/bills/${currentBill.id}/${action}`, { method: "POST", body: JSON.stringify(body) });
-			if (action === "delete") { currentBill = null; $("bill-detail").classList.add("hidden"); }
+			if (action === "delete") { closeBill(); noteHash(`#/${activeTab}`); }
 			await loadBills();
 			if (currentBill) await openBill(currentBill.id);
 			return r;
@@ -2221,7 +2270,7 @@
 	$("bd-delete").onclick = () => confirm("Delete this bill?") && billAction("delete");
 	$("bd-root-delete").onclick = async () => {
 		if (!(await rootAction(`/root/bills/${currentBill.id}/delete`, "Root mode: delete this bill with its lines? Its journal entries and its document stay; Ledger's root log can put it back.", "Deleted (root)."))) return;
-		currentBill = null; $("bill-detail").classList.add("hidden"); loadBills().catch(fail);
+		closeBill(); noteHash(`#/${activeTab}`); loadBills().catch(fail);
 	};
 	$("bd-root-unpost").onclick = async () => {
 		if (await rootAction(`/root/bills/${currentBill.id}/unpost`, "Root mode: take this bill out of its journal entry? The entry isn't touched.", "Taken out of the entry (root).")) { await loadBills(); await openBill(currentBill.id); }
@@ -2476,7 +2525,7 @@
 	Inbox.init();
 	VendorStatements.init();
 	Scan.init();
-	if (!openFromLink()) showTab("review");
+	route();
 	loadDupCount();
 	Inbox.loadCount();
 </script>

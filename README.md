@@ -64,7 +64,7 @@ module itself. See [Files, tags and reading a file once](#files-tags-and-reading
 
 ## Install
 
-Needs **Ledger 0.27.0 or newer** (one file store for every kind of file, tags on files, and the data
+Needs **Ledger 0.35.4 or newer** (its Back button steps through the module's views, one file store for every kind of file, tags on files, and the data
 read out of a file kept with it). Some features need a newer Ledger and are left out on an older
 one: vendors' own accounts (0.31.0), linked payments (0.33.0), and reconciling a
 [vendor statement](#vendor-statements) (0.34.0).
@@ -920,7 +920,7 @@ to the Bills or Receipts tab as it was (Needs review if it never was one). Not w
 reconciliation exists in Ledger: delete that one there first.
 
 **2. You review it.** Click the row: the statement opens inside the Statements tab, where a bank
-statement shows its transactions, with **← All statements** to go back. Check and correct what was
+statement shows its transactions (Ledger's Back button, in its sidebar, goes back to the list). Check and correct what was
 read: the vendor (one of Ledger's customers and vendors, or a new name, which is added to that
 list when you save), the currency, the statement date, the period's first day, the opening
 balance, the balance owed, and the lines (change, add or remove them). The page says whether the
@@ -1222,6 +1222,12 @@ inside the module and is downloaded from the Inbox tab.
 
 ## Changes
 
+- **0.33.0:** **No back buttons: Ledger's Back button steps through the page.** The tab that is
+  open, and the statement, vendor statement or bill that is open, are part of the address
+  (`#/bills`, `#/bill/31`, `#/statement/12`), so the Back button in Ledger's sidebar goes back
+  through them like through Ledger's own pages, and a reload or a restored window opens the same
+  view. **← All statements** is gone from statements and vendor statements. Going back from a
+  vendor statement with unsaved changes still asks first. Needs Ledger 0.35.4.
 - **0.32.0:** **Vendor statements are on the Statements tab; the separate Vendor statements tab
   is gone.** A supplier's statement of account is listed with the bank, card and loan statements,
   marked Vendor statement, with the vendor, the balance owed and where its reconciliation stands.

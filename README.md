@@ -1041,7 +1041,8 @@ All routes are under `/api/v1/m/categorizer` and use your Ledger login.
 | `GET` | `/customers` | customer names used on bills |
 | `GET` | `/duplicates?period=week\|month\|year\|all` | recheck a period, posted rows included (`both_posted` pairs) |
 | `POST` | `/duplicates/reverse {merge_id, keep_id}` | reverse the entry of a posted copy |
-| `POST` | `/bills/:id/link-entry {entry_id}`, `/unlink-entry` | it's already in the journal: count it paid by that entry, or undo |
+| `POST` | `/bills/:id/link-entry {entry_id, split?, partial?}`, `/unlink-entry` | it's already in the journal: count it paid by that entry, or undo. `split: {line_number?, bill_account_code?, lines: [{amount, account_code, memo}]}` splits an entry for more (0.34.0); `partial: true` links an entry for less as a part payment |
+| `GET` | `/bills/:id/entry-split?entry_id=` | the entry about to be linked, what is still to pay, whether the amounts differ and which lines can be split |
 | `POST` | `/bills/:id/link-statement-row {transaction_id}`, `/unlink-statement-row {transaction_id?}` | a bill made with Create bill on a statement (`bill.standin` in `GET /bills/:id`: `mode`, `rows` linked with their entries, `left_cents` still standing in, `candidates`): the payment on the card's or loan's own statement is this bill's. The row is posted as its own entry, Dr that account / Cr accounts payable, and linked to the bill's entry, which isn't changed; a row for part of the amount is fine, one for more than what still stands in is 422. Unlinking reverses the row's entry (one row, or all without `transaction_id`). On Ledger 0.32, and for a bill linked by 0.29.0 (`standin.linked`), the stand-in line is moved to the account and back instead |
 | `POST` | `/bills/:id/auto-sort` | Auto sort for a bill or receipt |
 
@@ -1221,6 +1222,16 @@ app's updater reads it. `.github/workflows/app.yml` builds the app unsigned on e
 inside the module and is downloaded from the Inbox tab.
 
 ## Changes
+
+- **0.34.0:** **Linking a bill or receipt to a journal entry for a different amount opens a popup
+  that shows the entry.** When the entry is for more, split it there: the line that carries the
+  payment is divided into the bill's part and the rest, each with its account (a part can stay
+  where it is). Ledger adds no lines to a posted entry, so the entry itself stays as posted and a
+  second entry, linked to it and dated the same, moves the parts that go to another account;
+  Unlink reverses that second entry. With linked payments (Ledger 0.33.0) the entry is linked for
+  the bill's share only. An entry for less can be linked as a part payment of a bill approved into
+  payables (the bill stays open for the rest), or as paid in full as before. Entries for exactly
+  the amount link with one click as before. Migration 031.
 
 - **0.33.0:** **No back buttons: Ledger's Back button steps through the page.** The tab that is
   open, and the statement, vendor statement or bill that is open, are part of the address

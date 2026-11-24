@@ -581,6 +581,18 @@ Extract data and hand-offs to other modules.
   posting the row (a person) links the payment (or, before Ledger 0.33.0, sets `paid`) on that entry.
 - Transfers (`lib/transfer-sync.mjs`): the other side of a transfer already in the journal is
   a bank or card account, never payables, receivables or a customer's or vendor's own account.
+- **Linking to an entry for a different amount** (0.34.0, migration 031): the page asks
+  `GET /bills/:id/entry-split?entry_id=` before every Link to a journal entry (`linkEntry()` in
+  ui/index.html; `entrySplitOf()` in lib/matching.mjs says whether a line or the whole entry is
+  exactly what is owed) and opens `entrySplitDialog()` when it differs. An entry for more:
+  `link-entry {split: {line_number, bill_account_code, lines}}` (`planEntrySplit()`: a debit line
+  larger than what is owed, parts adding up to the rest; a part given the line's own account
+  stays). **The linked entry is never changed, reversed or reposted** (Ledger adds no lines to a
+  posted entry, and its bank line may be reconciled): `postEntrySplit()` posts a second entry, Dr
+  the parts' accounts / Cr the line's account, link ref `bill-split:<id>`, related to the entry
+  with `tags.relate()`, kept in `bills.split_entry_id` and reversed by `unlink-entry`. An entry
+  for less: `link-entry {partial: true}`, only for a `managed()` bill (`linkPayment` for the
+  entry's total; the bill stays open and follows Ledger's tag; it shows under `other_payments`).
 - Several rows can pay one bill (0.25.0): `matchBillTx()` adds a row beside the ones linked
   (`owedOf()` = what is still to pay; a row for less is a partial payment, none once covered),
   `onPosted()` marks the bill paid only when its payments cover it (what Ledger's linked payments

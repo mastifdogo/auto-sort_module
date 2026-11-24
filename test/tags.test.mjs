@@ -1137,6 +1137,78 @@ test("linked payments: a bill linked by hand to the entry that paid it is linked
 	assert.deepEqual(shape(o.entries.get(50)), [["5100", "8550", "0"], [own, "0", "8550"]]);
 });
 
+/** Entered by hand in Ledger: one card payment of 200.00, all of it booked to utilities. */
+const LARGER = () => ({ id: 70, entry_date: "2026-03-20", description: "Costco", reference: "chq 9", reversed_by_id: null, reverses_id: null, links: [], lines: [{ account_code: "5100", debit_cents: 20000n, credit_cents: 0n }, { account_code: "1000", debit_cents: 0n, credit_cents: 20000n }] });
+const vendorAnswer = (bill) => [/SELECT vendor, vendor_entity_id FROM mod_categorizer\.bills/, () => [{ vendor: bill.vendor, vendor_entity_id: 7 }]];
+
+test("entry split: an entry for more than the bill is shown with the line that can be split, and the split is an entry of its own that unlinking reverses", async () => {
+	const bill = { ...BILL, status: "open", due_date: "2999-01-01", ap_account: null };
+	const entries = new Map([[70, LARGER()]]);
+	const { call, posted, related, reversed } = await start({ answers: [vendorAnswer(bill), ...billTable(bill)], entries, accounts: TAGGED() });
+	const s = await call("GET /bills/:id/entry-split", { params: { id: "3" }, query: new URLSearchParams({ entry_id: "70" }) });
+	assert.deepEqual([s.differs, s.owed_cents, s.total_cents, s.splittable, s.line_number, s.partial], [true, 8550n, 20000n, [1], 1, false]);
+	assert.deepEqual(s.entry.lines.map((l) => [l.line_number, l.account_code, l.debit_cents, l.credit_cents]), [[1, "5100", 20000n, 0n], [2, "1000", 0n, 20000n]]);
+	const link = (split) => call("POST /bills/:id/link-entry", { params: { id: "3" }, body: { entry_id: 70, split } });
+	// The parts must add up to the rest of the line, in accounts that can be chosen.
+	await assert.rejects(link({ lines: [{ amount: "100.00", account_code: "4000" }] }), (e) => e.status === 422 && /add up to 100\.00, but 114\.50/.test(e.message));
+	await assert.rejects(link({ lines: [{ amount: "114.50", account_code: "9999" }] }), (e) => e.status === 422);
+	await assert.rejects(link({ line_number: 2, lines: [{ amount: "114.50", account_code: "4000" }] }), (e) => e.status === 422 && /debit line/.test(e.message));
+	assert.deepEqual([posted.length, bill.status], [0, "open"], "a refused split changes nothing");
+	// 85.50 is the bill and stays in utilities; of the rest, 100.00 goes to sales and 14.50 stays.
+	await link({ lines: [{ amount: "100.00", account_code: "4000", memo: "not ours" }, { amount: "14.50", account_code: "5100" }] });
+	assert.deepEqual(shape(posted[0]), [["4000", "10000", "0"], ["5100", "0", "10000"]]);
+	assert.equal(posted[0].entry_date, "2026-03-20");
+	assert.match(posted[0].description, /^Split of entry #70: Costco/);
+	assert.equal(posted[0].sent_links[0].ref, "bill-split:3");
+	assert.deepEqual(related.map((r) => [r[0], r[1]]), [[100, 70]]);
+	assert.deepEqual([bill.status, bill.paid_entry_id, bill.split_entry_id], ["paid", 70, 100]);
+	assert.deepEqual(shape(entries.get(70)), [["5100", "20000", "0"], ["1000", "0", "20000"]], "the entry itself is as it was posted");
+	await call("POST /bills/:id/unlink-entry", { params: { id: "3" } });
+	assert.deepEqual([reversed, bill.status, bill.paid_entry_id, bill.split_entry_id], [[100], "open", null, null]);
+});
+
+test("entry split: the bill's own part can go to another account too; parts that stay post nothing", async () => {
+	const bill = { ...BILL, status: "open", due_date: "2999-01-01", ap_account: null };
+	const entries = new Map([[70, LARGER()]]);
+	const { call, posted } = await start({ answers: [vendorAnswer(bill), ...billTable(bill)], entries, accounts: TAGGED() });
+	await call("POST /bills/:id/link-entry", { params: { id: "3" }, body: { entry_id: 70, split: { line_number: 1, lines: [{ amount: "114.50", account_code: "5100" }] } } });
+	assert.deepEqual([posted.length, bill.status, bill.split_entry_id], [0, "paid", null]);
+	await call("POST /bills/:id/unlink-entry", { params: { id: "3" } });
+	await call("POST /bills/:id/link-entry", { params: { id: "3" }, body: { entry_id: 70, split: { bill_account_code: "4000", lines: [{ amount: "114.50", account_code: "5100" }] } } });
+	assert.deepEqual(shape(posted[0]), [["4000", "8550", "0"], ["5100", "0", "8550"]]);
+	// An entry with a line for exactly the amount is not one to split.
+	const exact = await call("GET /bills/:id/entry-split", { params: { id: "3" }, query: new URLSearchParams({ entry_id: "70" }) }).catch((e) => e);
+	assert.equal(exact.differs, true);
+	entries.set(71, { ...LARGER(), id: 71, lines: [{ account_code: "5100", debit_cents: 8550n, credit_cents: 0n }, { account_code: "1000", debit_cents: 0n, credit_cents: 8550n }] });
+	assert.equal((await call("GET /bills/:id/entry-split", { params: { id: "3" }, query: new URLSearchParams({ entry_id: "71" }) })).differs, false);
+});
+
+test("entry split: with linked payments the entry is linked for the bill's share only, and an entry for less can be linked as a part payment", async () => {
+	const bill = { ...BILL, status: "open", due_date: "2999-01-01", journal_entry_id: 50, ap_account: "2000", tags_synced_at: new Date(), payments_linked_at: new Date() };
+	const o = ledger33();
+	const own = o.books.own(7, "vendor").code;
+	o.entries.set(50, payableEntry(50, own));
+	o.entries.set(70, LARGER());
+	o.entries.set(71, { ...LARGER(), id: 71, lines: [{ account_code: own, debit_cents: 3000n, credit_cents: 0n }, { account_code: "1000", debit_cents: 0n, credit_cents: 3000n }] });
+	await o.tags.setAs("categorizer", 50, "unpaid");
+	const { call, posted } = await start({ answers: [vendorAnswer(bill), ...billTable(bill)], ...o });
+	// 30.00 of 85.50: a part payment, the bill stays open.
+	const less = await call("GET /bills/:id/entry-split", { params: { id: "3" }, query: new URLSearchParams({ entry_id: "71" }) });
+	assert.deepEqual([less.differs, less.splittable, less.partial], [true, [], true]);
+	await assert.rejects(call("POST /bills/:id/link-entry", { params: { id: "3" }, body: { entry_id: 70, partial: true } }), (e) => e.status === 422);
+	await call("POST /bills/:id/link-entry", { params: { id: "3" }, body: { entry_id: 71, partial: true } });
+	assert.deepEqual(linkCalls(o.payments), [[50, 71, 3000n]]);
+	assert.deepEqual([bill.status, bill.paid_entry_id, o.tags.kept(50)], ["open", null, ["partially_paid"]]);
+	// The larger entry pays the rest: 55.50 is the bill's share, the other 144.50 is split.
+	const more = await call("GET /bills/:id/entry-split", { params: { id: "3" }, query: new URLSearchParams({ entry_id: "70" }) });
+	assert.deepEqual([more.owed_cents, more.splittable], [5550n, [1]]);
+	await call("POST /bills/:id/link-entry", { params: { id: "3" }, body: { entry_id: 70, split: { lines: [{ amount: "144.50", account_code: "4000" }] } } });
+	assert.deepEqual(linkCalls(o.payments).at(-1), [50, 70, 5550n]);
+	assert.deepEqual(shape(posted[0]), [["4000", "14450", "0"], ["5100", "0", "14450"]]);
+	assert.deepEqual([bill.status, bill.paid_entry_id, o.tags.kept(50)], ["paid", 70, ["paid"]]);
+	assert.deepEqual(shape(o.entries.get(50)), [["5100", "8550", "0"], [own, "0", "8550"]], "the bill's entry is untouched");
+});
+
 test("linked payments: a posted payment marked not posted (root mode) is unlinked in Ledger, and the bill is partially paid again", async () => {
 	const bill = { ...BILL, status: "paid", due_date: "2999-01-01", journal_entry_id: 50, paid_entry_id: 61, ap_account: "2000", tags_synced_at: new Date(), payments_linked_at: new Date() };
 	const o = ledger33();

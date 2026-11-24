@@ -1842,8 +1842,8 @@
 		$("bd-autosort").classList.toggle("hidden", !["new", "open"].includes(b.status) || payments.length > 0 || b.amount_cents == null);
 		// Linked by hand to the entry that paid it (the rest of it, when statement rows paid a part before).
 		if (b.paid_entry_id && !payments.some((t) => t.status === "posted" && String(t.journal_entry_id) === String(b.paid_entry_id))) {
-			box.append(el("div", { class: "match" }, el("strong", {}, "Linked: "), `recorded in journal entry #${b.paid_entry_id}`,
-				el("button", { class: "btn", onclick: () => billAction("unlink-entry") }, "Unlink")));
+			box.append(el("div", { class: "match" }, el("strong", {}, "Linked: "), `recorded in journal entry #${b.paid_entry_id}${b.split_entry_id ? `, split by entry #${b.split_entry_id}` : ""}`,
+				el("button", { class: "btn", title: b.split_entry_id ? `Also reverses entry #${b.split_entry_id}, which split it` : "", onclick: () => billAction("unlink-entry") }, "Unlink")));
 			return;
 		}
 		if (!["new", "open"].includes(b.status) || payments.length > 0) return;
@@ -1852,7 +1852,7 @@
 			for (const m of jm.data) {
 				box.append(el("div", { class: "match" },
 					el("strong", {}, "In the journal: "), `entry #${m.entry.id} · ${m.entry.date} · ${m.entry.description} (${m.entry.accounts.map(accountLabel).join(", ")})`,
-					el("button", { class: "btn", title: `Count this ${b.kind} as recorded by that entry`, onclick: () => billAction("link-entry", { entry_id: m.entry.id }) }, "Link")));
+					el("button", { class: "btn", title: `Count this ${b.kind} as recorded by that entry`, onclick: () => linkEntry(b, m.entry.id) }, "Link")));
 			}
 			for (const x of sg.data) box.append(suggestionNote(x, after));
 		}).catch(() => {});
@@ -1955,6 +1955,152 @@
 		});
 	}
 
+	/**
+	 * Links the bill to a journal entry that already records its payment. An entry for a different
+	 * amount than what is still to pay opens a popup first that shows the entry: one for more can be
+	 * split there, one for less linked as a part payment. Answers whether it was linked.
+	 */
+	async function linkEntry(b, entryId) {
+		let s;
+		try { s = await api(`/bills/${b.id}/entry-split?entry_id=${encodeURIComponent(entryId)}`); } catch (e) { fail(e); return false; }
+		if (!s.differs) return !!(await billAction("link-entry", { entry_id: s.entry.id }));
+		return entrySplitDialog(b, s);
+	}
+	/** The popup for a journal entry that is not for the bill's amount: its lines, and the split. Resolves to whether it was linked. */
+	function entrySplitDialog(b, s) {
+		return new Promise((resolve) => {
+			const what = b.kind === "receipt" ? "receipt" : "bill";
+			const e = s.entry;
+			const owed = BigInt(s.owed_cents);
+			const total = BigInt(s.total_cents);
+			const canSplit = s.splittable.length > 0;
+			const dlg = el("dialog", { class: "similar-dialog", "aria-label": canSplit ? "Split the journal entry" : "The journal entry is for a different amount" });
+			const done = (ok) => { dlg.close(); dlg.remove(); resolve(ok); };
+			dlg.addEventListener("cancel", (ev) => { ev.preventDefault(); done(false); });
+			const toCents = (v) => { const n = Math.round(Number(String(v).trim().replace(/,/g, "")) * 100); return Number.isFinite(n) && String(v).trim() !== "" ? BigInt(n) : null; };
+			const amt = (c) => (Number(c) / 100).toFixed(2);
+			// Errors show in the popup: the page's own messages are behind it.
+			const err = el("p", { class: "small neg", role: "alert" });
+			const buttons = [];
+			const link = async (body, said) => {
+				err.textContent = "";
+				for (const x of buttons) x.disabled = true;
+				try {
+					await api(`/bills/${b.id}/link-entry`, { method: "POST", body: JSON.stringify({ entry_id: e.id, ...body }) });
+				} catch (x) { err.textContent = x.message; for (const y of buttons) y.disabled = false; update(); return; }
+				done(true);
+				toast(said);
+				await loadBills();
+				if (currentBill?.id === b.id) await openBill(b.id);
+			};
+			const button = (label, attrs, onclick) => { const x = el("button", { class: "btn", type: "button", ...attrs, onclick }, label); buttons.push(x); return x; };
+
+			// The entry as it is in the journal; the line being split is marked.
+			let lineNo = s.line_number;
+			const entryBody = el("tbody");
+			const drawEntry = () => entryBody.replaceChildren(...e.lines.map((l) => {
+				const can = s.splittable.includes(l.line_number);
+				const pick = can && s.splittable.length > 1 ? el("input", { type: "radio", name: "split-line", "aria-label": `Split line ${l.line_number}`, onchange: () => { lineNo = l.line_number; drawEntry(); drawSplit(); } }) : null;
+				if (pick) pick.checked = l.line_number === lineNo;
+				return el("tr", {},
+					el("td", { class: "wide" }, pick ? el("label", {}, pick, " ", accountLabel(l.account_code)) : accountLabel(l.account_code),
+						canSplit && l.line_number === lineNo ? el("span", { class: "pill plain", style: "margin-left:6px" }, "split below") : "",
+						l.memo ? el("div", { class: "small muted" }, l.memo) : ""),
+					el("td", { class: "num" }, BigInt(l.debit_cents) > 0n ? el("span", {}, el("span", { class: "muted small" }, "Dr "), money(l.debit_cents)) : ""),
+					el("td", { class: "num" }, BigInt(l.credit_cents) > 0n ? el("span", {}, el("span", { class: "muted small" }, "Cr "), money(l.credit_cents)) : ""));
+			}));
+
+			// The split of the chosen line: the bill's part first, then where the rest goes.
+			const rows = [];
+			const splitBody = el("tbody");
+			const left = el("span", { class: "small", "aria-live": "polite" });
+			const go = button("Split and link", { class: "btn primary" }, () => {
+				const line = lineOf();
+				const moved = [billAccount.value !== line.account_code ? `${money(owed)} to ${accountLabel(billAccount.value)}` : "", ...rows.filter((r) => r.account.value !== line.account_code).map((r) => `${money(toCents(r.amount.value))} to ${accountLabel(r.account.value)}`)].filter(Boolean);
+				link({ split: { line_number: line.line_number, bill_account_code: billAccount.value, lines: rows.map((r) => ({ amount: r.amount.value.trim(), account_code: r.account.value, memo: r.memo.value })) } },
+					moved.length ? `Linked to entry #${e.id}. A second entry moves ${moved.join(", ")}.` : `Linked to entry #${e.id}; every part stays where the entry has it.`);
+			});
+			const lineOf = () => e.lines.find((l) => l.line_number === lineNo);
+			const restOf = () => BigInt(lineOf().debit_cents) - owed;
+			const remaining = () => restOf() - rows.reduce((t, r) => t + (toCents(r.amount.value) ?? 0n), 0n);
+			let billAccount = null;
+			/** An account dropdown that starts on the line's own account ("stays"). */
+			const accountSelect = (label) => {
+				const code = lineOf().account_code;
+				const sel = el("select", { "aria-label": label });
+				accountOptions(sel, accounts.filter((a) => a.currency === b.currency && a.code !== code));
+				sel.prepend(el("option", { value: code }, `Stays in ${accountLabel(code)}`));
+				sel.value = code;
+				withNewAccount(sel, () => ({ type: "expense", currency: b.currency }), update);
+				sel.onchange = update;
+				return sel;
+			};
+			function update() {
+				if (!canSplit) return;
+				const d = remaining();
+				const ready = d === 0n && rows.length > 0 && rows.every((r) => (toCents(r.amount.value) ?? 0n) > 0n && r.account.value);
+				left.textContent = d === 0n ? `Adds up to the line's ${money(lineOf().debit_cents)}.` : d > 0n ? `${money(d)} of the line still to split.` : `${money(-d)} more than the line.`;
+				left.className = d === 0n ? "small muted" : "small neg";
+				go.disabled = !ready;
+			}
+			const addRow = () => {
+				const d = remaining();
+				const r = {
+					memo: el("input", { placeholder: "What this part was for (optional)", maxlength: "500", style: "width:100%;box-sizing:border-box" }),
+					amount: el("input", { value: d > 0n ? amt(d) : "", inputmode: "decimal", placeholder: "Amount", style: "width:7rem", "aria-label": "Amount" }),
+					account: accountSelect("Account"),
+				};
+				r.amount.oninput = update;
+				const tr = el("tr", {}, el("td", { class: "wide" }, r.memo), el("td", {}, r.amount), el("td", {}, r.account),
+					el("td", {}, el("button", { class: "btn", type: "button", title: "Remove this line", onclick: () => { if (rows.length === 1) return; rows.splice(rows.indexOf(r), 1); tr.remove(); update(); } }, "✕")));
+				rows.push(r);
+				splitBody.append(tr);
+				update();
+			};
+			function drawSplit() {
+				if (!canSplit) return;
+				rows.length = 0;
+				billAccount = accountSelect(`Account of the ${what}'s part`);
+				splitBody.replaceChildren(el("tr", {},
+					el("td", { class: "wide" }, el("strong", {}, `${b.vendor || `This ${what}`}`), el("span", { class: "muted" }, ` · pays this ${what}`)),
+					el("td", {}, el("input", { value: amt(owed), disabled: true, style: "width:7rem", "aria-label": `The ${what}'s part` })),
+					el("td", {}, billAccount),
+					el("td", {})));
+				addRow();
+			}
+			drawEntry();
+			drawSplit();
+
+			const toPay = owed === BigInt(b.amount_cents) ? `the ${what} is ${money(owed)}` : `${money(owed)} of the ${what} is still to pay`;
+			const whole = button(canSplit ? "Link without splitting" : total < owed ? "Link as paid in full" : "Link", { title: `Count the ${what} as paid by this entry, as it is` },
+				() => link({}, `Linked to entry #${e.id}.`));
+			const part = s.partial ? button("Link as a part payment", { class: "btn primary", title: `${money(total)} of the ${what} is paid by this entry; the rest stays to pay` },
+				() => link({ partial: true }, `Entry #${e.id} linked as a part payment of ${money(total)}.`)) : "";
+			dlg.append(
+				el("h2", { style: "margin-top:0" }, canSplit ? "Split the journal entry" : "A different amount"),
+				el("p", { class: "small" }, `Journal entry #${e.id} · ${e.date} · ${e.description}${e.reference ? ` (${e.reference})` : ""}: ${money(total)} ${b.currency}, but ${toPay}.`),
+				el("table", { class: "stack" },
+					el("thead", {}, el("tr", {}, el("th", {}, "Account"), el("th", { class: "num" }, "Debit"), el("th", { class: "num" }, "Credit"))),
+					entryBody),
+				...(canSplit ? [
+					el("p", { class: "small", style: "margin-top:0.75rem" }, `Split the ${money(lineOf().debit_cents)} line: ${money(owed)} of it is this ${what}; say where the rest belongs. The parts must add up to the line.`),
+					el("table", { class: "stack" }, splitBody),
+					el("div", { class: "row", style: "margin:0.5rem 0" }, el("button", { class: "btn", type: "button", onclick: addRow }, "Add a line"), left),
+					el("p", { class: "small muted" }, `Entry #${e.id} itself stays as it was posted (Ledger adds no lines to a posted entry): a second entry, linked to it, moves the parts you send to another account. Unlinking the ${what} reverses that second entry.`),
+				] : [
+					el("p", { class: "small" }, total < owed
+						? `The entry is for less than the ${what}, so there is nothing to split. ${s.partial ? `Link it as a part payment and ${money(owed - total)} stays to pay, or count the ${what} as paid in full by it.` : `Linking it counts the ${what} as paid in full by this entry.`}`
+						: `None of its debit lines is larger than the ${what}, so there is nothing to split. Linking it counts the ${what} as paid by this entry.`),
+				]),
+				err,
+				el("div", { class: "row", style: "margin-top:0.75rem" }, canSplit ? go : "", part, whole,
+					el("button", { class: "btn", type: "button", onclick: () => done(false) }, "Cancel")),
+			);
+			document.body.append(dlg);
+			dlg.showModal();
+		});
+	}
+
 	// Auto sort on a bill or receipt: a search of the journal (and of statement lines not posted
 	// yet) for similar transactions. No AI: it starts from the exact amount and the dates around
 	// it; the amounts, the dates and the accounts can be changed and searched again.
@@ -1986,7 +2132,7 @@
 		go.onclick = () => again({ amount_min: f.min.value.trim(), amount_max: f.max.value.trim(), from: f.from.value, to: f.to.value, accounts: [...f.accounts.selectedOptions].map((o) => o.value) });
 		const link = async (x) => {
 			try {
-				if (x.kind === "entry") await billAction("link-entry", { entry_id: x.id });
+				if (x.kind === "entry") { if (!(await linkEntry(b, x.id))) return; }
 				else if (!(await payBill(b, x))) return;
 				billSearch = null;
 				box.replaceChildren();
